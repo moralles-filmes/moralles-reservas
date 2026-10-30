@@ -640,13 +640,13 @@ O snapshot de [agent-turn-parity.test.ts](../../../src/lib/agent-turn-parity.tes
     - Zero linhas: `finish("human_active_silent")`.
     - Vencedor: envia. Se o envio falhar, devolve o valor anterior com CAS sobre o próprio valor, em best-effort.
 
-- [ ] **Step 1: Cenários de paridade novos, gravados ANTES da mudança.** Grave `handoff: auto-resolve após 12h`, `handoff: lembrete na janela` e `handoff: dentro da janela, silencioso`, e confira duas execuções determinísticas. Commit `test(ai-agent): prende a UX de handoff antes do compare-and-set`.
-- [ ] **Step 2: Testes de corrida, que falham hoje** e são o controle positivo da correção.
+- [x] **Step 1: Cenários de paridade novos, gravados ANTES da mudança.** Grave `handoff: auto-resolve após 12h`, `handoff: lembrete na janela` e `handoff: dentro da janela, silencioso`, e confira duas execuções determinísticas. Commit `test(ai-agent): prende a UX de handoff antes do compare-and-set`.
+- [x] **Step 2: Testes de corrida, que falham hoje** e são o controle positivo da correção.
   - `auto-resolve concorrente envia uma retomada`: o gancho troca `status` para `ai_active` entre a leitura do adapter e o UPDATE do turno, e o esperado são zero envios do turno perdedor.
   - `lembrete concorrente envia um aviso`: o gancho grava `last_silenced_reply_at` antes do UPDATE do turno, e o esperado são zero envios.
-- [ ] **Step 3: Rode e confira os dois FAIL. Implemente. Rode e confira PASS.**
-- [ ] **Step 4: Regrave com `-u` **só** os cenários de handoff.** O diff do arquivo de snapshot vai para as Evidências, e o revisor confere que só mudou a ordem e o predicado do UPDATE e a ordem do envio. Commit separado: `fix(ai-agent): auto-resolve e lembrete de handoff com compare-and-set antes do envio`.
-- [ ] **Step 5: Rode `ai-budget-wiring-guard`, `whatsapp-conversation-parity-guard` e `handoff-clock-core` e confira PASS.**
+- [x] **Step 3: Rode e confira os dois FAIL. Implemente. Rode e confira PASS.**
+- [x] **Step 4: Regrave com `-u` **só** os cenários de handoff.** O diff do arquivo de snapshot vai para as Evidências, e o revisor confere que só mudou a ordem e o predicado do UPDATE e a ordem do envio. Commit separado: `fix(ai-agent): auto-resolve e lembrete de handoff com compare-and-set antes do envio`.
+- [x] **Step 5: Rode `ai-budget-wiring-guard`, `whatsapp-conversation-parity-guard` e `handoff-clock-core` e confira PASS.**
 
 ### Task 3.2: formatação do Instagram (Sonnet)
 
@@ -664,13 +664,13 @@ O snapshot de [agent-turn-parity.test.ts](../../../src/lib/agent-turn-parity.tes
     `REGRAS DO INSTAGRAM: 1) Antes de chamar create_reservation, peça o número de WhatsApp do cliente, com DDD, e registre com link_customer_phone; explique que a confirmação e os lembretes da reserva chegam pelo WhatsApp. 2) Não peça o número antes de o cliente querer reservar. 3) Para consultar, alterar ou cancelar, você só enxerga as reservas feitas por esta conversa do Instagram; para outras, oriente o cliente a falar pelo WhatsApp da loja.`
   - `buildInstagramIdentityLine(i: { username: string|null; name: string|null; linkedPhone: string|null }): string`. Exemplo: `O cliente fala pelo Instagram (@maria, Maria Souza); o WhatsApp ainda não foi informado.` Com telefone, troca a segunda frase por `o WhatsApp informado é (11) 98888-7777.` O telefone sai formatado e a linha não termina com ponto duplicado.
 
-- [ ] **Step 1: Testes.**
+- [x] **Step 1: Testes.**
   - `divide por bytes sem quebrar par substituto`: texto de 999 bytes terminando em emoji de 4 bytes dá duas partes válidas.
   - 1000 bytes exatos dão uma parte.
   - Acentos contam 2 bytes.
   - Markdown comum é sanitizado.
   - A identidade sai com e sem nome e com e sem telefone.
-- [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Commit** `feat(instagram): sanitização e divisão por bytes da resposta`.
+- [x] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Commit** `feat(instagram): sanitização e divisão por bytes da resposta`.
 
 ### Task 3.3: prompt por canal e guarda do contexto (Opus)
 
@@ -684,14 +684,14 @@ O snapshot de [agent-turn-parity.test.ts](../../../src/lib/agent-turn-parity.tes
   - `LoadAgentPromptArgs.customer` vira `privateCustomer: AgentCustomer | null`. Com `null`, não há consulta de vouchers nem `prefsLines`, e `customerFirstName = ""`.
   - Guarda no início de `run`: `!ctx.unitId || !ctx.organizationId` dá log `evt:"agent_context_invalid"` e `finish("invalid_channel_context")`, e devolve sem LLM.
 
-- [ ] **Step 1: Testes.**
+- [x] **Step 1: Testes.**
   - A regra 12 com `channelLabel:"Instagram"` diz "pelo Instagram"; com `"WhatsApp"`, o texto é idêntico ao de hoje.
   - `channelRules` vazio não acrescenta bytes ao prompt.
   - `prompt do contato declarado não lê vouchers nem preferências`: `loadAgentSystemPrompt` com client falso que registra consultas e `privateCustomer:null` não consulta `vouchers` e não emite alergia, VIP nem aniversário.
   - `organizationId:""` registra `invalid_channel_context` e não chama o provedor.
-- [ ] **Step 2: Rode e confira FAIL. Implemente. O WhatsApp passa `privateCustomer: customer`, `channelLabel:"WhatsApp"` e `channelRules:""`.**
-- [ ] **Step 3: Rode `npx vitest run src/lib/agent-turn-parity.test.ts src/lib/agent-core-channel.test.ts` e confira PASS **sem regravar**.** Controle positivo: `channelRules` sempre emitido reprova a paridade.
-- [ ] **Step 4: Commit** `feat(ai-agent): regra de canal no prompt e guarda do contexto do turno`.
+- [x] **Step 2: Rode e confira FAIL. Implemente. O WhatsApp passa `privateCustomer: customer`, `channelLabel:"WhatsApp"` e `channelRules:""`.**
+- [x] **Step 3: Rode `npx vitest run src/lib/agent-turn-parity.test.ts src/lib/agent-core-channel.test.ts` e confira PASS **sem regravar**.** Controle positivo: `channelRules` sempre emitido reprova a paridade.
+- [x] **Step 4: Commit** `feat(ai-agent): regra de canal no prompt e guarda do contexto do turno`.
 
 ### Task 3.4: cliente opcional, identidade declarada e `link_customer_phone` (Opus)
 
@@ -734,7 +734,7 @@ O snapshot de [agent-turn-parity.test.ts](../../../src/lib/agent-turn-parity.tes
   - `reserveSlot` aceita `source: "web"|"whatsapp"|"instagram"`.
   - Guarda no início de `run`, junto da 3.3: **sem porta e com `customer` nulo** dá `finish("invalid_channel_context")`. Só um canal de identidade declarada pode chegar sem cliente.
 
-- [ ] **Step 1: Testes de `agent-tool-dispatch.test.ts`, com client falso que registra filtros e porta falsa.**
+- [x] **Step 1: Testes de `agent-tool-dispatch.test.ts`, com client falso que registra filtros e porta falsa.**
   - Sem porta, `agentToolsFor` é deep-equal a `agentTools`.
   - Com porta, a lista termina em `link_customer_phone`.
   - Cliente nulo: as cinco ferramentas devolvem `need_phone` sem nenhuma chamada ao client.
@@ -742,28 +742,30 @@ O snapshot de [agent-turn-parity.test.ts](../../../src/lib/agent-turn-parity.tes
   - `identidade declarada só alcança reservas do ledger`: `get_reservation` com código de reserva do cliente que não está no ledger dá "não encontrada", e o filtro registrado contém `.in("id", [...])`. `list_customer_reservations` filtra pelos ids. `cancel_reservation` fora do ledger não escreve.
   - Identidade divergente (`resolveOrCreateCustomer` devolve outro id) dá erro, sem `reserveSlot`.
   - `link_customer_phone` não liga `mutatingToolUsed`; `create_reservation` liga.
-- [ ] **Step 2: Rode e confira FAIL. Implemente.** O `turn.ts` passa a usar `agentToolsFor(ctx)` e `createToolDispatcher`, e o WhatsApp passa `customer` e `phone` como hoje, sem porta.
-- [ ] **Step 3: Rode `npx vitest run src/lib/agent-turn-parity.test.ts src/lib/agent-reservation-tools.test.ts src/lib/agent-core-channel.test.ts src/lib/agent-tool-dispatch.test.ts src/lib/ai-budget-wiring-guard.test.ts` e confira PASS, com a paridade **byte a byte**.** Se uma guarda textual apontar para o `switch` antigo, reaponte-a para `tool-dispatch.ts` sem afrouxar. Controles positivos:
+- [x] **Step 2: Rode e confira FAIL. Implemente.** O `turn.ts` passa a usar `agentToolsFor(ctx)` e `createToolDispatcher`, e o WhatsApp passa `customer` e `phone` como hoje, sem porta.
+- [x] **Step 3: Rode `npx vitest run src/lib/agent-turn-parity.test.ts src/lib/agent-reservation-tools.test.ts src/lib/agent-core-channel.test.ts src/lib/agent-tool-dispatch.test.ts src/lib/ai-budget-wiring-guard.test.ts` e confira PASS, com a paridade **byte a byte**.** Se uma guarda textual apontar para o `switch` antigo, reaponte-a para `tool-dispatch.ts` sem afrouxar. Controles positivos:
   - tirar `.in("id")` do cancel reprova o caso do ledger;
   - remover a guarda de cliente nulo reprova o `need_phone`.
-- [ ] **Step 4: Rode `npx -y deno@2.1.4 check` em `webhook-whatsapp`, `create-reservation`, `update-reservation` e `create-manual-reservation`. Commit** `feat(ai-agent): cliente opcional, identidade declarada e link_customer_phone`.
+- [x] **Step 4: Rode `npx -y deno@2.1.4 check` em `webhook-whatsapp`, `create-reservation`, `update-reservation` e `create-manual-reservation`. Commit** `feat(ai-agent): cliente opcional, identidade declarada e link_customer_phone`.
 
 ### Task 3.5: gates do Bloco 3
 
-- [ ] Rode `npm run typecheck`, `npm run lint` e as 15 suítes do agente (as da Fase 0 mais as novas). Rode `node scripts/ef-import-graph.mjs` para cada `_shared` alterado e registre a matriz.
-- [ ] Rode os gates com o Opus:
+- [x] Rode `npm run typecheck`, `npm run lint` e as 15 suítes do agente (as da Fase 0 mais as novas). Rode `node scripts/ef-import-graph.mjs` para cada `_shared` alterado e registre a matriz.
+- [x] Rode os gates com o Opus:
   - `saas-shield-br:tenant-isolation-auditor` (escopo do ledger);
   - `saas-shield-br:identity-access-auditor` (identidade declarada);
   - `saas-audit-br:ai-automation-auditor` (prompt, ferramenta nova, `need_phone`);
   - `saas-shield-br:integration-reliability-auditor` (CAS).
-- [ ] Atualize as regras:
+- [x] Atualize as regras:
   - `agente-ia.md`: cliente opcional, porta de identidade declarada, `link_customer_phone` idempotente fora da trava de retry, `channelRules`/`channelLabel` e CAS do handoff;
   - `reservas.md`: `source='instagram'` com confirmação pelo WhatsApp (D6).
-- [ ] Commit `docs(ai-agent): núcleo com cliente opcional e identidade declarada`.
+- [x] Commit `docs(ai-agent): núcleo com cliente opcional e identidade declarada`.
 
 ---
 
 ## Bloco 4 — Worker e envio
+
+**Herdado do Bloco 3 (obrigatório):** a lista "Herdado pelo Bloco 4" em Evidências → Bloco 3 vale como requisito das Tasks 4.1–4.5, junto com o contrato da porta: `reservationIds`, `recordReservation`, `linkPhone`, `ctx.unitId`/`organizationId`/`conversation` e a regra de que `identityLine` não leva dado do cadastro.
 
 Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Conversas") e `agente-ia.md` (contrato do catch externo do adapter).
 
@@ -1270,7 +1272,72 @@ Execução por tarefa: implementador (Sonnet em 2.1 e 2.5, Opus em 2.2–2.4), r
 **Documentação:** `.claude/rules/instagram.md` (nova) e a linha na tabela do AGENTS.md §2. Os jobs de cron já estavam em `edge-functions.md` e os nomes conferem com as EFs (`process-instagram-token-refresh`; `process-instagram-inbound` nasce na 4.1).
 
 ### Bloco 3
-_(preencher)_
+Executado em 2026-10-29/30 na branch `feat/instagram-fase-1`, local, sem push, sem `db push`, sem deploy, sem `secrets set` e sem chamada real à Meta ou a LLM (fakes em todos os testes). Começou com `git fetch` e rebase dos 28 commits sobre `origin/main` `aecc574` (Entrega B, PR #60). Por autorização do responsável, as migrations do Bloco 1 foram renomeadas para `20261029200000…200500` (`bfdd2e8`) e a projeção de ACL somada à da Entrega B (9/48/57). Pré-voo 79 depois do rename: RED exit 3, GREEN 77/77 duas vezes (porta 55442). Paridade depois do rebase: 15/15 sem `-u`.
+
+Execução por tarefa: implementador (Opus em 3.1, 3.3 e 3.4; Sonnet em 3.2), review de spec (Sonnet) e de qualidade e segurança (Opus), teste falhando primeiro e controle positivo em cada task.
+
+**Commits:** `4bda89a` + `1dcb549` + `c0b06ed` (3.1; o snapshot só foi regravado nos cenários de handoff, no Step 4), `1af01a8` + `288f19a` + `fedfcf2` (3.2; duas rodadas: regex sem backtracking quadrático, nome do perfil por allowlist e corte por code point), `56f3e41` (3.3), `6d45d87` + `a89cb24` + `bffe74d` (3.4; uma rodada), `f92fcd2` + `58f89c1` + `9817842` (3.5: docs, correções dos gates, regra).
+
+**Desvios do texto do plano (rulings):**
+- **Portabilidade (D3):** a linha de base subiu de 487 para 489, com o CAS da 3.1 em `turn.ts`, por decisão do responsável. Em `a89cb24` o arquivo da linha de base só acompanhou a realocação de uma violação de `turn.ts` para `tool-dispatch.ts`, com o total inalterado.
+- **R3-a:** o turno passa `privateCustomer = ctx.claimedIdentity ? null : ctx.customer`. Uma identidade declarada não alimenta o prompt com dado do cadastro nem depois do link.
+- **R3-b:** os números de linha do plano são anteriores à Entrega B e serviram só de navegação.
+- **R3-d:** o schema de `link_customer_phone` é `{ phone, name }`, ambos obrigatórios, e a ferramenta só entra com a porta.
+- **`notes`:** com a porta, os resultados não levam as observações da reserva (a equipe anota alergia e VIP ali).
+- **Mismatch de identidade:** só recusa com a porta. No WhatsApp a reserva usa o cliente resolvido, como antes, e o desfecho fica no log `agent_customer_identity_mismatch`.
+- **`customer_email`:** com a porta, sai do schema e o despacho grava `null` (review da 3.4, C1: o e-mail iria para o cadastro do dono do telefone declarado).
+- **Resultados com a porta:** passam por uma allowlist de chaves (`CLAIMED_IDENTITY_RESULT_KEYS`), não por uma denylist. `get_reservation` não oferece `phone`.
+- **Task 4.3 adiantada em parte:** o filtro `.eq("channel", "whatsapp")` na promoção do dead-letter e o guard estático entraram em `58f89c1`, porque o Bloco 3 abriu o caminho (o link grava `customer_id` na conversa do IG). O caso de comportamento da 4.3 continua no Bloco 4.
+
+**Gates locais (HEAD `9817842`):**
+- `npm run typecheck` exit 0; lint sem erro (17 warnings, todos em arquivos anteriores ao bloco).
+- Suíte `src/lib`: 162 arquivos verdes e 1 skip. A primeira rodada teve um timeout do worker sob carga; o arquivo isolado passou 111/111 e a segunda rodada passou inteira.
+- `deno check` de `webhook-whatsapp`, `create-reservation`, `create-manual-reservation` e `update-reservation` limpo.
+- `check-portabilidade` 489 = linha de base; `check-padrao` ok.
+- Matriz `ef-import-graph`:
+  - `agent/*` e `agent-reservation-tools.ts` → `webhook-whatsapp`;
+  - `availability.ts` (só o tipo de `source`) → `create-reservation`, `create-manual-reservation`, `update-reservation` e `webhook-whatsapp`;
+  - `channel-context.ts` e `instagram-format.ts` → nenhuma por valor.
+
+**Gates (Opus), todos PASS_WITH_WARNINGS, 0 bloqueante:** `tenant-isolation-auditor`, `identity-access-auditor`, `ai-automation-auditor` e `integration-reliability-auditor`.
+Review final do bloco (Opus): pronto, sem Critical; os dois Important são contrato do Bloco 4 e estão na herança abaixo. Corrigido em `58f89c1`: canal no dead-letter, `phone` fora de `get_reservation` com a porta, regra "nome do perfil é dado" em `INSTAGRAM_CHANNEL_RULES` e a allowlist de resultados.
+
+**Atenções estacionadas (follow-up, P3):**
+- `handoff_at` não entra no predicado do auto-resolve.
+- Retomada e lembrete não releem o status antes do envio.
+- Os logs dizem `reminded`/`resolved` mesmo com o envio falho.
+- O claim do lembrete com zero linhas não relê o status.
+- `request_human_handoff` não tem filtro `unit_id` nem `.select` (anterior ao bloco).
+- O ledger não tem FK composta com a unidade.
+- `resolveOrCreateCustomer` não filtra `deleted_at`.
+
+**Deploy:** o `webhook-whatsapp` só pode ser publicado depois do `db push` da migration `20261029200300`, que cria `conversations.channel`. Sem a coluna, a promoção do dead-letter cai em `noConversation`.
+
+**Herdado pelo Bloco 4** (obrigatório, escrito também no início do Bloco 4):
+- O adapter trata `invalid_channel_context` como terminal, com alerta.
+- `unitId` e `organizationId` vêm da conta/unidade, e o adapter confere `conv.unit_id === ctx.unitId`.
+- `identityLine` e `ctx.customer` não levam nome, e-mail nem outro dado do cadastro.
+- `reservationIds()` filtra contato **e** `unit_id`, pagina e lança em erro.
+- **Ledger atômico com a criação (decidir antes da 4.1):** a porta atual não permite, porque o núcleo cria a reserva em `createReservation → reserveSlot` (`tools.ts`) e só depois chama `recordReservation`. A assinatura muda no núcleo: ou a porta cria a reserva por uma RPC que insere e grava o ledger juntos, ou `reserveSlot` recebe o contato e grava o ledger na mesma transação. A paridade do WhatsApp fica byte a byte, porque o ramo só existe com a porta. A RPC que recusa conflito de outro contato entra na mesma decisão.
+- `linkPhone`:
+  - limpa o nome pela allowlist do `instagram-format.ts`;
+  - não grava e-mail nem sobrescreve o nome de um cadastro existente;
+  - devolve só `{ id, phone }` canônico;
+  - transforma qualquer erro em `unavailable`, sem oráculo de existência;
+  - (núcleo, não o adapter) com a porta, `createReservation` confere o cliente só por leitura (id + organização + telefone), sem `resolveOrCreateCustomer`, para não criar cadastro órfão antes da recusa por mismatch. `tools.ts` entra nos arquivos da 4.1.
+- Tetos por contato para trocas de telefone e para reservas ativas.
+- `notes` limitado e marcado como dado no resultado do WhatsApp, em commit próprio com o snapshot regravado.
+- O contrato "`send` nunca lança"; não reverter a janela do lembrete em `provider_timeout`.
+- A UI de Conversas marca o telefone como declarado e não abre o cadastro privado na conversa do IG (Bloco 5).
+- No primeiro commit do Bloco 4, sem mexer no snapshot:
+  - a descrição de `get_reservation` não cita telefone quando há porta;
+  - `LinkPhoneResult.customer` é tipado como `Pick<AgentCustomer, "id" | "phone">`;
+  - os logs do CAS em `turn.ts` gravam só classe e code, como o `tool_error`;
+  - `link_customer_phone` sem porta cai no ramo `default`.
+- `INSTAGRAM_CHANNEL_RULES` ganha duas frases (texto do plano é exato, então isso pede um Ruling): religar outro telefone tira do alcance as reservas do anterior; vouchers e créditos só se consultam pelo WhatsApp do cadastro (com `privateCustomer: null`, a regra 7 negaria voucher real).
+- O harness da 4.1 cobre de ponta a ponta: `invalid_channel_context` terminal com alerta, `handoff_state_changed` sem envio, `send` que nunca lança e divide com `splitInstagramText`, e `identityLine` reconstruída a cada turno com `linkedPhone`.
+
+**Documentação:** `.claude/rules/agente-ia.md` (cliente opcional, porta, ledger, `link_customer_phone`, `channelRules`/`channelLabel`, CAS do handoff), `.claude/rules/reservas.md` (`source='instagram'` confirma pelo WhatsApp, D6), a spec acompanhando D6 e os rótulos de desfecho em Automação → Diagnóstico.
 
 ### Bloco 4
 _(preencher)_
