@@ -65,6 +65,7 @@ import {
   instagramInboundEventId,
   instagramRateLimitKey,
   isEchoOwn,
+  linkChangeCapReached,
   mapContactReservationRpc,
   recordedMessageOutcome,
   safeErrorLabel,
@@ -419,6 +420,8 @@ function createEventWorker(a: {
       .from("conversations")
       .select("id, unit_id, channel, instagram_contact_id, messages, status, handoff_reason, handoff_at, last_silenced_reply_at")
       .eq("id", convId)
+      // Filtro de tenant na própria query (a conferência abaixo continua).
+      .eq("unit_id", unitId)
       .maybeSingle();
     if (readError) throw new RetryableItemError("conversation_read_failed");
     if (!data) return null;
@@ -517,6 +520,9 @@ function createEventWorker(a: {
     let historyDegraded = false;
     let externalSideEffect = false;
     let pendingMessageIds: string[] = [];
+    // Envio parcial (parte 1 saiu, parte 2 falhou): o núcleo não appenda, então
+    // os ids vão só no `meta` do desfecho, para diagnóstico (sem conteúdo).
+    let partialSentIds: string[] = [];
 
     /** `complete_instagram_message`: desfecho e meta, sem conteúdo. Nunca lança. */
     const finish = async (outcome: string, error?: string | null, meta?: Record<string, unknown>) => {
@@ -532,7 +538,12 @@ function createEventWorker(a: {
           p_claim_id: claimId,
           p_outcome: recorded,
           p_error: sanitizeQueueErrorText(error ?? null),
-          p_meta: { ...(meta ?? {}), event_id: row.id, request_id: requestId },
+          p_meta: {
+            ...(meta ?? {}),
+            event_id: row.id,
+            request_id: requestId,
+            ...(partialSentIds.length > 0 ? { sent_message_ids: [...partialSentIds] } : {}),
+          },
         });
         if (rpcError || data !== true) {
           jsonLog("warn", { evt: "instagram_message_complete_not_applied", requestId, eventId: row.id, code: pgCode(rpcError) });
@@ -568,6 +579,7 @@ function createEventWorker(a: {
     // Envio pelo Graph. NUNCA lança (contrato do `ChannelContext.send`).
     const send = async (text: string) => {
       pendingMessageIds = [];
+      partialSentIds = [];
       let accessToken: string;
       try {
         accessToken = await accountToken();
@@ -586,6 +598,7 @@ function createEventWorker(a: {
       if (out.result.ok === true) {
         pendingMessageIds = out.messageIds;
       } else {
+        partialSentIds = out.messageIds;
         jsonLog("warn", {
           evt: "instagram_send_failed",
           requestId,
@@ -713,6 +726,45 @@ function createEventWorker(a: {
         linkPhone: async ({ phone, name }): Promise<LinkPhoneResult> => {
           if (typeof phone !== "string" || !validateBrPhone(phone)) return { ok: false, reason: "invalid_phone" };
           const canonical = canonicalBrPhone(phone);
+          // R4-l: o teto de trocas também limita a CRIAÇÃO de cadastro. Antes de
+          // qualquer escrita em `customers`, relê o contato e, se ligar outro
+          // telefone estouraria o teto (mesma regra da RPC), devolve
+          // `unavailable` sem tocar `customers`. A RPC segue autoritativa.
+          try {
+            const { data: fresh, error: freshError } = await supabase
+              .from("instagram_contacts")
+              .select("customer_id, link_changes_count, link_changes_window_started_at")
+              .eq("id", contact.id)
+              .eq("unit_id", unitId)
+              .maybeSingle();
+            if (freshError || !fresh) {
+              jsonLog("warn", { evt: "instagram_link_phone_precheck_failed", requestId, unitId, code: pgCode(freshError) });
+              return { ok: false, reason: "unavailable" };
+            }
+            const f = fresh as { customer_id?: unknown; link_changes_count?: unknown; link_changes_window_started_at?: unknown };
+            if (linkChangeCapReached({
+              currentCustomerId: f.customer_id,
+              changesCount: f.link_changes_count,
+              windowStartedAt: f.link_changes_window_started_at,
+              nowMs: Date.now(),
+            })) {
+              // Religar o MESMO cliente não é troca: só segue se o telefone
+              // declarado é o do cliente ligado hoje (leitura, sem escrita).
+              const { data: current, error: currentError } = await supabase
+                .from("customers")
+                .select("phone")
+                .eq("id", f.customer_id as string)
+                .eq("organization_id", organizationId)
+                .maybeSingle();
+              const currentPhone = (current as { phone?: unknown } | null)?.phone;
+              if (currentError || typeof currentPhone !== "string" || canonicalBrPhone(currentPhone) !== canonical) {
+                jsonLog("warn", { evt: "instagram_link_phone_cap_reached", requestId, unitId });
+                return { ok: false, reason: "unavailable" };
+              }
+            }
+          } catch {
+            return { ok: false, reason: "unavailable" };
+          }
           try {
             // Nome limpo só para cadastro NOVO; o existente preserva o nome e
             // nenhum e-mail é gravado (`email: null`).

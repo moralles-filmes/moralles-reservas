@@ -442,10 +442,11 @@ const CONV_A = id("88888888", 1);
 const CUSTOMER_A = id("cdcdcdcd", 1);
 
 /** Contato já conhecido (sem chamada de perfil) e a conversa dele. */
-function seedContact(w: ReturnType<typeof world>, opts: { customer?: Row | null; conv?: Row } = {}) {
+function seedContact(w: ReturnType<typeof world>, opts: { customer?: Row | null; conv?: Row; contact?: Row } = {}) {
   if (opts.customer) w.tables.customers.push(opts.customer);
   w.tables.instagram_contacts.push({ id: CONTACT_A, organization_id: ORG_A, unit_id: UNIT_A, instagram_account_id: ACC_A,
-    igsid: IGSID, username: "ana.ig", name: "Ana do Insta", customer_id: opts.customer ? opts.customer.id : null, anonymized_at: null });
+    igsid: IGSID, username: "ana.ig", name: "Ana do Insta", customer_id: opts.customer ? opts.customer.id : null, anonymized_at: null,
+    link_changes_count: 0, link_changes_window_started_at: null, ...opts.contact });
   w.tables.conversations.push({ id: CONV_A, unit_id: UNIT_A, customer_id: opts.customer ? opts.customer.id : null, channel: "instagram",
     instagram_contact_id: CONTACT_A, messages: [], status: "ai_active", ai_lock_token: null, handoff_reason: null, handoff_at: null,
     last_silenced_reply_at: null, ...opts.conv });
@@ -568,7 +569,73 @@ describe("process-instagram-inbound: identidade declarada", () => {
   });
 });
 
+describe("process-instagram-inbound: teto de trocas antes de criar cadastro (R4-l)", () => {
+  const capped = { link_changes_count: 3, link_changes_window_started_at: "2026-10-04T15:00:00Z" };
+
+  it("contato no teto declarando telefone novo: unavailable e zero inserts em customers", async () => {
+    const w = world();
+    seedContact(w, { customer: { ...LINKED_CUSTOMER }, contact: capped });
+    w.enqueue(igBody(entry(IG_A, textMsg("m1", "agora é 21 99999-8888"))));
+    w.controls.sdk = [sdkTool("link_customer_phone", { phone: "21999998888", name: "Terceiro" }), sdkText("Não consegui registrar.")];
+    await w.kick();
+    expectCleanIo(w);
+    expect(w.ops().filter((o) => o === "insert:customers")).toEqual([]);
+    expect(w.tables.customers).toHaveLength(1);
+    expect(w.ops()).not.toContain("rpc:link_instagram_contact_customer");
+    expect(JSON.stringify(w.sdkRequests[1])).toContain("unavailable");
+    expect(w.tables.instagram_contacts[0].customer_id).toBe(CUSTOMER_A);
+  });
+
+  it("no teto, religar o MESMO telefone segue (não é troca)", async () => {
+    const w = world();
+    seedContact(w, { customer: { ...LINKED_CUSTOMER }, contact: capped });
+    w.enqueue(igBody(entry(IG_A, textMsg("m1", "meu zap 11988887777"))));
+    w.controls.sdk = [sdkTool("link_customer_phone", { phone: "(11) 98888-7777", name: "Ana" }), sdkText("Ok!")];
+    await w.kick();
+    expectCleanIo(w);
+    expect(w.ops().filter((o) => o === "insert:customers")).toEqual([]);
+    expect(w.ops()).toContain("rpc:link_instagram_contact_customer");
+    expect(JSON.stringify(w.sdkRequests[1])).toContain("Número registrado.");
+  });
+
+  it("janela vencida: o teto zera e o telefone novo liga", async () => {
+    const w = world();
+    seedContact(w, { customer: { ...LINKED_CUSTOMER }, contact: { link_changes_count: 3, link_changes_window_started_at: "2026-09-01T00:00:00Z" } });
+    w.enqueue(igBody(entry(IG_A, textMsg("m1", "agora é 21 99999-8888"))));
+    w.controls.sdk = [sdkTool("link_customer_phone", { phone: "21999998888", name: "Ana" }), sdkText("Ok!")];
+    await w.kick();
+    expectCleanIo(w);
+    expect(w.ops().filter((o) => o === "insert:customers")).toHaveLength(1);
+    expect(w.tables.instagram_contacts[0].customer_id).not.toBe(CUSTOMER_A);
+  });
+
+  it("erro na releitura do contato: unavailable sem escrita", async () => {
+    const w = world();
+    seedContact(w, { customer: { ...LINKED_CUSTOMER } });
+    w.controls.beforeQuery = (q) => {
+      if (q.table === "instagram_contacts" && q.columns === "customer_id, link_changes_count, link_changes_window_started_at") throw new Error("db down");
+    };
+    w.enqueue(igBody(entry(IG_A, textMsg("m1", "agora é 21 99999-8888"))));
+    w.controls.sdk = [sdkTool("link_customer_phone", { phone: "21999998888", name: "Ana" }), sdkText("Tente depois.")];
+    await w.kick();
+    expectCleanIo(w);
+    expect(w.ops()).not.toContain("insert:customers");
+    expect(w.ops()).not.toContain("rpc:link_instagram_contact_customer");
+    expect(JSON.stringify(w.sdkRequests[1])).toContain("unavailable");
+  });
+});
+
 describe("process-instagram-inbound: tenant, dedupe e gates", () => {
+  it("M-3: a conversa é lida com o filtro de unidade na própria query", async () => {
+    const w = world();
+    w.enqueue(igBody(entry(IG_A, textMsg("m1", "oi"))));
+    w.controls.sdk = [sdkText("Olá!")];
+    await w.kick();
+    const read = w.trace.find((t) => t.op === "select:conversations"
+      && (t.value as { filters: unknown[][] }).filters.some(([op, col]) => op === "eq" && col === "id"));
+    expect((read!.value as { filters: unknown[][] }).filters).toContainEqual(["eq", "unit_id", UNIT_A]);
+  });
+
   it("worker ignora entradas de outra conta (outra organização) no mesmo corpo", async () => {
     const w = world();
     w.enqueue(igBody(
@@ -754,6 +821,18 @@ describe("process-instagram-inbound: envio", () => {
     expect(w.messageOutcomes()).toEqual({ m1: "send_error" });
     expect((w.conversation()!.messages as Row[]).map((m) => m.role)).toEqual(["user"]);
     expect(w.tables.instagram_inbound_events[0]).toMatchObject({ status: "done" });
+    // M-1: a parte que saiu fica rastreável no meta do desfecho, sem conteúdo.
+    const meta = w.tables.instagram_processed_messages[0].meta as Row;
+    expect(meta.sent_message_ids).toEqual(["mid.out.1"]);
+    expect(JSON.stringify(meta)).not.toContain("aaaa");
+  });
+
+  it("controle M-1: envio completo não leva sent_message_ids no meta", async () => {
+    const w = world();
+    w.enqueue(igBody(entry(IG_A, textMsg("m1", "oi"))));
+    w.controls.sdk = [sdkText("Olá!")];
+    await w.kick();
+    expect(w.tables.instagram_processed_messages[0].meta as Row).not.toHaveProperty("sent_message_ids");
   });
 
   it("erro 190 no envio marca reauth_required", async () => {

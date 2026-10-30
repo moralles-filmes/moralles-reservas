@@ -1,5 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   INSTAGRAM_CONTACT_RATE_LIMIT,
   INSTAGRAM_PROCESSED_RETENTION_DAYS,
@@ -15,6 +17,9 @@ import {
   instagramInboundEventId,
   recordedMessageOutcome,
   safeErrorLabel,
+  INSTAGRAM_LINK_CHANGES_MAX,
+  INSTAGRAM_LINK_CHANGES_WINDOW_DAYS,
+  linkChangeCapReached,
 } from "../../supabase/functions/_shared/instagram-inbound-core.ts";
 import { cleanInstagramProfileName } from "../../supabase/functions/_shared/instagram-format.ts";
 import { isOrgBillingBlocked } from "../../supabase/functions/_shared/org-billing-gate-core.ts";
@@ -177,9 +182,14 @@ describe("sendInstagramParts", () => {
     expect(r.result).toEqual({ ok: false, status: 400, error: "reauth_required" });
   });
 
-  it("nunca lança: envio que lança vira provider_transport_error; texto vazio não envia", async () => {
+  it("nunca lança: exceção no envio é desfecho desconhecido (provider_timeout), com os ids que já saíram; texto vazio não envia", async () => {
     await expect(sendInstagramParts("oi", async () => { throw new Error("boom https://x?access_token=s"); }))
-      .resolves.toEqual({ result: { ok: false, error: "provider_transport_error" }, messageIds: [], reauthRequired: false });
+      .resolves.toEqual({ result: { ok: false, error: "provider_timeout" }, messageIds: [], reauthRequired: false });
+    let k = 0;
+    await expect(sendInstagramParts("a".repeat(900) + "\n\n" + "b".repeat(600), async () => {
+      if (++k === 2) throw new TypeError("quebrou no meio");
+      return ok("mid-1");
+    })).resolves.toEqual({ result: { ok: false, error: "provider_timeout" }, messageIds: ["mid-1"], reauthRequired: false });
     let n = 0;
     const r = await sendInstagramParts("   ", async () => { n++; return ok("x"); });
     expect(n).toBe(0);
@@ -271,5 +281,43 @@ describe("safeErrorLabel", () => {
     expect(safeErrorLabel(new TypeError("fetch failed https://x.invalid?key=segredo"))).toBe("TypeError");
     expect(safeErrorLabel(Object.assign(new Error("duplicate key (phone)=(11988887777)"), { name: "PostgrestError" }))).toBe("PostgrestError");
     expect(safeErrorLabel("x")).toBe("string");
+  });
+});
+
+describe("teto de trocas de cliente do contato (R4-l)", () => {
+  const now = Date.UTC(2026, 9, 5, 15);
+  const day = 86_400_000;
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  it("mesma regra da RPC: 3 trocas numa janela viva de 30 dias, com cliente atual", () => {
+    expect(linkChangeCapReached({ currentCustomerId: "c1", changesCount: 3, windowStartedAt: iso(now - day), nowMs: now })).toBe(true);
+    expect(linkChangeCapReached({ currentCustomerId: "c1", changesCount: 2, windowStartedAt: iso(now - day), nowMs: now })).toBe(false);
+    // Sem cliente atual: ligar o primeiro não é troca.
+    expect(linkChangeCapReached({ currentCustomerId: null, changesCount: 9, windowStartedAt: iso(now - day), nowMs: now })).toBe(false);
+    // Janela nula ou vencida zera.
+    expect(linkChangeCapReached({ currentCustomerId: "c1", changesCount: 3, windowStartedAt: null, nowMs: now })).toBe(false);
+    expect(linkChangeCapReached({ currentCustomerId: "c1", changesCount: 3, windowStartedAt: iso(now - 30 * day), nowMs: now })).toBe(false);
+    expect(linkChangeCapReached({ currentCustomerId: "c1", changesCount: 3, windowStartedAt: iso(now - 30 * day + 1000), nowMs: now })).toBe(true);
+  });
+
+  it("valor ilegível falha fechado", () => {
+    expect(linkChangeCapReached({ currentCustomerId: "c1", changesCount: 0, windowStartedAt: "lixo", nowMs: now })).toBe(true);
+    expect(linkChangeCapReached({ currentCustomerId: "c1", changesCount: null, windowStartedAt: iso(now), nowMs: now })).toBe(true);
+  });
+
+  it("gêmeos do SQL: c_max_link_changes e c_link_window de link_instagram_contact_customer (200600)", () => {
+    const sql = readFileSync(resolve(__dirname, "../../supabase/migrations/20261029200600_instagram_contact_reservation_atomic.sql"), "utf8")
+      .replace(/--[^\n]*/g, "");
+    const ini = sql.indexOf("create or replace function public.link_instagram_contact_customer(");
+    expect(ini).toBeGreaterThan(-1);
+    const corpo = sql.slice(ini, sql.indexOf("$$;", ini));
+    const max = /c_max_link_changes\s+constant\s+integer\s*:=\s*(\d+)/i.exec(corpo)?.[1];
+    const janela = /c_link_window\s+constant\s+interval\s*:=\s*interval\s*'(\d+) days'/i.exec(corpo)?.[1];
+    expect(max, "constante do teto não encontrada no corpo").toBeDefined();
+    expect(janela, "janela não encontrada no corpo").toBeDefined();
+    expect(Number(max)).toBe(INSTAGRAM_LINK_CHANGES_MAX);
+    expect(Number(janela)).toBe(INSTAGRAM_LINK_CHANGES_WINDOW_DAYS);
+    // Controle: o mesmo número só num comentário não conta.
+    expect(/c_max_link_changes\s+constant/i.test("-- c_max_link_changes constant integer := 3".replace(/--[^\n]*/g, ""))).toBe(false);
   });
 });

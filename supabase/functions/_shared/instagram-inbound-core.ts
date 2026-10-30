@@ -147,8 +147,8 @@ export interface InstagramSendOutcome {
 
 /**
  * Divide com `splitInstagramText`, envia na ordem e para na primeira falha
- * (`ok` só com todas). NUNCA lança: exceção do envio vira
- * `provider_transport_error`.
+ * (`ok` só com todas). NUNCA lança: exceção no laço de envio é ambígua (a
+ * parte pode ter saído) e vira `provider_timeout`, como o desfecho desconhecido.
  *
  * Desfecho desconhecido (`isGraphOutcomeUnknown`: 2xx ilegível, sem HTTP ou
  * `transient` em POST) vira `error: "provider_timeout"`, o rótulo de timeout
@@ -184,7 +184,7 @@ export async function sendInstagramParts(
     }
     return { result: { ok: true, status: 200 }, messageIds, reauthRequired: false };
   } catch {
-    return { result: { ok: false, error: "provider_transport_error" }, messageIds, reauthRequired: false };
+    return { result: { ok: false, error: "provider_timeout" }, messageIds, reauthRequired: false };
   }
 }
 
@@ -294,4 +294,35 @@ export function safeErrorLabel(err: unknown): string {
   const message = err instanceof Error ? err.message : null;
   if (typeof message === "string" && /^[a-z0-9_:]{1,80}$/.test(message)) return message;
   return err instanceof Error ? err.name : typeof err;
+}
+
+/**
+ * Teto de trocas de cliente por contato (gêmeos de `c_max_link_changes` e
+ * `c_link_window` de `link_instagram_contact_customer`, migration
+ * 20261029200600; teste amarra ao SQL). A RPC é a barreira autoritativa; o
+ * adapter usa a mesma regra ANTES de criar cadastro, para o teto também
+ * limitar a criação de clientes na organização (R4-l).
+ */
+export const INSTAGRAM_LINK_CHANGES_MAX = 3;
+export const INSTAGRAM_LINK_CHANGES_WINDOW_DAYS = 30;
+
+/**
+ * Ligar um cliente DIFERENTE do atual estouraria o teto? Mesma regra da RPC:
+ * troca = `customer_id` não nulo passando a outro; janela nula ou vencida
+ * zera a contagem. Valor ilegível conta como estourado (falha fechada: o
+ * chamador devolve `unavailable` sem escrever).
+ */
+export function linkChangeCapReached(i: {
+  currentCustomerId: unknown;
+  changesCount: unknown;
+  windowStartedAt: unknown;
+  nowMs: number;
+}): boolean {
+  if (i.currentCustomerId === null || i.currentCustomerId === undefined) return false;
+  if (i.windowStartedAt === null || i.windowStartedAt === undefined) return false;
+  const start = typeof i.windowStartedAt === "string" ? Date.parse(i.windowStartedAt) : Number.NaN;
+  if (!Number.isFinite(start)) return true;
+  if (start <= i.nowMs - INSTAGRAM_LINK_CHANGES_WINDOW_DAYS * 86_400_000) return false;
+  if (typeof i.changesCount !== "number" || !Number.isFinite(i.changesCount)) return true;
+  return i.changesCount >= INSTAGRAM_LINK_CHANGES_MAX;
 }
