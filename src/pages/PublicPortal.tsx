@@ -293,9 +293,10 @@ function PortalContent({
         </div>
       </header>
 
-      {/* Hero */}
+      {/* Hero. No celular a capa é 3/1: em 16/9 ela vira o maior elemento da primeira
+          tela e o LCP passa a esperar o download da foto (a descrição deixa de vencer). */}
       <section className="relative max-w-6xl mx-auto px-2.5 sm:px-6">
-        <div className={cn("relative mt-2.5 sm:mt-4 aspect-[16/9] max-h-[560px] w-full overflow-hidden rounded-panel bg-muted", !unit.hero_image_url && "ambient")}>
+        <div className={cn("relative mt-2.5 sm:mt-4 aspect-[3/1] sm:aspect-[16/9] max-h-[560px] w-full overflow-hidden rounded-panel bg-muted", !unit.hero_image_url && "ambient")}>
           {unit.hero_image_url ? (
             <img
               src={unit.hero_image_url}
@@ -311,7 +312,7 @@ function PortalContent({
 
         {/* Faixa identitária — sobreposta ao hero, com logo + nome */}
         <div className="px-3 sm:px-6">
-          <div className="surface rounded-card relative -mt-16 sm:-mt-20 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6 p-5 sm:p-7">
+          <div className="surface rounded-card relative -mt-12 sm:-mt-20 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6 p-5 sm:p-7">
             <div
               className="shrink-0 h-20 w-20 sm:h-28 sm:w-28 rounded-full overflow-hidden ring-4 ring-card bg-logo-plate shadow-depth-1 flex items-center justify-center"
             >
