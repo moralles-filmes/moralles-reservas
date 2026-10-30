@@ -301,6 +301,14 @@ alter table reservations
     check (payment_amount_cents is null or payment_amount_cents >= 0),
   add column if not exists payment_expires_at timestamptz;
 
+-- `tables` (Task 4.0d): a RPC confere que a mesa da linha é da unidade do
+-- contato (`tables.unit_id`). Só as colunas que ela lê; a de produção é a da 001
+-- + `unit_id` NOT NULL da 013, e o `reservations.table_id` segue sem a FK.
+create table if not exists public.tables (
+  id      uuid primary key default gen_random_uuid(),
+  unit_id uuid not null references public.units(id) on delete cascade
+);
+
 -- ─── 4. Fixtures ─────────────────────────────────────────────────────────────
 -- UA (org A): owner …a1, gerente …a2, operador …a3. UB (org B): gerente …b2.
 -- PA …c1: platform_admin sem nenhuma linha em unit_members.

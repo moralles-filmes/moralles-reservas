@@ -24,13 +24,22 @@
 --     o TS não faz I/O de cliente nesse caminho (Ruling R4-f).
 --   * `record_instagram_contact_reservation` (recriada): reserva que já está
 --     no ledger de OUTRO contato é recusada (antes o `on conflict do nothing`
---     aceitava calado). O mesmo contato continua no-op.
+--     aceitava calado). O mesmo contato continua no-op. Perde o EXECUTE de
+--     `service_role` (Task 4.0d): ela não aplica o teto de reservas ativas, e a
+--     criação atômica é o único caminho do adapter.
 --   * `link_instagram_contact_customer` (recriada): teto de trocas de cliente
 --     por contato numa janela, com o contador em `instagram_contacts`.
 --
 -- Tenant: unidade e organização saem do CONTATO; o `unit_id` e o
 -- `customer_id` da linha só são aceitos se forem os do contato. Toda recusa de
 -- identidade é o MESMO 42501 (sem oráculo de existência).
+--
+-- Estado da linha (Task 4.0d): o jsonb não é confiável além da identidade.
+-- `status` só `pending`/`confirmed`; `payment_status` nulo ou `not_required` e
+-- `payment_amount_cents`/`payment_expires_at` nulos (o agente nunca gera
+-- `payment_*`: só `initialStateForSlot`, do fluxo público, o faz); `table_id` nulo
+-- ou mesa da UNIDADE DO CONTATO (`reservations` não tem FK nem trigger de
+-- coerência mesa x unidade). A linha não carrega `hall_id`; o salão vem da mesa.
 --
 -- Idempotente: `add column if not exists`, constraint recriada por nome,
 -- `create or replace function`, revokes/grants reafirmados. Sem URL do projeto
@@ -77,7 +86,7 @@ comment on column public.instagram_contacts.link_changes_window_started_at is
 -- inexistente ou anonimizado; contato sem cliente ou com cliente diferente do
 -- `customer_id` da linha; cliente apagado ou de outra organização; `unit_id`
 -- da linha diferente do do contato; `source` diferente de `instagram`; id que
--- não é uuid. O `for update` no contato serializa as criações do mesmo contato,
+-- não é uuid; `status`, `payment_*` ou `table_id` fora do estado acima. O `for update` no contato serializa as criações do mesmo contato,
 -- o que torna o teto exato.
 --
 -- Unique violation da mesa (23505, `reservations_unique_active_table_slot`)
@@ -96,6 +105,8 @@ declare
   c_max_active constant integer := 3;
   v_cust   uuid;
   v_unit   uuid;
+  v_table  uuid;
+  v_table_txt text;
   v_org    uuid;
   v_ok     uuid;
   v_c_org  uuid;
@@ -112,6 +123,8 @@ begin
     begin
       v_cust := (p_reservation->>'customer_id')::uuid;
       v_unit := (p_reservation->>'unit_id')::uuid;
+      v_table_txt := p_reservation->>'table_id';
+      v_table := v_table_txt::uuid;
     exception when invalid_text_representation then
       v_cust := null;
       v_unit := null;
@@ -145,6 +158,19 @@ begin
        or v_c_cust is null or v_c_cust is distinct from v_cust
        or v_unit is null or v_unit is distinct from v_c_unit
        or (p_reservation->>'source') is distinct from 'instagram'
+       -- Estado da linha: só pending/confirmed, sem pagamento.
+       or (p_reservation->>'status') is null
+       or (p_reservation->>'status') not in ('pending', 'confirmed')
+       or coalesce(p_reservation->>'payment_status', 'not_required') <> 'not_required'
+       or (p_reservation->>'payment_amount_cents') is not null
+       or (p_reservation->>'payment_expires_at') is not null
+       -- Mesa, se vier, é da unidade do contato.
+       or (v_table_txt is not null and not exists (
+         select 1
+           from public.tables t
+          where t.id = v_table
+            and t.unit_id = v_c_unit
+       ))
        or not exists (
          select 1
            from public.customers cu
@@ -179,7 +205,7 @@ begin
   ) values (
     v_cust,
     v_c_unit,
-    (p_reservation->>'table_id')::uuid,
+    v_table,
     (p_reservation->>'date')::date,
     (p_reservation->>'time')::time,
     (p_reservation->>'party_size')::integer,
@@ -346,7 +372,7 @@ end;
 $$;
 
 comment on table public.instagram_contact_reservations is
-  'Reserva nascida de um contato do Instagram. Gravada so por create_instagram_contact_reservation (junto com a reserva, mesma transacao) e record_instagram_contact_reservation (reserva ja existente; recusa a de outro contato), ambas service_role, com unidade e cliente conferidos. FORCE RLS sem policies.';
+  'Reserva nascida de um contato do Instagram. Gravada so por create_instagram_contact_reservation (junto com a reserva, mesma transacao; service_role) e por record_instagram_contact_reservation (reserva ja existente; sem EXECUTE para API), com unidade e cliente conferidos. FORCE RLS sem policies.';
 
 -- ============================================================================
 -- 5. ACL (assinatura completa)
@@ -354,10 +380,16 @@ comment on table public.instagram_contact_reservations is
 revoke all on function public.create_instagram_contact_reservation(uuid, jsonb) from public, anon, authenticated, service_role;
 grant execute on function public.create_instagram_contact_reservation(uuid, jsonb) to service_role;
 comment on function public.create_instagram_contact_reservation(uuid, jsonb) is
-  'Cria a reserva do contato do Instagram e a linha do ledger na mesma transacao, com cliente/unidade/origem conferidos contra o contato sob lock e teto de 3 reservas ativas. 42501 sem oraculo; P0001 instagram_contact_reservation_limit. service_role only.';
+  'Cria a reserva do contato do Instagram e a linha do ledger na mesma transacao, com cliente/unidade/origem conferidos contra o contato sob lock, estado da linha travado (pending/confirmed, sem pagamento, mesa da unidade) e teto de 3 reservas ativas. 42501 sem oraculo; P0001 instagram_contact_reservation_limit. service_role only.';
 
+-- record_ fica SEM grant a ninguém (só o dono executa). Ela não aplica o teto de
+-- reservas ativas nem confere o estado da reserva, então deixá-la a
+-- service_role furaria o teto (M-2 da review da 4.0b): a criação atômica é o
+-- único caminho do adapter. Religar uma reserva existente exige RPC própria,
+-- com teto, numa migration futura.
 revoke all on function public.record_instagram_contact_reservation(uuid, uuid) from public, anon, authenticated, service_role;
-grant execute on function public.record_instagram_contact_reservation(uuid, uuid) to service_role;
+comment on function public.record_instagram_contact_reservation(uuid, uuid) is
+  'Liga reserva existente ao ledger do contato (unidade e cliente conferidos; recusa a de outro contato). NAO aplica o teto de reservas ativas: sem EXECUTE para ninguem (so o dono); o adapter usa create_instagram_contact_reservation.';
 
 revoke all on function public.link_instagram_contact_customer(uuid, uuid) from public, anon, authenticated, service_role;
 grant execute on function public.link_instagram_contact_customer(uuid, uuid) to service_role;

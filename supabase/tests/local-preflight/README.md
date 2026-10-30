@@ -2700,10 +2700,10 @@ controles 7970–7976, e no fix round 1 o IG-4.8 (7967) e o C-IG-4.8 (7978);
 7968–7969, 7977 e 7979 livres. Task 1.5: casos 7980–7982, controles
 7990–7991; 7983–7989 livres. Task 1.6 (fix round 1 dos gates): casos
 7914–7917, controles 7992–7995. Task 4.0b: casos 7983–7988, controles 7989,
-7996–7999 e 7918; livres 7907, 7919, 7948–7949, 7958–7959, 7968–7969, 7977 e
-7979. O 79 imprime os
-ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **89 e
-89**); quem acrescenta
+7996–7999 e 7918. Task 4.0d: caso 7919, controles 7958–7959; livres 7907,
+7948–7949, 7968–7969, 7977 e 7979. O 79 imprime os
+ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **92 e
+92**); quem acrescenta
 casos atualiza o número na última instrução do arquivo.
 
 **Task 1.1** (migration `20261029200000_instagram_module_grants.sql`):
@@ -3042,6 +3042,24 @@ loopback, banco recriado do zero): RED na guarda nova (exit 3) com
 (duas execuções do 79 no mesmo banco), 89/89 com a 200600 em CRLF e com cópias
 LF das seis, sem linha residual em `reservations`, `instagram_contacts`, ledger,
 `customers` de teste, outbox nem constraint provisória.
+
+**Task 4.0d** (mesma migration `20261029200600`, ainda local). Base acrescida no 79a
+(seção 3d): `public.tables(id, unit_id)`, só o que a RPC lê. `create_…` agora
+trava o estado da linha: IG-7.7 (7919) recusa com o MESMO 42501, sem gravar,
+status `cancelled`/`completed`/nulo, `payment_status` `paid`/`pending_payment`, valor e
+vencimento de pagamento, mesa de OUTRA unidade, mesa inexistente e `table_id`
+que não é uuid; passam `pending` com `not_required` e mesa da unidade, e
+`confirmed` sem mesa e sem pagamento. `record_…` perde o EXECUTE de `service_role`
+(fura o teto): os casos IG-2.5 e IG-7.4 a chamam como dono e o IG-7.6 confere
+que ninguém da API a executa (a chamada como `service_role` dá 42501). Controles:
+C-IG-7.7 (7958) tira do corpo real a trava de status, a de `payment_status`, a de
+valor e a da unidade da mesa; C-IG-7.8 (7959) dá EXECUTE de `record_…` a
+`service_role`. O IG-7.3 passa a criar a mesa em `tables`. Resultado (30/10/2026,
+PG 18 local descartável na porta 55452): RED com a migration da 4.0b (7918,
+7919, 7922, 7932, 7958, 7959 e 7988 reprovam; 85/92); GREEN 92/92 após aplicar,
+após reaplicar as seis (a 200600 em CRLF e em LF) e com o 79 em CRLF e em LF
+(a cópia LF do 79 precisa ficar em `supabase/tests/local-preflight/`: o `ir` do
+IG-5.3 é relativo ao arquivo).
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
 nem o ACL do banco de produção (isso é do `audit-function-acl.ts`). A
