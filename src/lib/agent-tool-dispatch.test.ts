@@ -359,6 +359,45 @@ describe("link_customer_phone", () => {
     });
   }
 
+  // R4-h: o teto de reservas ativas (o adapter traduz `P0001
+  // instagram_contact_reservation_limit` para este código) volta ao LLM com
+  // mensagem fixa própria, para ele oferecer alterar/cancelar em vez de repetir.
+  it("teto de reservas ativas do contato: mensagem própria ao LLM, nada no ledger", async () => {
+    const { CLAIMED_RESERVATION_LIMIT_CODE, CLAIMED_RESERVATION_LIMIT_RESULT } = await import("../../supabase/functions/_shared/agent/tools");
+    const port = fakePort({ ledger: [], link: { ok: true, customer: LINKED }, insertError: { code: CLAIMED_RESERVATION_LIMIT_CODE } });
+    const { call, state } = await setup({ port });
+    await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
+    h.reserveSlot.mockImplementation(slotViaHook("NOVA2345"));
+    const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
+    expect(out).toEqual({
+      success: false,
+      reason: "reservation_limit",
+      message: "Este contato já tem o número máximo de reservas ativas. Ofereça alterar ou cancelar uma reserva existente.",
+    });
+    expect(out).toEqual(CLAIMED_RESERVATION_LIMIT_RESULT);
+    expect(state.lastMutationOutcome).toBe("UNKNOWN");
+    expect(await call("list_customer_reservations")).toMatchObject({ found: false });
+  });
+
+  it("o código do teto é o mesmo no núcleo do agente e no núcleo do worker do Direct (gêmeos)", async () => {
+    const { CLAIMED_RESERVATION_LIMIT_CODE } = await import("../../supabase/functions/_shared/agent/tools");
+    const { RESERVATION_LIMIT_ERROR_CODE } = await import("../../supabase/functions/_shared/instagram-inbound-core");
+    expect(CLAIMED_RESERVATION_LIMIT_CODE).toBe(RESERVATION_LIMIT_ERROR_CODE);
+  });
+
+  it("controle: o mesmo código SEM porta (WhatsApp) segue o caminho genérico do reserveSlot", async () => {
+    const { CLAIMED_RESERVATION_LIMIT_CODE } = await import("../../supabase/functions/_shared/agent/tools");
+    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
+    h.reserveSlot.mockResolvedValue({ success: false, reason: "insert_failed", message: MSG_INSERT_FAILED });
+    const out = await createReservation({} as never, {
+      customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2,
+      customer: { id: LINKED.id, phone: LINKED.phone }, claimedIdentity: false,
+      unit_id: "unit-a", organization_id: "org-a", source: "whatsapp",
+    });
+    expect(out).toEqual({ success: false, reason: "insert_failed", message: MSG_INSERT_FAILED });
+    expect(JSON.stringify(out)).not.toContain(CLAIMED_RESERVATION_LIMIT_CODE);
+  });
+
   it("a porta lança (rede): erro genérico do despacho, sem a mensagem no log, nada no ledger", async () => {
     const err = Object.assign(new Error("fetch failed: https://projeto.supabase.co"), { code: "ECONNRESET" });
     const port = fakePort({ ledger: [], link: { ok: true, customer: LINKED }, insertThrows: err });

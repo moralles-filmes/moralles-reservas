@@ -8,11 +8,12 @@ import { createEdgeRequestHarness } from "../test/fixtures/edge-request-harness"
  * corpo cru, resolve conta e unidade pelo MESMO select (C3), gates sem cache
  * com polaridade fechada, grava na fila antes do ACK e dá o kick pós-ACK.
  *
- * O kick vai para `process-instagram-inbound`, que só nasce na Task 4.1: o
- * harness recusa o hop não declarado (`internal_hop`) e o código tem de
- * engolir a recusa. Cada tentativa fica registrada como um `internal_hop` e
- * como um log `instagram_inbound_kick_failed`; o formato do pedido (só
- * `{ event_id }` + `x-internal-key`) é coberto no teste do núcleo.
+ * O kick vai para `process-instagram-inbound` (Task 4.1). Na maioria dos
+ * casos o hop NÃO é declarado: o harness o recusa (`internal_hop`) e o código
+ * tem de engolir a recusa, então cada tentativa fica registrada como um
+ * `internal_hop` e um log `instagram_inbound_kick_failed`. O caso "kick
+ * pós-ACK" declara o hop e confere o pedido real (só `{ event_id }` +
+ * `x-internal-key`, sem `Authorization`) chegando ao worker.
  */
 
 const env = {
@@ -36,7 +37,7 @@ type ErrorFlag = "secrets" | "accounts" | "grants" | "settings" | "insert";
 const harnesses: ReturnType<typeof createEdgeRequestHarness>[] = [];
 afterEach(() => harnesses.splice(0).forEach((h) => h.dispose()));
 
-function fixture() {
+function fixture(opts: { hop?: boolean } = {}) {
   const state = {
     secrets: { instagram_app_secret: IG_SECRET, verify: VERIFY, meta_app_secret: null as string | null } as Record<string, string | null>,
     accounts: [
@@ -130,10 +131,18 @@ function fixture() {
       };
       return q;
     },
-    rpc() { throw new Error("unexpected rpc"); },
+    // Só com o hop declarado: o worker reivindica a linha (aqui, já não reivindicável).
+    rpc(name: string) {
+      if (opts.hop && name === "claim_instagram_inbound_event") return Promise.resolve({ data: [], error: null });
+      throw new Error("unexpected rpc");
+    },
   };
 
-  const harness = createEdgeRequestHarness({ env, createClient: () => db });
+  const harness = createEdgeRequestHarness({
+    env,
+    createClient: () => db,
+    internalHops: opts.hop ? [{ from: "webhook-instagram", to: "process-instagram-inbound" }] : [],
+  });
   harnesses.push(harness);
 
   const post = (raw: Uint8Array, opts: { secret?: string | null; header?: string; headers?: Record<string, string> } = {}) => {
@@ -345,6 +354,28 @@ describe("webhook-instagram POST", () => {
     expect((await f.post(batch(msg(IG_A, "m")))).status).toBe(200);
     expect(f.state.queue).toEqual([]);
     f.expectOnlyKicks(0);
+  });
+
+  it("kick pós-ACK: hop declarado para o process-instagram-inbound só com { event_id } e x-internal-key", async () => {
+    const f = fixture({ hop: true });
+    const res = await f.post(batch(msg(IG_A, "m-a"), msg(IG_B, "m-b")));
+    expect(res.status).toBe(200);
+    await f.harness.drainBackground();
+    f.expectOnlyKicks(0);
+    const hops = f.harness.internalRequests;
+    expect(hops.map((h) => [h.from, h.to])).toEqual([
+      ["webhook-instagram", "process-instagram-inbound"],
+      ["webhook-instagram", "process-instagram-inbound"],
+    ]);
+    for (const [i, h] of hops.entries()) {
+      expect(h.request.method).toBe("POST");
+      expect(h.request.headers.get("x-internal-key")).toBe(env.INTERNAL_API_KEY);
+      expect(h.request.headers.get("authorization")).toBeNull();
+      expect(await h.request.json()).toEqual({ event_id: `evt-${i + 1}` });
+    }
+    // O worker aceitou a chave interna (sem 401) e respondeu.
+    expect(f.harness.logs.filter((l) => l.includes("\"evt\":\"instagram_inbound_kick\"") && l.includes("\"status\":")).length).toBe(2);
+    expect(f.harness.logs.join(" ")).not.toContain("instagram_inbound_unauthorized");
   });
 
   it("mesmo corpo duas vezes grava uma linha (23505 é duplicata)", async () => {

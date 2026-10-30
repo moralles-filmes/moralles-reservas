@@ -47,7 +47,9 @@ export interface ClaimedIdentityPort {
    * (vivo, da organização, igual ao ligado ao contato), a unidade e a origem, e
    * aplica o teto de reservas ativas do contato. É a ÚNICA barreira de
    * identidade do núcleo com porta. Recusa e falha voltam em `error.code`
-   * (o 23505 da mesa dispara o retry do `reserveSlot`).
+   * (o 23505 da mesa dispara o retry do `reserveSlot`); o teto de reservas
+   * ativas do contato volta como `CLAIMED_RESERVATION_LIMIT_CODE` (`tools.ts`),
+   * que o núcleo devolve ao LLM com mensagem própria.
    */
   insertReservation(row: ReservationInsertRow): Promise<{
     data: { id: string; status: string; payment_status: string | null } | null;
@@ -139,7 +141,12 @@ export interface ChannelContext {
   channelRules: string;
   /** Aplica-se SÓ à saída do LLM, nunca a texto determinístico. */
   sanitize(text: string): string;
-  /** Envio cru do canal. O núcleo o chama atrás da cerca de handoff. */
+  /**
+   * Envio cru do canal. O núcleo o chama atrás da cerca de handoff.
+   * Contrato: NUNCA lança (falha volta em `ok:false`), e `error:
+   * "provider_timeout"` significa desfecho desconhecido (a mensagem pode ter
+   * saído): o núcleo não devolve a janela do lembrete de handoff nesse caso.
+   */
   send(text: string): Promise<ChannelSendResult>;
   reservationSource: AgentReservationSource;
   /** Lido de forma preguiçosa, só quando há cardápio digital ativo. */

@@ -10,7 +10,13 @@ import {
   isEchoOwn,
   mapContactReservationRpc,
   sendInstagramParts,
+  buildInstagramConversationMessage,
+  conversationTimestamp,
+  instagramInboundEventId,
+  recordedMessageOutcome,
+  safeErrorLabel,
 } from "../../supabase/functions/_shared/instagram-inbound-core.ts";
+import { cleanInstagramProfileName } from "../../supabase/functions/_shared/instagram-format.ts";
 import { isOrgBillingBlocked } from "../../supabase/functions/_shared/org-billing-gate-core.ts";
 import { buildAgentUnit } from "../../supabase/functions/_shared/agent/unit-context.ts";
 import { MEDIA_REPLY_TEXT } from "../../supabase/functions/_shared/media-reply-text.ts";
@@ -221,5 +227,49 @@ describe("predicados compartilhados com o webhook-whatsapp", () => {
 
   it("MEDIA_REPLY_TEXT mantém o valor do WhatsApp", () => {
     expect(MEDIA_REPLY_TEXT).toBe("Por aqui só consigo ler texto. Pode me escrever a informação que precisa? Se quiser falar com a equipe, é só pedir.");
+  });
+});
+
+describe("mensagem da conversa e desfecho gravado", () => {
+  it("provider_message_ids só em mensagem nossa com ids; user nunca leva", () => {
+    const now = Date.UTC(2026, 9, 5, 15);
+    expect(buildInstagramConversationMessage({ role: "assistant", content: "oi", eventId: "e1", providerMessageIds: ["a", "b"], nowMs: now }))
+      .toEqual({ event_id: "e1", role: "assistant", content: "oi", timestamp: new Date(now).toISOString(), author: "automation", provider_message_ids: ["a", "b"] });
+    expect(buildInstagramConversationMessage({ role: "user", content: "x", eventId: "e2", providerMessageIds: ["a"], timestamp: now - 1000, receivedAt: "r", nowMs: now }))
+      .toEqual({ event_id: "e2", role: "user", content: "x", timestamp: new Date(now - 1000).toISOString(), author: "customer", received_at: "r" });
+    expect(buildInstagramConversationMessage({ role: "assistant", content: "y", eventId: "e3", author: "ai", providerMessageIds: [], nowMs: now }))
+      .not.toHaveProperty("provider_message_ids");
+  });
+
+  it("timestamp fora da janela vira agora", () => {
+    const now = Date.UTC(2026, 9, 5, 15);
+    expect(conversationTimestamp(1_000, now)).toBe(new Date(now).toISOString());
+    expect(conversationTimestamp(now + 3_600_000, now)).toBe(new Date(now).toISOString());
+    expect(conversationTimestamp(null, now)).toBe(new Date(now).toISOString());
+  });
+
+  it("send_error com provider_timeout é desfecho desconhecido; histórico degradado ganha sufixo", () => {
+    expect(recordedMessageOutcome("send_error", "provider_timeout", false)).toBe("send_outcome_unknown");
+    expect(recordedMessageOutcome("send_error", "invalid_request", false)).toBe("send_error");
+    expect(recordedMessageOutcome("success", null, true)).toBe("success_history_degraded");
+    expect(recordedMessageOutcome("success_history_degraded", null, true)).toBe("success_history_degraded");
+    expect(recordedMessageOutcome("Fora Do Check!", null, false)).toBe("unknown_outcome");
+    expect(instagramInboundEventId("acc", "m1")).toBe("ig-in:acc:m1");
+  });
+
+  it("nome informado no link passa pela allowlist do nome de perfil", () => {
+    expect(cleanInstagramProfileName("Ana <script>‮Silva​")).toBe("Ana scriptSilva");
+    expect(cleanInstagramProfileName("  \n ")).toBe("");
+    expect(cleanInstagramProfileName(null)).toBe("");
+    expect(Array.from(cleanInstagramProfileName("é".repeat(200)))).toHaveLength(80);
+  });
+});
+
+describe("safeErrorLabel", () => {
+  it("código interno passa; texto livre vira a classe", () => {
+    expect(safeErrorLabel(new Error("conversation_handoff_fence_failed"))).toBe("conversation_handoff_fence_failed");
+    expect(safeErrorLabel(new TypeError("fetch failed https://x.invalid?key=segredo"))).toBe("TypeError");
+    expect(safeErrorLabel(Object.assign(new Error("duplicate key (phone)=(11988887777)"), { name: "PostgrestError" }))).toBe("PostgrestError");
+    expect(safeErrorLabel("x")).toBe("string");
   });
 });

@@ -220,3 +220,78 @@ export function mapContactReservationRpc(
   }
   return { data: null, error: { code: "no_row" } };
 }
+
+/** Placeholder do inbound que não é texto (o operador vê que chegou algo). */
+export const INSTAGRAM_MEDIA_PLACEHOLDER = "[mídia]";
+
+/** `event_id` estável do inbound do Direct: a reentrega não duplica a linha. */
+export function instagramInboundEventId(accountId: string, mid: string): string {
+  return `ig-in:${accountId}:${mid}`;
+}
+
+/** Timestamp ISO aceito (2000 até agora + 10 min); fora disso, agora. Mesma regra do WhatsApp. */
+export function conversationTimestamp(value: number | string | null | undefined, nowMs: number = Date.now()): string {
+  const parsed = typeof value === "number" ? value : value ? new Date(value).getTime() : Number.NaN;
+  const earliestAccepted = Date.UTC(2000, 0, 1);
+  const latestAccepted = nowMs + 10 * 60_000;
+  return Number.isFinite(parsed) && parsed >= earliestAccepted && parsed <= latestAccepted
+    ? new Date(parsed).toISOString()
+    : new Date(nowMs).toISOString();
+}
+
+export type InstagramMessageRole = "user" | "assistant" | "human";
+export type InstagramMessageAuthor = "customer" | "ai" | "automation" | "human";
+
+/**
+ * Mensagem para `append_conversation_message`. `provider_message_ids` só em
+ * mensagem nossa (`assistant`/`human`) que saiu: é o que identifica o eco
+ * próprio (`isEchoOwn`). Sem conteúdo extra além do que o thread mostra.
+ */
+export function buildInstagramConversationMessage(i: {
+  role: InstagramMessageRole;
+  content: string;
+  eventId: string;
+  author?: InstagramMessageAuthor;
+  timestamp?: number | string | null;
+  receivedAt?: string;
+  providerMessageIds?: string[];
+  nowMs?: number;
+}): Record<string, unknown> {
+  const author: InstagramMessageAuthor = i.author ??
+    (i.role === "user" ? "customer" : i.role === "human" ? "human" : "automation");
+  return {
+    event_id: i.eventId,
+    role: i.role,
+    content: i.content,
+    timestamp: conversationTimestamp(i.timestamp, i.nowMs),
+    author,
+    ...(i.receivedAt ? { received_at: i.receivedAt } : {}),
+    ...(i.role !== "user" && i.providerMessageIds && i.providerMessageIds.length > 0
+      ? { provider_message_ids: [...i.providerMessageIds] }
+      : {}),
+  };
+}
+
+/**
+ * Desfecho gravado no ledger da mensagem a partir do desfecho do núcleo:
+ * `send_error` com `provider_timeout` é desfecho DESCONHECIDO (a mensagem pode
+ * ter saído), não falha definitiva; histórico que não persistiu ganha o sufixo
+ * `_history_degraded`.
+ */
+export function recordedMessageOutcome(outcome: string, error: string | null | undefined, historyDegraded: boolean): string {
+  let recorded = outcome === "send_error" && error === "provider_timeout" ? "send_outcome_unknown" : outcome;
+  if (historyDegraded && !recorded.includes("history_degraded")) recorded = `${recorded}_history_degraded`;
+  return /^[a-z0-9_]{1,64}$/.test(recorded) ? recorded : "unknown_outcome";
+}
+
+/**
+ * Rótulo de erro que pode ir a log e ao ledger: o código interno do núcleo
+ * (`ai_lock_claim_failed`, `conversation_handoff_fence_failed`…) quando a
+ * mensagem é só isso; senão, a classe. Texto livre (Postgres, rede, provedor)
+ * nunca sai daqui: pode trazer dado do cliente ou credencial.
+ */
+export function safeErrorLabel(err: unknown): string {
+  const message = err instanceof Error ? err.message : null;
+  if (typeof message === "string" && /^[a-z0-9_:]{1,80}$/.test(message)) return message;
+  return err instanceof Error ? err.name : typeof err;
+}

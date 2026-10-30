@@ -23,6 +23,11 @@ verify_jwt = true
 [functions.process-instagram-token-refresh]
 verify_jwt = false
 
+# Worker da fila do Direct: kick do webhook-instagram e varredura do pg_cron,
+# ambos só com x-internal-key (requireInternalAuth é a primeira instrução).
+[functions.process-instagram-inbound]
+verify_jwt = false
+
 [functions.create-reservation]
 verify_jwt = false
 

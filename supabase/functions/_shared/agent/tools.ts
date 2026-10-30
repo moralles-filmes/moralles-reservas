@@ -201,6 +201,24 @@ export async function checkAvailability(
   return { available: true, message: result.message };
 }
 
+/**
+ * Código que o hook da porta (`ClaimedIdentityPort.insertReservation`) devolve
+ * quando a RPC recusa pelo teto de reservas ativas do contato. Gêmeo de
+ * `RESERVATION_LIMIT_ERROR_CODE` em `instagram-inbound-core.ts` (teste).
+ */
+export const CLAIMED_RESERVATION_LIMIT_CODE = "instagram_contact_reservation_limit";
+
+/**
+ * Resultado ao LLM quando o teto barra a reserva (R4-h): mensagem fixa e
+ * própria, para ele oferecer alterar ou cancelar em vez de tentar de novo.
+ * Só existe com identidade declarada.
+ */
+export const CLAIMED_RESERVATION_LIMIT_RESULT = {
+  success: false,
+  reason: "reservation_limit",
+  message: "Este contato já tem o número máximo de reservas ativas. Ofereça alterar ou cancelar uma reserva existente.",
+} as const;
+
 export async function createReservation(supabase: SupabaseClient, params: {
   customer_name: string;
   customer_email?: string;
@@ -274,6 +292,18 @@ export async function createReservation(supabase: SupabaseClient, params: {
     customerId = resolved.id;
   }
 
+  // Com porta, o hook é embrulhado só para saber se a ÚLTIMA recusa foi o teto
+  // do contato; a linha e o retorno passam intactos (o 23505 segue no retry).
+  let reservationLimitHit = false;
+  const portInsert = params.insertReservation;
+  const insertReservation: ReserveSlotParams["insertReservation"] = portInsert
+    ? async (row) => {
+      const r = await portInsert(row);
+      reservationLimitHit = r.error?.code === CLAIMED_RESERVATION_LIMIT_CODE;
+      return r;
+    }
+    : undefined;
+
   const hallId = await resolveHallId(supabase, params.unit_id, params.hall_name, params.party_size);
   const result = await reserveSlot(supabase, {
     unitId: params.unit_id,
@@ -288,11 +318,12 @@ export async function createReservation(supabase: SupabaseClient, params: {
     // origem do agente; sem isso o cliente recebe a confirmação duplicada.
     source: params.source,
     // Só com identidade declarada; sem porta, a chamada de sempre (paridade).
-    ...(params.claimedIdentity ? { insertReservation: params.insertReservation } : {}),
+    ...(params.claimedIdentity ? { insertReservation } : {}),
   });
 
   // `=== false`, não `!`: com `strict: false` o `!` não estreita a união.
   if (result.success === false) {
+    if (params.claimedIdentity && reservationLimitHit) return { ...CLAIMED_RESERVATION_LIMIT_RESULT };
     return { success: false, reason: result.reason, message: result.message };
   }
 

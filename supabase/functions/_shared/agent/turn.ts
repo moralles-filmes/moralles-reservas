@@ -570,6 +570,11 @@ export function createAgentTurn(io: AgentTurnIO) {
           const sendRes = await ctx.send(reminderText);
           if (sendRes.ok) {
             await appendToConversation(conv.id, conv.messages || [], "assistant", reminderText, { author: "automation" });
+          } else if (sendRes.error === "provider_timeout") {
+            // Desfecho DESCONHECIDO (contrato do `send`: o canal devolve
+            // `provider_timeout` quando o aviso pode ter saído). A janela fica
+            // gasta: devolvê-la faria a próxima inbound repetir o aviso.
+            jsonLog("warn", { requestId, evt: "handoff_reminder_outcome_unknown", convId: conv.id });
           } else {
             // O aviso não saiu: devolve a janela para a próxima inbound tentar.
             // Best-effort e com CAS sobre a marca deste turno — se outra

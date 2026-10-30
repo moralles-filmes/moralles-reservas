@@ -250,6 +250,17 @@ function cleanText(s: string | null | undefined, allowed: RegExp, max: number): 
 }
 
 /**
+ * Nome limpo pela allowlist do nome de perfil (letras, marcas, dígitos, espaço,
+ * ' . -), sem controle, bidi nem zero-width, numa linha, até 80 code points.
+ * A mesma regra serve ao nome do perfil na linha de identidade e ao nome que o
+ * contato informa em `link_customer_phone` (só cadastro novo nasce com ele).
+ * Vazio = ausente.
+ */
+export function cleanInstagramProfileName(name: string | null | undefined): string {
+  return cleanText(name, /[\p{L}\p{M}\p{Nd}' .-]/u, 80);
+}
+
+/**
  * Linha de identidade declarada (não verificada) para o prompt do Instagram. A entrada é endurecida:
  * username só [A-Za-z0-9._]; nome só letras/marcas/dígitos/espaço/' . -; telefone só dígitos e
  * `+ ( ) -`/espaço; sem controle, bidi nem zero-width. O que sobrar vazio é tratado como ausente.
@@ -260,7 +271,7 @@ export function buildInstagramIdentityLine(i: {
   linkedPhone: string | null;
 }): string {
   const username = cleanText(i.username, /[A-Za-z0-9._]/, 60);
-  const name = cleanText(i.name, /[\p{L}\p{M}\p{Nd}' .-]/u, 80);
+  const name = cleanInstagramProfileName(i.name);
   const who = [username ? `@${username}` : "", name].filter(Boolean).join(", ");
   const head = who ? `O cliente fala pelo Instagram (${who})` : "O cliente fala pelo Instagram";
 
