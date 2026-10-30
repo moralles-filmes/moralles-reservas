@@ -293,10 +293,11 @@ function PortalContent({
         </div>
       </header>
 
-      {/* Hero. No celular a capa é 3/1: em 16/9 ela vira o maior elemento da primeira
-          tela e o LCP passa a esperar o download da foto (a descrição deixa de vencer). */}
+      {/* Hero. No celular a capa é 5/2: em 16/9 ela vira o maior elemento da primeira
+          tela e o LCP passa a esperar o download da foto (a descrição deixa de vencer).
+          O cartão compacto (logo ao lado do nome, pouca sobreposição) deixa a foto aparecer. */}
       <section className="relative max-w-6xl mx-auto px-2.5 sm:px-6">
-        <div className={cn("relative mt-2.5 sm:mt-4 aspect-[3/1] sm:aspect-[16/9] max-h-[560px] w-full overflow-hidden rounded-panel bg-muted", !unit.hero_image_url && "ambient")}>
+        <div className={cn("relative mt-2.5 sm:mt-4 aspect-[5/2] sm:aspect-[16/9] max-h-[560px] w-full overflow-hidden rounded-panel bg-muted", !unit.hero_image_url && "ambient")}>
           {unit.hero_image_url ? (
             <img
               src={unit.hero_image_url}
@@ -312,9 +313,9 @@ function PortalContent({
 
         {/* Faixa identitária — sobreposta ao hero, com logo + nome */}
         <div className="px-3 sm:px-6">
-          <div className="surface rounded-card relative -mt-12 sm:-mt-20 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6 p-5 sm:p-7">
+          <div className="surface rounded-card relative -mt-6 sm:-mt-20 flex flex-row items-center gap-4 sm:gap-6 p-4 sm:p-7">
             <div
-              className="shrink-0 h-20 w-20 sm:h-28 sm:w-28 rounded-full overflow-hidden ring-4 ring-card bg-logo-plate shadow-depth-1 flex items-center justify-center"
+              className="shrink-0 h-14 w-14 sm:h-28 sm:w-28 rounded-full overflow-hidden ring-2 sm:ring-4 ring-card bg-logo-plate shadow-depth-1 flex items-center justify-center"
             >
               {unit.logo_url ? (
                 <img
@@ -323,17 +324,17 @@ function PortalContent({
                   className="w-full h-full object-cover"
                 />
               ) : (
-                <span className="font-display text-2xl sm:text-3xl font-semibold text-gold-ink">
+                <span className="font-display text-xl sm:text-3xl font-semibold text-gold-ink">
                   {initials}
                 </span>
               )}
             </div>
             <div className="min-w-0 text-foreground">
-              <h1 className="font-display text-3xl sm:text-5xl font-semibold leading-tight tracking-tight break-words">
+              <h1 className="font-display text-2xl sm:text-5xl font-semibold leading-tight tracking-tight break-words">
                 {unit.name}
               </h1>
               {cityLine && (
-                <p className="text-sm sm:text-base text-muted-foreground mt-2 flex items-center gap-1.5">
+                <p className="text-sm sm:text-base text-muted-foreground mt-1 sm:mt-2 flex items-center gap-1.5">
                   <MapPin className="h-4 w-4 shrink-0 text-gold-ink" />
                   {cityLine}
                 </p>
