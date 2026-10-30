@@ -313,7 +313,7 @@ function PortalContent({
 
         {/* Faixa identitária — sobreposta ao hero, com logo + nome */}
         <div className="px-3 sm:px-6">
-          <div className="surface rounded-card relative -mt-6 sm:-mt-20 flex flex-row items-center gap-4 sm:gap-6 p-4 sm:p-7">
+          <div className="glass-strong rounded-card relative -mt-6 sm:-mt-20 flex flex-row items-center gap-4 sm:gap-6 p-4 sm:p-7">
             <div
               className="shrink-0 h-14 w-14 sm:h-28 sm:w-28 rounded-full overflow-hidden ring-2 sm:ring-4 ring-card bg-logo-plate shadow-depth-1 flex items-center justify-center"
             >

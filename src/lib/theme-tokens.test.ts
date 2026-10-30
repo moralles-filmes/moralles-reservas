@@ -155,7 +155,7 @@ const PROJECT_TOKENS = [
   '--sidebar-accent', '--sidebar-accent-foreground', '--sidebar-border', '--sidebar-ring',
   '--status-free', '--status-reserved', '--status-arriving', '--status-seated',
   '--status-late', '--status-pending', '--glass-tint', '--glass-alpha',
-  '--glass-strong-alpha', '--glass-edge', '--glass-edge-alpha', '--glass-highlight',
+  '--glass-strong-tint', '--glass-strong-alpha', '--glass-edge', '--glass-edge-alpha', '--glass-highlight',
   '--glass-highlight-alpha', '--glass-blur', '--shadow-color',
   '--chart-reserva', '--chart-whatsapp', '--chart-trigger-rating', '--chart-fila',
   '--chart-used', '--chart-trigger-frequency', '--chart-passante',

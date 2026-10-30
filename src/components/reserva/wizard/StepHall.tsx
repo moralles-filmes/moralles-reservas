@@ -51,7 +51,7 @@ export function StepHall() {
 
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-foreground">
-          Selecione um ambiente
+          {compatible.length === 1 ? "Ambiente" : "Selecione um ambiente"}
         </h3>
 
         {noCompatible ? (
@@ -64,6 +64,8 @@ export function StepHall() {
           </div>
         ) : (
           <>
+            {/* Com um ambiente só, o seletor repetiria o cartão abaixo; a seleção é automática. */}
+            {compatible.length > 1 && (
             <div role="radiogroup" aria-label="Ambiente" onKeyDown={onHallsKeyDown} className="flex flex-wrap gap-1 rounded-panel bg-muted p-1">
               {compatible.map((hall) => {
                 const selected = state.hall_id === hall.id;
@@ -95,6 +97,7 @@ export function StepHall() {
                 );
               })}
             </div>
+            )}
             {selectedHall && (
               <HallDetails
                 hall={selectedHall}

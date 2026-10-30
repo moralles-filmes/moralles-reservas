@@ -19,6 +19,7 @@ const ALLOWED_BLUR_FILES = [
   "src/components/ui/sonner.tsx",
   "src/components/ui/toast.tsx",
   "src/pages/Index.tsx",
+  "src/pages/PublicPortal.tsx",
   "src/pages/Auth.tsx",
   "src/pages/ResetPassword.tsx",
   "src/pages/gestao/Conta.tsx",
