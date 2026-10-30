@@ -103,6 +103,16 @@ describe("escrita de notes", () => {
     expect(junto.updates[0]).toMatchObject({ party_size: 3 });
   });
 
+  it("update com notes null também é ignorado e não limpa a observação", async () => {
+    const row = { id: "r1", date: "2099-01-10", time: "20:00:00", party_size: 2, table_id: null };
+    const { db, updates } = fakeDb({ data: row, error: null });
+    const res = await updateReservationScoped(db as never, { reservation_code: "ABCD2345", notes: null as never }, { unitId: "u", customerId: "c" }, {
+      checkAvailability: async () => ({ available: true, message: "ok" }) as never,
+    });
+    expect(res.success).toBe(false);
+    expect(updates).toEqual([]);
+  });
+
   it("update com notes string vazia grava vazio (comportamento mantido)", async () => {
     const row = { id: "r1", date: "2099-01-10", time: "20:00:00", party_size: 2, table_id: null };
     const { db, updates } = fakeDb({ data: row, error: null });

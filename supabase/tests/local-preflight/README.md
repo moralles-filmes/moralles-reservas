@@ -3053,7 +3053,7 @@ que não é uuid; passam `pending` com `not_required` e mesa da unidade, e
 (fura o teto): os casos IG-2.5 e IG-7.4 a chamam como dono e o IG-7.6 confere
 que ninguém da API a executa (a chamada como `service_role` dá 42501). Controles:
 C-IG-7.7 (7958) tira do corpo real a trava de status, a de `payment_status`, a de
-valor e a da unidade da mesa; C-IG-7.8 (7959) dá EXECUTE de `record_…` a
+valor, a da unidade da mesa, a de status nulo e a de vencimento; C-IG-7.8 (7959) dá EXECUTE de `record_…` a
 `service_role`. O IG-7.3 passa a criar a mesa em `tables`. Resultado (30/10/2026,
 PG 18 local descartável na porta 55452): RED com a migration da 4.0b (7918,
 7919, 7922, 7932, 7958, 7959 e 7988 reprovam; 85/92); GREEN 92/92 após aplicar,

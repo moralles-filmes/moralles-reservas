@@ -5433,16 +5433,19 @@ begin
 end $$;
 
 -- C-IG-7.7: create (a) sem a trava de status, (b) sem a de payment_status,
--- (c) sem a de valor de pagamento, (d) sem a da unidade da mesa.
+-- (c) sem a de valor de pagamento, (d) sem a da unidade da mesa, (e) sem a de
+-- status nulo, (f) sem a de vencimento de pagamento.
 do $$
 declare
-  v_def text; v_mut text; s1 text; s2 text; s3 text; s4 text; d text;
+  v_def text; v_mut text; s1 text; s2 text; s3 text; s4 text; s5 text; s6 text; d text;
   frags text[] := array[
     '(p_reservation->>''status'') not in (''pending'', ''confirmed'')',
     'coalesce(p_reservation->>''payment_status'', ''not_required'') <> ''not_required''',
     '(p_reservation->>''payment_amount_cents'') is not null',
-    'and t.unit_id = v_c_unit'];
-  repl text[] := array['false', 'false', 'false', 'and true'];
+    'and t.unit_id = v_c_unit',
+    '(p_reservation->>''status'') is null',
+    '(p_reservation->>''payment_expires_at'') is not null'];
+  repl text[] := array['false', 'false', 'false', 'and true', 'false', 'false'];
   res text[] := array[]::text[];
   i int;
 begin
@@ -5458,20 +5461,24 @@ begin
       when others then res := res || ('ERRO ' || sqlstate || ':' || sqlerrm);
     end;
   end loop;
-  s1 := res[1]; s2 := res[2]; s3 := res[3]; s4 := res[4];
+  s1 := res[1]; s2 := res[2]; s3 := res[3]; s4 := res[4]; s5 := res[5]; s6 := res[6];
   d := pg_temp.ig79_case_77();
   raise notice 'C-IG-7.7 sem trava de status: %', s1;
   raise notice 'C-IG-7.7 sem trava de pagamento: %', s2;
   raise notice 'C-IG-7.7 sem trava de valor: %', s3;
   raise notice 'C-IG-7.7 sem unidade da mesa: %', s4;
-  insert into t_res values (7958, 'C-IG-7.7 create sem a trava de status, de payment_status, de valor de pagamento e da unidade da mesa: IG-7.7 reprova nos quatro; restaurado passa',
+  raise notice 'C-IG-7.7 sem status nulo: %', s5;
+  raise notice 'C-IG-7.7 sem vencimento: %', s6;
+  insert into t_res values (7958, 'C-IG-7.7 create sem a trava de status, de payment_status, de valor de pagamento, da unidade da mesa, de status nulo e de vencimento: IG-7.7 reprova nos seis; restaurado passa',
     case when s1 like 'FALHOU cancelada=________-____-____-____-____________|cancelled|-%'
           and s2 like 'FALHOU%pago=________-____-____-____-____________|confirmed|paid%'
           and s3 like 'FALHOU%valor=________-____-____-____-____________|confirmed|-%'
           and s4 like 'FALHOU%mesa_outra_unidade=________-____-____-____-____________|confirmed|-%'
+          and s5 like 'FALHOU%status_nulo=ERR 23502:%'
+          and s6 like 'FALHOU%vencimento=________-____-____-____-____________|confirmed|-%'
           and d = 'PASSOU'
           and pg_get_functiondef('public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure) = v_def then 'PASSOU'
-         else 'FALHOU sem_status=' || s1 || ' sem_pagamento=' || s2 || ' sem_valor=' || s3 || ' sem_mesa=' || s4 || ' restaurado=' || d end);
+         else 'FALHOU sem_status=' || s1 || ' sem_pagamento=' || s2 || ' sem_valor=' || s3 || ' sem_mesa=' || s4 || ' sem_status_nulo=' || s5 || ' sem_vencimento=' || s6 || ' restaurado=' || d end);
 end $$;
 
 -- C-IG-7.8: EXECUTE de record_ para service_role (o teto volta a ser furável).
