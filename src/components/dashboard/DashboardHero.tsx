@@ -13,12 +13,15 @@ interface DashboardHeroProps {
   hours: ArrivalHour[];
   todayStats?: { total_hoje: number; confirmadas_hoje: number; pendentes_hoje: number; pessoas_hoje: number };
   unitSlug: string;
-  onNewReservation: () => void;
+  /** Ausente quando o diálogo de reserva manual não pode abrir (unidade sem organização carregada). */
+  onNewReservation?: () => void;
   aside: ReactNode;
   isLoading?: boolean;
+  isError?: boolean;
+  onRetry?: () => void;
 }
 
-export function DashboardHero({ dateLabel, hours, todayStats, unitSlug, onNewReservation, aside, isLoading }: DashboardHeroProps) {
+export function DashboardHero({ dateLabel, hours, todayStats, unitSlug, onNewReservation, aside, isLoading, isError, onRetry }: DashboardHeroProps) {
   const sentence = arrivalsSentence(hours);
   return (
     <section className="glass rounded-panel grid gap-8 p-5 sm:p-8 lg:grid-cols-[1fr_320px]">
@@ -29,6 +32,10 @@ export function DashboardHero({ dateLabel, hours, todayStats, unitSlug, onNewRes
             <h1 className="sr-only">Dashboard</h1>
             <Skeleton data-testid="hero-skeleton" className="h-[1.02em] w-3/4 text-[38px] sm:text-[48px] lg:text-[58px]" />
           </>
+        ) : isError ? (
+          <h1 className="text-[30px] sm:text-[38px] font-semibold tracking-[-0.03em] leading-[1.1]">
+            Não foi possível carregar as reservas de hoje
+          </h1>
         ) : (
           <h1 className="text-[38px] sm:text-[48px] lg:text-[58px] font-semibold tracking-[-0.045em] leading-[1.02]">
             {sentence ?? "Nenhuma reserva para hoje"}
@@ -36,7 +43,8 @@ export function DashboardHero({ dateLabel, hours, todayStats, unitSlug, onNewRes
         )}
         <div className="flex flex-wrap gap-3">
           <Button asChild><Link to={`/o/${unitSlug}`}>Abrir operacional</Link></Button>
-          <Button variant="outline" onClick={onNewReservation}>Nova reserva</Button>
+          {isError && onRetry && <Button variant="outline" onClick={onRetry}>Tentar de novo</Button>}
+          {onNewReservation && <Button variant="outline" onClick={onNewReservation}>Nova reserva</Button>}
         </div>
         {isLoading ? (
           <Skeleton className="h-[220px] w-full" />

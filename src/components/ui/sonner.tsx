@@ -13,7 +13,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
       toastOptions={{
         classNames: {
           toast:
-            "group toast glass-strong rounded-block group-[.toaster]:text-foreground",
+            // Toasts empilham: superfície opaca sem desfoque (vidro só em superfície única).
+            "group toast surface bg-popover rounded-block group-[.toaster]:text-foreground",
           description: "group-[.toast]:text-muted-foreground",
           actionButton: "group-[.toast]:bg-primary group-[.toast]:text-primary-foreground",
           cancelButton: "group-[.toast]:bg-muted group-[.toast]:text-muted-foreground",

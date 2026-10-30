@@ -4,6 +4,7 @@ import { ptBR } from "date-fns/locale";
 import { useConversations } from "@/hooks/useConversations";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getConversationDisplayName } from "@/lib/utils";
 
 export function ConversationsWaitingPanel({ unitId, unitSlug }: { unitId: string; unitSlug: string }) {
   const { data, isLoading, isError, refetch } = useConversations(unitId, "awaiting_human");
@@ -25,7 +26,7 @@ export function ConversationsWaitingPanel({ unitId, unitSlug }: { unitId: string
         <ul className="space-y-3">
           {data.slice(0, 4).map((conversation) => (
             <li key={conversation.id} className="space-y-1">
-              <p className="truncate font-medium">{conversation.contact_name ?? conversation.customer?.name ?? "Contato sem nome"}</p>
+              <p className="truncate font-medium">{getConversationDisplayName(conversation)}</p>
               <p className="text-xs text-muted-foreground">Aguardando atendente</p>
               {conversation.last_message_at && Number.isFinite(new Date(conversation.last_message_at).getTime()) && (
                 <p className="text-xs text-tertiary">há {formatDistanceToNowStrict(new Date(conversation.last_message_at), { locale: ptBR })}</p>

@@ -161,29 +161,6 @@ export function SidebarActionButton({
   return withTooltip(btn, label, collapsed);
 }
 
-/** Cabeçalho de marca (ícone dourado + nome do painel). Recolhe pra ícone centrado. */
-export function SidebarBrand({ icon: Icon, label }: { icon: IconType; label: string }) {
-  const { collapsed } = useSidebarCollapse();
-  if (collapsed) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div className="h-12 flex items-center justify-center">
-            <Icon className="h-5 w-5 text-gold" />
-          </div>
-        </TooltipTrigger>
-        <TooltipContent side="right">{label}</TooltipContent>
-      </Tooltip>
-    );
-  }
-  return (
-    <div className="h-14 flex items-center px-5 gap-2">
-      <Icon className="h-5 w-5 text-gold shrink-0" />
-      <span className="font-semibold text-sm text-sidebar-foreground truncate">{label}</span>
-    </div>
-  );
-}
-
 /** Texto de rodapé (ex.: e-mail do admin) — some quando recolhido. */
 export function SidebarFootnote({ children }: { children: React.ReactNode }) {
   const { collapsed } = useSidebarCollapse();

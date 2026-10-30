@@ -87,8 +87,10 @@ export default function Dashboard() {
         hours={hours}
         todayStats={stats}
         unitSlug={unitSlug}
-        onNewReservation={() => setManualOpen(true)}
+        onNewReservation={unitId && unit?.organization_id ? () => setManualOpen(true) : undefined}
         isLoading={isLoadingReservasHoje}
+        isError={isErrorReservasHoje}
+        onRetry={() => refetchReservasHoje()}
         aside={
           <UpcomingArrivalsPanel
             reservas={reservasHoje}

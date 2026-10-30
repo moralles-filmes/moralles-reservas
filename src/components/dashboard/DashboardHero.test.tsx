@@ -28,4 +28,18 @@ describe("DashboardHero", () => {
     expect(screen.queryByText("Nenhuma reserva para hoje")).toBeNull();
     expect(screen.getByRole("heading", { level: 1, name: "Dashboard" })).toBeTruthy();
   });
+
+  it("erro de leitura não se passa por dia vazio", () => {
+    const onRetry = vi.fn();
+    render(<MemoryRouter><DashboardHero dateLabel="Hoje" hours={[]} unitSlug="casa" onNewReservation={vi.fn()} aside={null} isError onRetry={onRetry} /></MemoryRouter>);
+    expect(screen.queryByText("Nenhuma reserva para hoje")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Não foi possível carregar as reservas de hoje" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Tentar de novo" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("sem como abrir o diálogo, não mostra Nova reserva", () => {
+    render(<MemoryRouter><DashboardHero dateLabel="Hoje" hours={[]} unitSlug="casa" aside={null} /></MemoryRouter>);
+    expect(screen.queryByRole("button", { name: "Nova reserva" })).toBeNull();
+  });
 });

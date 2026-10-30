@@ -93,7 +93,7 @@ const ResponsiveDialogContent = React.forwardRef<
             "h-9 w-9 coarse:h-11 coarse:w-11 rounded-full inline-flex items-center justify-center",
             "bg-background/80 text-foreground/70",
             "hover:text-foreground hover:bg-muted transition-colors",
-            "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
           )}
           aria-label="Fechar"
         >
