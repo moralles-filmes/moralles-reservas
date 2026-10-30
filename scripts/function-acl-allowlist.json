@@ -658,6 +658,14 @@
       "why": "Restaura (rollback) uma versão existente do mesmo slot da camada global do prompt. Mesmos guardas da publicação: platform_admin real do JWT (42501 `prompt_forbidden`), FOR UPDATE no slot, 40001 `prompt_version_conflict`, nota validada, versão de outro slot, inexistente ou já ativa recusada com 22023 `prompt_version_invalid` (FK composta como rede). Grava ledger `rollback` com a anterior. anon e service_role sem EXECUTE. Medido no pré-voo 80 (P2, P3, P5, P7) com controles C5, C6 e C8.",
       "security_definer": true,
       "advisor_lints": ["0029"]
+    },
+    {
+      "name": "save_hall_plan",
+      "args": "p_hall_id uuid, p_expected_updated_at timestamptz, p_hall jsonb, p_tables jsonb",
+      "roles": ["authenticated"],
+      "why": "Owner/gerente/admin salva a planta do salão da própria unidade; INVOKER sobre RLS; ids validados contra o salão. O papel é decidido pelo trigger app_private.guard_plan_write em modo estrito (GUC local), pois authenticated não tem USAGE em app_private; salão alheio ou inexistente e mesa de outro salão dão o mesmo 42501 hall_plan_forbidden. Medido no pré-voo 81 (L-9 a L-13, L-16, L-18) com controles L-CP e L-CP2.",
+      "security_definer": false,
+      "advisor_lints": []
     }
   ]
 }
