@@ -2,6 +2,8 @@
 // REGRA: incluir um arquivo em ALLOWED_BLUR_FILES exige que a superfície com
 // backdrop-filter seja ÚNICA na tela (sobreposição, casco, painel principal).
 // Nunca aplicar glass/backdrop-blur em item repetido de lista — para esses, usar .surface.
+// Exceção aceita: o cartão do PublicPortal fica sob o diálogo do wizard (duas camadas com
+// desfoque enquanto ele está aberto); o diálogo cobre o cartão, então o custo é tolerado.
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -19,6 +21,7 @@ const ALLOWED_BLUR_FILES = [
   "src/components/ui/sonner.tsx",
   "src/components/ui/toast.tsx",
   "src/pages/Index.tsx",
+  "src/pages/PublicPortal.tsx",
   "src/pages/Auth.tsx",
   "src/pages/ResetPassword.tsx",
   "src/pages/gestao/Conta.tsx",

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Link, NavLink, useLocation, useMatch, useResolvedPath } from "react-router-dom";
 import { ChevronDown, Copy } from "lucide-react";
 import { toast } from "sonner";
@@ -13,7 +13,7 @@ import { useSidebarCollapse } from "./sidebar-context";
    dourado de 2px à esquerda. Superfícies únicas: sem vidro nos itens repetidos.
    ──────────────────────────────────────────────────────────────────────────── */
 export const navItemBase =
-  "flex items-center gap-3 px-3 py-2 coarse:min-h-11 rounded-item text-sm transition-colors";
+  "flex items-center gap-3 px-3 py-2 coarse:min-h-11 rounded-item text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset";
 export const navItemActive =
   "relative bg-sidebar-accent text-sidebar-accent-foreground font-medium before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[2px] before:rounded-full before:bg-gold";
 export const navItemIdle =
@@ -117,7 +117,7 @@ export function SidebarDisabledItem({ icon: Icon, label }: { icon: IconType; lab
     <span
       className={cn(
         navItemBase,
-        "text-muted-foreground/50 cursor-not-allowed select-none",
+        "text-muted-foreground/70 cursor-not-allowed select-none",
         collapsed && "justify-center",
       )}
       aria-disabled="true"
@@ -151,6 +151,7 @@ export function SidebarActionButton({
         "relative w-full text-muted-foreground hover:bg-sidebar-accent/50",
         collapsed ? "justify-center" : "hover:text-foreground",
         danger && "hover:text-destructive",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
       )}
     >
       <Icon className="h-4 w-4 shrink-0" />
@@ -211,7 +212,7 @@ export function SidebarCopyCode({ slug }: { slug: string }) {
     <button
       type="button"
       onClick={handleCopy}
-      className="w-full flex items-center gap-2 px-3 py-1.5 rounded-item text-xs text-muted-foreground bg-muted hover:bg-muted/70 transition-colors group"
+      className="w-full flex items-center gap-2 px-3 py-1.5 rounded-item text-xs text-muted-foreground bg-muted hover:bg-muted/70 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <Copy className="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" />
       <span className="flex-1 text-left">Copiar código</span>
@@ -249,6 +250,7 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
   const location = useLocation();
   const isInside = location.pathname.startsWith(matchPrefix);
   const [open, setOpen] = useState(isInside);
+  const groupItemsId = useId();
 
   useEffect(() => {
     if (isInside) setOpen(true);
@@ -279,6 +281,7 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
         onClick={() => setOpen((v) => !v)}
         className={cn(navItemBase, "w-full", isInside ? navItemActive : navItemIdle)}
         aria-expanded={open}
+        aria-controls={groupItemsId}
       >
         <Icon className="h-4 w-4 shrink-0" />
         <span className="flex-1 text-left truncate">{label}</span>
@@ -286,8 +289,8 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
           className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
         />
       </button>
-      {open && (
-        <div className="mt-0.5 ml-3 pl-3 border-l border-sidebar-border/50 space-y-0.5">
+      <div id={groupItemsId} hidden={!open}>
+        {open && <div className="mt-0.5 ml-3 pl-3 border-l border-sidebar-border/50 space-y-0.5">
           {items.map((child) => {
             const ChildIcon = child.icon;
             return (
@@ -297,7 +300,7 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
                 end={child.end}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-item text-sm transition-colors",
+                    "flex items-center gap-2 px-3 py-1.5 rounded-item text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                     isActive ? navItemActive : navItemIdle,
                   )
                 }
@@ -311,8 +314,8 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
               </NavLink>
             );
           })}
-        </div>
-      )}
+        </div>}
+      </div>
     </div>
   );
 }

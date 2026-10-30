@@ -251,7 +251,7 @@ export default function PlatformIntegracoes() {
                   <code className="font-mono bg-background border px-2 py-1 rounded text-xs truncate flex-1 min-w-0">
                     {WEBHOOK_URL}
                   </code>
-                  <Button size="sm" variant="ghost" className="h-7 px-2 shrink-0" onClick={handleCopyWebhook}>
+                  <Button size="sm" variant="ghost" className="h-7 px-2 shrink-0" aria-label={copiedWebhook ? "URL copiada" : "Copiar URL do webhook"} onClick={handleCopyWebhook}>
                     {copiedWebhook ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
                   </Button>
                 </div>

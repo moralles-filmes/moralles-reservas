@@ -416,7 +416,7 @@ export default function Fila() {
                     </Button>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button variant="ghost" size="icon">
+                        <Button variant="ghost" size="icon" aria-label="Remover da fila">
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
                       </AlertDialogTrigger>
@@ -453,13 +453,13 @@ export default function Fila() {
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <div className="space-y-1">
-              <Label>Nome do cliente *</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Maria Costa" />
+              <Label htmlFor="fila-name">Nome do cliente *</Label>
+              <Input id="fila-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Maria Costa" />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label>WhatsApp (opcional)</Label>
-                <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />
+                <Label htmlFor="fila-phone">WhatsApp (opcional)</Label>
+                <Input id="fila-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />
               </div>
               <div className="space-y-1">
                 <Label htmlFor="fila-party">Pessoas *</Label>
@@ -473,12 +473,12 @@ export default function Fila() {
               </div>
             </div>
             <div className="space-y-1">
-              <Label>Horário preferencial (opcional)</Label>
-              <Input type="time" value={requestedTime} onChange={(e) => setRequestedTime(e.target.value)} />
+              <Label htmlFor="fila-requested-time">Horário preferencial (opcional)</Label>
+              <Input id="fila-requested-time" type="time" value={requestedTime} onChange={(e) => setRequestedTime(e.target.value)} />
             </div>
             <div className="space-y-1">
-              <Label>Observações (opcional)</Label>
-              <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ex: aniversário, alergia..." />
+              <Label htmlFor="fila-notes">Observações (opcional)</Label>
+              <Input id="fila-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ex: aniversário, alergia..." />
             </div>
             <Button
               onClick={handleSubmit}

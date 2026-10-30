@@ -38,11 +38,12 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+        "flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active
           ? "border-primary text-primary"
           : "border-transparent text-muted-foreground hover:text-foreground"
       )}
+      aria-pressed={active}
     >
       <Icon className="h-4 w-4" />
       {children}
@@ -65,6 +66,9 @@ function ListView({ unitId }: { unitId: string }) {
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
+            type="search"
+            autoComplete="off"
+            aria-label="Buscar por nome ou telefone"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar por nome ou telefone"

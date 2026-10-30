@@ -135,7 +135,7 @@ export default function WidgetPortal() {
               className="h-12 w-12 shrink-0 rounded-full object-cover ring-2 ring-background"
             />
           )}
-          <h2 className="font-display text-2xl font-semibold tracking-tight break-words min-w-0">{unit.name}</h2>
+          <h1 className="font-display text-2xl font-semibold tracking-tight break-words min-w-0">{unit.name}</h1>
         </div>
 
         {galleryPhotos.length > 0 && (

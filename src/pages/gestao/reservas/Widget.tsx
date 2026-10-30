@@ -166,10 +166,10 @@ export default function Widget() {
           </Table>
         </Card>
 
-        <Card className="p-4 space-y-3 opacity-60">
+        <Card className="p-4 space-y-3">
           <header className="flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold">Exibir banner de cardápio</h3>
-            <Switch checked={false} disabled />
+            <h3 className="text-sm font-semibold text-muted-foreground">Exibir banner de cardápio</h3>
+            <Switch checked={false} disabled aria-label="Exibir banner de cardápio" />
           </header>
           <p className="text-xs text-muted-foreground leading-relaxed">
             Quando esta opção está ativada, exibimos um banner com o seu cardápio na tela de

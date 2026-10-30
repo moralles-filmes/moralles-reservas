@@ -33,7 +33,10 @@
     --accent: 220 11.1% 89.4%;              /* #E1E3E7 */
     --accent-foreground: 223 18% 8%;
 
-    --destructive: 3.2 61.8% 48.2%;           /* #C7372F */
+    /* destructive, info, success e warning também viram texto, inclusive em selo
+       bg-<cor>/10 sobre --secondary: a luminosidade foi escolhida para esse pior
+       caso passar de 4.5:1 (theme-tokens.test.ts). */
+    --destructive: 3.2 61.8% 40.8%;           /* #A82F28 */
     --destructive-foreground: 0 0% 100%;
 
     --border: 220 9.1% 87.1%;              /* #DBDDE1 */
@@ -47,7 +50,7 @@
     --gold-foreground: 0 0% 100%;       /* #FFFFFF */
     --gold-ink: 38.7 58.4% 30.2%;             /* #7A5A20 */
     --logo-plate: 0 0% 100%;                  /* placa clara atrás do logo, nos dois temas */
-    --info: 217.7 59.3% 45.3%;                /* #2F62B8 */
+    --info: 217.7 59.3% 41.8%;                /* #2B5AAA */
     --info-foreground: 0 0% 100%;
     --surface-elevated: 0 0% 100%;
 
@@ -60,10 +63,10 @@
     --sidebar-border: 217.5 10.5% 85.1%;      /* #D5D8DD */
     --sidebar-ring: 37.6 49.5% 40.4%;         /* #9A7434 */
 
-    --success: 156.3 59.5% 30%;             /* #1F7A56 */
+    --success: 156.3 59.5% 25.9%;           /* #1B694A */
     --success-foreground: 0 0% 100%;
-    --warning: 38 80% 45%;
-    --warning-foreground: 240 6% 10%;
+    --warning: 38 80% 27.3%;                /* #7D540E */
+    --warning-foreground: 0 0% 100%;
 
     /* Status operacionais */
     --status-free: 216.9 7.6% 33.5%;          /* #4F545C */
@@ -76,6 +79,7 @@
     /* Vidro */
     --glass-tint: 0 0% 100%;
     --glass-alpha: 0.68;
+    --glass-strong-tint: 0 0% 100%;
     --glass-strong-alpha: 0.82;
     --glass-edge: 225 20% 7.8%;           /* HSL de #101218 */
     --glass-edge-alpha: 0.08;
@@ -172,7 +176,9 @@
     /* Vidro */
     --glass-tint: 0 0% 100%;
     --glass-alpha: 0.045;
-    --glass-strong-alpha: 0.1;
+    /* Tom do cartão, não branco: diálogos sólidos o bastante para a página de trás não manchar. */
+    --glass-strong-tint: 222.9 14.9% 13%;  /* um pouco acima do --card para popover sobre cartão destacar */
+    --glass-strong-alpha: 0.82;
     --glass-edge: 0 0% 100%;
     --glass-edge-alpha: 0.08;
     --glass-highlight: 0 0% 100%;
@@ -237,7 +243,7 @@
   /* .glass-strong — vidro desfocado mais opaco, para sobreposições que precisam
      de contraste. Também restrito a superfícies únicas na tela. */
   .glass-strong {
-    background-color: hsl(var(--glass-tint) / var(--glass-strong-alpha));
+    background-color: hsl(var(--glass-strong-tint) / var(--glass-strong-alpha));
     border: 1px solid hsl(var(--glass-edge) / var(--glass-edge-alpha));
     box-shadow: inset 0 1px 0 hsl(var(--glass-highlight) / var(--glass-highlight-alpha)),
       0 4px 12px hsl(var(--shadow-color) / 0.14), 0 40px 80px -32px hsl(var(--shadow-color) / 0.55);
@@ -291,6 +297,12 @@
   .theme-admin * {
     transition: background-color 0.25s ease, border-color 0.25s ease, color 0.2s ease;
   }
+}
+
+/* A legenda do recharts pinta o texto com a cor da série (estilo inline), que no Dia
+   fica abaixo de 4.5:1. O texto vai para o token; a amostra ao lado mantém a cor. */
+.recharts-legend-item-text {
+  color: hsl(var(--muted-foreground)) !important;
 }
 
 /* Fallback: navegadores sem backdrop-filter recebem cor sólida no lugar do vidro. */

@@ -54,8 +54,8 @@ export function WizardSummary({ includeHall = false }: WizardSummaryProps) {
       <button
         type="button"
         onClick={() => actions.goToStep(1)}
-        className="shrink-0 rounded-full coarse:min-h-11 text-xs font-medium text-primary hover:text-primary/80 inline-flex items-center gap-1 px-2 py-1 hover:bg-primary/5 transition-colors"
-        aria-label="Editar passo 1"
+        className="shrink-0 rounded-full coarse:min-h-11 text-xs font-medium text-primary hover:text-primary/80 inline-flex items-center gap-1 px-2 py-1 hover:bg-primary/5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-label="Editar data, horário e pessoas"
       >
         <Pencil className="h-3 w-3" />
         Editar

@@ -157,7 +157,7 @@ export default function Formulario() {
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Excluir campo">
                             <Trash2 className="h-3.5 w-3.5 text-destructive" />
                           </Button>
                         </AlertDialogTrigger>

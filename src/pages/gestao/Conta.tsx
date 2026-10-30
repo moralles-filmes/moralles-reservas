@@ -533,6 +533,7 @@ export default function Conta() {
               <CardContent>
                 <div className="flex items-start gap-3">
                   <Switch
+                    aria-label="Exibir na listagem pública"
                     checked={form.is_public}
                     onCheckedChange={(v) => setForm((f) => ({ ...f, is_public: v }))}
                     disabled={!canEdit}
@@ -866,6 +867,7 @@ export default function Conta() {
 
                 <div className="flex items-start gap-3">
                   <Switch
+                    aria-label="Ajustar coordenadas manualmente"
                     checked={form.showCoords}
                     onCheckedChange={(v) =>
                       setForm((f) => ({ ...f, showCoords: v }))
@@ -1081,6 +1083,7 @@ function CuisineMultiSelect({ value, onChange, disabled }: CuisineMultiSelectPro
           type="button"
           variant="secondary"
           size="sm"
+          aria-label="Adicionar categoria"
           onClick={() => add(input)}
           disabled={disabled || !input.trim()}
         >

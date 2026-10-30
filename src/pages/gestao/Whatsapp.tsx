@@ -104,11 +104,13 @@ function ConnectionQr({ value }: { value: string }) {
     QRCode.toCanvas(canvasRef.current, value, {
       width: 240,
       margin: 2,
+      // QR fica escuro sobre branco nos dois temas: leitores falham com contraste invertido.
       color: { dark: "#0f172a", light: "#ffffff" },
     }).catch(() => undefined);
   }, [imageSource, value]);
 
   return (
+    // Fundo branco fixo: o QR (e a imagem do provider) precisa da margem clara para ser lido.
     <div className="flex justify-center rounded-xl border bg-white p-3">
       {imageSource ? (
         <img

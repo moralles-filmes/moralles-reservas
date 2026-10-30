@@ -175,7 +175,10 @@ function CityChip({ city, cities, open, setOpen, onSelect }: CityChipProps) {
               </span>
             </span>
           ) : (
-            <span className="font-medium">Selecione sua cidade</span>
+            <span className="font-medium">
+              <span aria-hidden="true" className="sm:hidden">Cidade</span>
+              <span className="sr-only sm:not-sr-only">Selecione sua cidade</span>
+            </span>
           )}
         </button>
       </DialogTrigger>
