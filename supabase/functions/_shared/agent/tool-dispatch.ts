@@ -16,8 +16,10 @@
  *   no ledger local só se `recordReservation` resolveu: o ledger do banco é a
  *   autoridade, e uma reserva que não está nele também não estará no próximo
  *   turno — abri-la só neste turno daria acesso que o banco não sustenta.
- * - O que volta ao LLM não leva `notes` da reserva nem campo do cadastro (a
- *   equipe pode anotar alergia/VIP na reserva).
+ * - O que volta ao LLM passa por allowlist de chaves: sem `notes` da reserva
+ *   (a equipe pode anotar alergia/VIP nela) e sem campo do cadastro. Chave
+ *   nova num resultado é descartada até entrar na lista.
+ * - `get_reservation` não oferece `phone` (o escopo vem da porta, não do LLM).
  * - `create_reservation` não oferece nem repassa `customer_email`: o e-mail iria
  *   para o cadastro do dono do telefone e desviaria a confirmação por e-mail
  *   (com o nome cadastrado) para quem digitou o número.
@@ -75,20 +77,31 @@ const LINK_CUSTOMER_PHONE_TOOL = {
   },
 };
 
-/** `create_reservation` sem `customer_email`: identidade declarada não grava e-mail. */
-function withoutCustomerEmail(tool: (typeof agentTools)[number]): (typeof agentTools)[number] {
-  if (tool.name !== "create_reservation") return tool;
-  const { customer_email: _email, ...properties } = tool.parameters.properties;
+/**
+ * Parâmetros que somem do schema com identidade declarada: `customer_email`
+ * (não grava e-mail no cadastro do dono do telefone) e o `phone` de
+ * `get_reservation` (o escopo vem da porta).
+ */
+const CLAIMED_IDENTITY_HIDDEN_PARAMS: Record<string, string> = {
+  create_reservation: "customer_email",
+  get_reservation: "phone",
+};
+
+function forClaimedIdentity(tool: (typeof agentTools)[number]): (typeof agentTools)[number] {
+  const hidden = CLAIMED_IDENTITY_HIDDEN_PARAMS[tool.name];
+  if (!hidden) return tool;
+  const properties = { ...tool.parameters.properties };
+  delete properties[hidden];
   return { ...tool, parameters: { ...tool.parameters, properties } };
 }
 
 /**
- * Sem porta, exatamente `agentTools`. Com porta, `create_reservation` sem
- * `customer_email` e `link_customer_phone` no fim.
+ * Sem porta, exatamente `agentTools`. Com porta, sem os parâmetros de
+ * `CLAIMED_IDENTITY_HIDDEN_PARAMS` e com `link_customer_phone` no fim.
  */
 export function agentToolsFor(ctx: Pick<ChannelContext, "claimedIdentity">): typeof agentTools {
   return ctx.claimedIdentity
-    ? [...agentTools.map(withoutCustomerEmail), LINK_CUSTOMER_PHONE_TOOL]
+    ? [...agentTools.map(forClaimedIdentity), LINK_CUSTOMER_PHONE_TOOL]
     : agentTools;
 }
 
@@ -99,32 +112,30 @@ export interface ToolDispatchState {
 }
 
 /**
- * Campos que nunca voltam ao LLM com identidade declarada: observação da
- * reserva e dado do cadastro (D4). Remoção recursiva, por nome de chave.
+ * Chaves que podem voltar ao LLM com identidade declarada (D4). É a união do
+ * que as ferramentas devolvem hoje (`tools.ts`, `agent-reservation-tools.ts`,
+ * os resultados fixos deste arquivo), menos `notes`: allowlist, não denylist —
+ * campo novo num resultado (do cadastro, por exemplo) é descartado até alguém o
+ * acrescentar aqui conscientemente.
  */
-const PRIVATE_RESULT_KEYS = new Set([
-  "notes",
-  "name",
-  "customer_name",
-  "allergies",
-  "dietary_restrictions",
-  "vip_notes",
-  "preferred_table_location",
-  "birthday",
-  "email",
-  "emails",
-  "customer_id",
-  "id",
+const CLAIMED_IDENTITY_RESULT_KEYS = new Set([
+  // desfecho
+  "success", "found", "available", "ok", "reason", "message", "error",
+  // reserva (get, list, create)
+  "reservation_code", "date", "time", "party_size", "status",
+  // lista
+  "count", "reservations",
 ]);
 
+/** Resultado de ferramenta como pode chegar ao LLM com identidade declarada. */
 // deno-lint-ignore no-explicit-any
-function withoutPrivateFields(value: any): any {
-  if (Array.isArray(value)) return value.map(withoutPrivateFields);
+export function claimedIdentityResult(value: any): any {
+  if (Array.isArray(value)) return value.map(claimedIdentityResult);
   if (!value || typeof value !== "object") return value;
   // deno-lint-ignore no-explicit-any
   const out: Record<string, any> = {};
   for (const [k, v] of Object.entries(value)) {
-    if (!PRIVATE_RESULT_KEYS.has(k)) out[k] = withoutPrivateFields(v);
+    if (CLAIMED_IDENTITY_RESULT_KEYS.has(k)) out[k] = claimedIdentityResult(v);
   }
   return out;
 }
@@ -294,7 +305,7 @@ export function createToolDispatcher(a: {
             result = { error: `Tool desconhecida: ${name}` };
         }
       }
-      if (port) result = withoutPrivateFields(result);
+      if (port) result = claimedIdentityResult(result);
       jsonLog("info", { requestId, evt: "tool_result", channelId, unitId, name, result: summarizeToolResult(result) });
       return JSON.stringify(result);
     } catch (err) {

@@ -664,6 +664,18 @@ describe("dead letter visível: promover sem atropelar quem está atendendo", ()
     expect(PROMOVE).toMatch(/new Set<string>\(\)/);
   });
 
+  it("a conversa promovida é a do WhatsApp, nunca a de outro canal do mesmo cliente", () => {
+    // Com o Instagram, `link_instagram_contact_customer` grava na conversa do
+    // Direct o `customer_id` do dono do telefone (identidade declarada). Sem o
+    // filtro de canal, a dead letter do WhatsApp poderia promover a conversa
+    // do Instagram — de quem só digitou o número.
+    const inicio = PROMOVE.indexOf('.from("conversations")\n          .select("id")');
+    expect(inicio, "a busca da conversa da promoção não foi encontrada").toBeGreaterThan(-1);
+    const busca = PROMOVE.slice(inicio, PROMOVE.indexOf(".maybeSingle()", inicio));
+    expect(busca).toContain('.eq("customer_id", customer.id)');
+    expect(busca, "a busca da conversa não filtra o canal").toContain('.eq("channel", "whatsapp")');
+  });
+
   it("NUNCA cria conversa — só promove a que existe", () => {
     // Criar uma para marcá-la em handoff inventaria thread vazia no painel.
     expect(PROMOVE).not.toMatch(/\.from\("conversations"\)\s*\n\s*\.insert/);

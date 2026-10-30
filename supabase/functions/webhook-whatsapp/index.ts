@@ -1132,11 +1132,14 @@ async function promoteDeadLetterToHandoff(eventId: string): Promise<void> {
           continue;
         }
 
+        // Só a conversa do WhatsApp: a do Instagram pode levar o mesmo
+        // `customer_id` por identidade declarada (link_instagram_contact_customer).
         const { data: conv } = await supabase
           .from("conversations")
           .select("id")
           .eq("unit_id", unitId)
           .eq("customer_id", customer.id)
+          .eq("channel", "whatsapp")
           .order("updated_at", { ascending: false })
           .limit(1)
           .maybeSingle();

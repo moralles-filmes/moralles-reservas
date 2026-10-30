@@ -42,6 +42,7 @@ type DispatchModule = {
     supabase: unknown; requestId: string; ctx: ChannelContext; conv: ChannelContext["conversation"]; state: DispatchState;
   }): (name: string, input: unknown) => Promise<string>;
   NEED_PHONE_RESULT: Record<string, unknown>;
+  claimedIdentityResult(value: unknown): unknown;
 };
 const load = async () => (await import(/* @vite-ignore */ DISPATCH_MODULE)) as DispatchModule;
 
@@ -175,9 +176,11 @@ describe("agentToolsFor", () => {
     const before = JSON.stringify(agentTools);
     const tools = agentToolsFor({ claimedIdentity: fakePort().port });
     expect(tools.slice(0, -1).map((t) => t.name)).toEqual(agentTools.map((t) => t.name));
-    // Só `create_reservation` muda (sem `customer_email`, C1); as demais são as mesmas.
-    expect(tools.slice(0, -1).filter((t) => t.name !== "create_reservation"))
-      .toEqual(agentTools.filter((t) => t.name !== "create_reservation"));
+    // Só `create_reservation` (sem `customer_email`, C1) e `get_reservation` (sem
+    // `phone`) mudam; as demais são as mesmas.
+    const mudam = ["create_reservation", "get_reservation"];
+    expect(tools.slice(0, -1).filter((t) => !mudam.includes(t.name)))
+      .toEqual(agentTools.filter((t) => !mudam.includes(t.name)));
     const link = tools[tools.length - 1];
     expect(link.name).toBe("link_customer_phone");
     expect(link.parameters).toEqual({
@@ -189,6 +192,20 @@ describe("agentToolsFor", () => {
       required: ["phone", "name"],
     });
     expect(JSON.stringify(agentTools)).toBe(before);
+  });
+
+  it("com porta, get_reservation não oferece phone ao LLM; sem porta, oferece", async () => {
+    const { agentToolsFor } = await load();
+    const get = (tools: typeof agentTools) => tools.find((t) => t.name === "get_reservation")!;
+    const comPorta = get(agentToolsFor({ claimedIdentity: fakePort().port }));
+    const original = get(agentTools);
+    expect(comPorta.parameters.properties).not.toHaveProperty("phone");
+    const { phone: _phone, ...resto } = original.parameters.properties as Record<string, unknown>;
+    expect(comPorta.parameters.properties).toEqual(resto);
+    expect(comPorta.parameters.required).toEqual(original.parameters.required);
+    expect(comPorta.description).toBe(original.description);
+    expect(get(agentToolsFor({})).parameters.properties).toHaveProperty("phone");
+    expect(get(agentToolsFor({}))).toBe(original);
   });
 
   it("com porta, create_reservation não oferece customer_email ao LLM (C1); sem porta, oferece", async () => {
@@ -499,5 +516,54 @@ describe("create_reservation", () => {
     const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
     expect(h.reserveSlot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ source: "whatsapp", customerId: LINKED.id }));
     expect(out).toEqual({ success: true, reservation_code: "WAWA2345", message: "Reserva criada! Código: #WAWA2345. Data: 10/01/2099 às 20:00 para 2 pessoas." });
+  });
+});
+
+describe("resultados com identidade declarada: allowlist de chaves", () => {
+  it("chave desconhecida é descartada, no topo e dentro de listas; as conhecidas passam", async () => {
+    const { claimedIdentityResult } = await load();
+    const out = claimedIdentityResult({
+      success: true, message: "ok", campo_novo: "VAZOU", customer: { name: "Fulana" },
+      reservations: [{ reservation_code: "A", date: "10/01/2099", time: "20:00", party_size: 2, status: "confirmed", notes: "ALERGIA", telefone: "11999998888" }],
+    });
+    expect(out).toEqual({
+      success: true, message: "ok",
+      reservations: [{ reservation_code: "A", date: "10/01/2099", time: "20:00", party_size: 2, status: "confirmed" }],
+    });
+  });
+
+  it("os resultados atuais das ferramentas chegam iguais aos do WhatsApp, menos notes", async () => {
+    const rows = () => [reservation("res-1", "LEDG2345")];
+    const linked = { customer: LINKED, phone: LINKED.phone };
+    const wa = { channel: "whatsapp" as const, customer: LINKED, phone: LINKED.phone, reservationSource: "whatsapp" as const };
+    const cenarios: Array<[string, Record<string, unknown>]> = [
+      ["check_availability", { date: "2099-01-10", time: "20:00", party_size: 2 }],
+      ["get_reservation", { reservation_code: "LEDG2345" }],
+      ["list_customer_reservations", {}],
+      ["update_reservation", { reservation_code: "LEDG2345", party_size: 3 }],
+      ["update_reservation", { reservation_code: "LEDG2345", party_size: 9 }],
+      ["update_reservation", { reservation_code: "NAOEXISTE" , party_size: 3 }],
+      ["update_reservation", { reservation_code: "LEDG2345" }],
+      ["cancel_reservation", { reservation_code: "LEDG2345" }],
+      ["create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 }],
+      ["request_human_handoff", { reason: "reclamação" }],
+    ];
+    const semNotes = (v: unknown): unknown => JSON.parse(JSON.stringify(v, (k, x) => (k === "notes" ? undefined : x)));
+    for (const [tool, input] of cenarios) {
+      const run = async (ctx: Partial<ChannelContext>, port: ReturnType<typeof fakePort> | null) => {
+        h.checkAvailability.mockReset();
+        h.checkAvailability.mockImplementation(async (_db: unknown, p: { partySize: number }) => p.partySize > 8
+          ? { available: false, reason: "no_capacity", message: "Sem mesa." }
+          : { available: true, message: "Há mesa.", suggestedTableId: "t-1", durationMinutes: 120 });
+        h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
+        h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-nova", reservationCode: "NOVA2345" });
+        const { call } = await setup({ ctx, rows: rows(), port });
+        return call(tool, input);
+      };
+      const comPorta = await run(linked, fakePort({ ledger: ["res-1"] }));
+      const semPorta = await run(wa, null);
+      expect(comPorta, `${tool} ${JSON.stringify(input)}`).toEqual(semNotes(semPorta));
+      expect(Object.keys(comPorta as object).length, `${tool} ficou vazio`).toBeGreaterThan(0);
+    }
   });
 });
