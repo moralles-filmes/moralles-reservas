@@ -677,14 +677,14 @@ Alvos (mockup `Portal.dc.html`):
 - **`WizardFooter`:** `glass` fixo no rodapé do dialog com `wizardSummaryLine(state)` acima dos botões atuais; respeita `env(safe-area-inset-bottom)`.
 - Nada muda em `useReservaWizard.ts` nem em `availability-helpers.ts`.
 
-- [ ] **Step 1: Escrever o teste que falha** em `summary-line.test.ts`:
+- [x] **Step 1: Escrever o teste que falha** em `summary-line.test.ts`:
   - `{ party_size: 4, date: "2026-10-30", time: "20:00:00" }` vira `"4 pessoas · sex, 30/10 · 20:00"` (30/10/2026 é sexta; `EEE` do `ptBR` abrevia sem ponto);
   - `{ party_size: 1 }` vira `"1 pessoa"`;
   - `{}` vira `""`.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/reserva/wizard/summary-line.test.ts`. Esperado: FAIL.
-- [ ] **Step 3: Implementar** `summary-line.ts` e restilizar os passos e o rodapé.
-- [ ] **Step 4: Rodar e ver passar.** Os testes do wizard, o guarda e `npm run test`. Esperado: PASS.
-- [ ] **Step 5: Commit:** `git commit -m "feat(portal): wizard de reserva no visual novo"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/reserva/wizard/summary-line.test.ts`. Esperado: FAIL.
+- [x] **Step 3: Implementar** `summary-line.ts` e restilizar os passos e o rodapé.
+- [x] **Step 4: Rodar e ver passar.** Os testes do wizard, o guarda e `npm run test`. Esperado: PASS.
+- [x] **Step 5: Commit:** `git commit -m "feat(portal): wizard de reserva no visual novo"`.
 
 ### Task 15: Páginas públicas
 
@@ -701,11 +701,11 @@ Alvos:
 - `ReservaCard` não entra em página pública;
 - o selo do card de unidade em `src/pages/Index.tsx` (hoje com `backdrop-blur`, perto da linha 597) é item repetido: trocar o desfoque por fundo `surface`. Os outros dois desfoques do `Index.tsx`, no topo e na capa, são únicos e ficam.
 
-- [ ] **Step 1: Restilizar as páginas.**
-- [ ] **Step 2: Rodar os testes.** `npm run test`. Esperado: PASS.
+- [x] **Step 1: Restilizar as páginas.**
+- [x] **Step 2: Rodar os testes.** `npm run test`. Esperado: PASS.
 - [ ] **Step 3: Revisão visual** em 390×844 e 1440×900: `/`, `/r/:slug`, `/r/:slug?mode=embed`, `/r/:slug?action=reservar`, `/w/:slug`, `/m/:slug`, `/acompanhar/:token` e `/preferencias/mensagens/:token`. Fazer isso com o painel em escuro salvo no mesmo navegador: tudo claro.
 - [ ] **Step 4: Comparar LCP.** Lighthouse mobile em `/r/:slug` no preview da integração contra produção, com a mesma unidade. Registrar os dois valores no STATE. Se o LCP subir mais de 10%, investigar antes de fechar.
-- [ ] **Step 5: Commit:** `git commit -m "feat(portal): páginas públicas no tema Dia"`.
+- [x] **Step 5: Commit:** `git commit -m "feat(portal): páginas públicas no tema Dia"`.
 
 ### Task 16: Login e redefinição de senha
 
@@ -721,10 +721,10 @@ Alvos:
 - botão primário em cápsula;
 - mensagens de erro como hoje.
 
-- [ ] **Step 1: Restilizar as duas páginas.**
-- [ ] **Step 2: Rodar os testes.** `npm run test`. Esperado: PASS.
+- [x] **Step 1: Restilizar as duas páginas.**
+- [x] **Step 2: Rodar os testes.** `npm run test`. Esperado: PASS.
 - [ ] **Step 3: Revisão visual** de `/admin/login` e `/reset-password` em 390×844 e 1440×900.
-- [ ] **Step 4: Commit:** `git commit -m "feat(auth): login e redefinição em painel de vidro"`.
+- [x] **Step 4: Commit:** `git commit -m "feat(auth): login e redefinição em painel de vidro"`.
 
 **Fechamento da fase A5.** Protocolo padrão.
 
