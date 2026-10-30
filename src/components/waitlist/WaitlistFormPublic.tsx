@@ -107,16 +107,16 @@ export function WaitlistFormPublic({
 
   if (confirmedCode !== undefined) {
     return (
-      <div className="text-center py-6 space-y-4 animate-fade-up">
-        <CheckCircle2 className="h-14 w-14 text-success mx-auto" />
-        <div className="space-y-1">
-          <h3 className="font-display text-2xl">Você está na fila</h3>
+      <div className="surface rounded-card text-center p-5 sm:p-6 space-y-5">
+        <CheckCircle2 className="h-16 w-16 text-success bg-success/10 rounded-full p-3 mx-auto" />
+        <div className="space-y-3">
+          <h3 className="font-display text-2xl font-semibold tracking-tight">Você está na fila</h3>
           {confirmedCode != null && (
-            <div className="space-y-1">
-              <p className="text-xs uppercase tracking-wider text-muted-foreground">
+            <div className="rounded-block bg-muted/50 p-4 space-y-1">
+              <p className="text-xs text-tertiary">
                 Sua senha
               </p>
-              <p className="text-4xl font-bold font-mono">#{confirmedCode}</p>
+              <p className="text-4xl font-semibold tracking-tight tabular">#{confirmedCode}</p>
             </div>
           )}
           <p className="text-sm text-muted-foreground max-w-xs mx-auto">
@@ -129,7 +129,7 @@ export function WaitlistFormPublic({
           Mantenha o WhatsApp por perto
         </div>
         {onClose && (
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" className="min-h-12 px-6" onClick={onClose}>
             Fechar
           </Button>
         )}
@@ -138,17 +138,18 @@ export function WaitlistFormPublic({
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-      <div className="space-y-1">
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+      <div className="space-y-2">
         <Label htmlFor="wl-name">Nome *</Label>
-        <Input id="wl-name" placeholder="Seu nome" {...register("name")} />
+        <Input id="wl-name" className="h-12 rounded-block bg-background" placeholder="Seu nome" {...register("name")} />
         {errors.name && <p className="text-xs text-destructive">{errors.name.message}</p>}
       </div>
 
-      <div className="space-y-1">
+      <div className="space-y-2">
         <Label htmlFor="wl-phone">WhatsApp *</Label>
         <Input
           id="wl-phone"
+          className="h-12 rounded-block bg-background tabular"
           placeholder="(11) 99999-9999"
           {...register("phone")}
           onChange={(e) => {
@@ -160,18 +161,18 @@ export function WaitlistFormPublic({
         {errors.phone && <p className="text-xs text-destructive">{errors.phone.message}</p>}
       </div>
 
-      <div className="space-y-1">
+      <div className="space-y-2">
         <Label htmlFor="wl-party-size">Quantas pessoas? *</Label>
         <Select
           value={String(watch("party_size") ?? 2)}
           onValueChange={(v) => setValue("party_size", Number(v))}
         >
-          <SelectTrigger id="wl-party-size">
+          <SelectTrigger id="wl-party-size" className="h-12 rounded-block bg-background tabular">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             {PARTY_SIZES.map((n) => (
-              <SelectItem key={n} value={String(n)}>
+              <SelectItem key={n} value={String(n)} className="coarse:min-h-11 tabular">
                 {n} {n === 1 ? "pessoa" : "pessoas"}
               </SelectItem>
             ))}
@@ -180,9 +181,9 @@ export function WaitlistFormPublic({
       </div>
 
       {priorityEnabled && (
-        <div className="space-y-1">
+        <div className="space-y-2">
           <Label htmlFor="wl-priority" className="flex items-center gap-1.5">
-            <Accessibility className="h-3.5 w-3.5 text-secondary" />
+            <Accessibility className="h-4 w-4 text-gold-ink" />
             Prioridade no atendimento
           </Label>
           <Select
@@ -191,12 +192,12 @@ export function WaitlistFormPublic({
               setValue("priority_category", v as WaitlistPriorityCategory)
             }
           >
-            <SelectTrigger id="wl-priority">
+            <SelectTrigger id="wl-priority" className="h-12 rounded-block bg-background">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {PRIORITY_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
+                <SelectItem key={opt.value} value={opt.value} className="coarse:min-h-11">
                   <span className="flex items-center gap-2">
                     {opt.value === "senior" && <UserCircle2 className="h-3.5 w-3.5" />}
                     {opt.value === "pregnant" && <Baby className="h-3.5 w-3.5" />}
@@ -209,23 +210,24 @@ export function WaitlistFormPublic({
               ))}
             </SelectContent>
           </Select>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs leading-relaxed text-tertiary">
             Atendimento prioritário conforme legislação (idosos, gestantes, PCDs).
           </p>
         </div>
       )}
 
-      <div className="space-y-1">
+      <div className="space-y-2">
         <Label htmlFor="wl-notes">Observações (opcional)</Label>
         <Textarea
           id="wl-notes"
+          className="min-h-24 rounded-block bg-background"
           placeholder="Alergias, ocasião, preferências..."
           rows={2}
           {...register("notes")}
         />
       </div>
 
-      <div className="flex items-start gap-3 rounded-lg border p-3">
+      <div className="surface flex items-start gap-3 rounded-block p-4">
         <Controller
           name="marketing_opt_in"
           control={control}
@@ -234,7 +236,7 @@ export function WaitlistFormPublic({
               id="wl-marketing-opt-in"
               checked={field.value}
               onCheckedChange={(checked) => field.onChange(checked === true)}
-              className="mt-0.5 h-5 w-5"
+              className="mt-0.5 h-5 w-5 shrink-0"
             />
           )}
         />
@@ -243,11 +245,11 @@ export function WaitlistFormPublic({
         </Label>
       </div>
 
-      <Button type="submit" className="w-full" disabled={isSubmitting}>
+      <Button type="submit" className="w-full min-h-12 text-base" disabled={isSubmitting}>
         {isSubmitting ? "Entrando na fila..." : "Entrar na fila"}
       </Button>
 
-      <p className="text-xs text-muted-foreground text-center">
+      <p className="text-xs text-tertiary text-center">
         Avisaremos pelo WhatsApp quando a mesa estiver pronta.
       </p>
     </form>

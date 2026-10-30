@@ -15,7 +15,7 @@ export function PageHeader({ breadcrumb, title, description, children, className
       {breadcrumb && breadcrumb.length > 0 && <Breadcrumb items={breadcrumb} />}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="space-y-1 min-w-0">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">{title}</h1>
+          <h1 className="text-[28px] sm:text-[30px] font-semibold tracking-[-0.02em] text-foreground">{title}</h1>
           {description && <p className="text-sm text-muted-foreground">{description}</p>}
         </div>
         {children && <div className="flex items-center gap-2 flex-wrap">{children}</div>}

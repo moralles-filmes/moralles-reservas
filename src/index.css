@@ -1,283 +1,212 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   /* ════════════════════════════════════════════════════════════════════════
-     Identidade premium: preto / branco / dourado.
-     4 escopos: :root + .theme-admin = CLARO premium · .dark + .dark .theme-admin
-     = ESCURO premium. Grafite é o primário (botões); ouro é o ACCENT dedicado
-     (--gold / --ring / item ativo da sidebar). Azul rebaixado a apoio (--info).
+     Salão em vidro: Noite e Dia.
+     Dois grupos de escopo com o MESMO conjunto de tokens:
+       · Dia   → :root, .theme-admin
+       · Noite → .dark, .dark .theme-admin
+     Cores em triplete HSL ('H S% L%') consumidas via hsl(var(--x) / alfa).
      ──────────────────────────────────────────────────────────────────────── */
-  :root {
-    --background: 43 33% 95%;            /* off-white quente #F7F4EC */
-    --foreground: 240 6% 10%;            /* tinta near-black */
+  :root, .theme-admin {
+    --background: 216 16.1% 93.9%;          /* #EDEFF2 */
+    --foreground: 222.9 17.1% 8%;           /* #111318 */
 
-    --card: 0 0% 100%;
-    --card-foreground: 240 6% 10%;
+    --card: 0 0% 100%;                  /* #FFFFFF */
+    --card-foreground: 223 18% 8%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 240 6% 10%;
+    --popover-foreground: 223 18% 8%;
 
-    --primary: 240 6% 12%;              /* grafite (botão primário) */
-    --primary-foreground: 0 0% 98%;
+    --primary: 222.9 17.1% 8%;              /* #111318 */
+    --primary-foreground: 42.9 28% 95.1%;   /* #F6F4EF */
 
-    --secondary: 40 20% 91%;
-    --secondary-foreground: 240 6% 14%;
+    --secondary: 220 12% 90.2%;           /* #E3E5E9 */
+    --secondary-foreground: 223 18% 8%;
 
-    --muted: 40 18% 92%;
-    --muted-foreground: 240 4% 40%;
+    --muted: 216 11.1% 91.2%;               /* #E6E8EB */
+    --muted-foreground: 216.9 7.6% 33.5%;     /* #4F545C */
+    --tertiary-foreground: 216.9 6.5% 39.4%;  /* #5E636B */
 
-    --accent: 40 22% 90%;               /* superfície neutra de hover (não dourada) */
-    --accent-foreground: 240 6% 14%;
+    --accent: 220 11.1% 89.4%;              /* #E1E3E7 */
+    --accent-foreground: 223 18% 8%;
 
-    --destructive: 0 65% 48%;           /* vermelho elegante */
+    /* destructive, info, success e warning também viram texto, inclusive em selo
+       bg-<cor>/10 sobre --secondary: a luminosidade foi escolhida para esse pior
+       caso passar de 4.5:1 (theme-tokens.test.ts). */
+    --destructive: 3.2 61.8% 40.8%;           /* #A82F28 */
     --destructive-foreground: 0 0% 100%;
 
-    --border: 40 14% 86%;
-    --input: 40 14% 86%;
-    --ring: 43 74% 38%;                 /* foco dourado */
+    --border: 220 9.1% 87.1%;              /* #DBDDE1 */
+    --input: 217.5 10% 84.3%;               /* #D3D6DB */
+    --ring: 37.6 49.5% 40.4%;                 /* #9A7434 */
 
     --radius: 0.75rem;
 
     /* Accent dourado dedicado + apoio */
-    --gold: 43 74% 38%;                 /* ≈ #B8860B (claro, contraste AA em fundo claro) */
-    --gold-foreground: 240 8% 8%;       /* near-black sobre dourado */
-    --info: 215 38% 46%;                /* azul de apoio, dessaturado */
+    --gold: 37.6 49.5% 40.4%;                 /* #9A7434 */
+    --gold-foreground: 0 0% 100%;       /* #FFFFFF */
+    --gold-ink: 38.7 58.4% 30.2%;             /* #7A5A20 */
+    --logo-plate: 0 0% 100%;                  /* placa clara atrás do logo, nos dois temas */
+    --info: 217.7 59.3% 41.8%;                /* #2B5AAA */
     --info-foreground: 0 0% 100%;
     --surface-elevated: 0 0% 100%;
 
-    --sidebar-background: 44 28% 94%;
-    --sidebar-foreground: 240 5% 30%;
-    --sidebar-primary: 43 74% 38%;
+    --sidebar-background: 220 13.6% 91.4%;  /* #E6E8EC */
+    --sidebar-foreground: 216.9 7.6% 33.5%;   /* #4F545C */
+    --sidebar-primary: 37.6 49.5% 40.4%;      /* #9A7434 */
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 44 58% 87%;       /* dourado translúcido (item ativo) */
-    --sidebar-accent-foreground: 43 74% 30%; /* tinta dourada */
-    --sidebar-border: 40 14% 84%;
-    --sidebar-ring: 43 74% 38%;
+    --sidebar-accent: 36 7% 86.1%;        /* #DEDCD9 */
+    --sidebar-accent-foreground: 38.7 58.4% 30.2%; /* #7A5A20 */
+    --sidebar-border: 217.5 10.5% 85.1%;      /* #D5D8DD */
+    --sidebar-ring: 37.6 49.5% 40.4%;         /* #9A7434 */
 
-    --success: 150 45% 36%;             /* verde suave */
+    --success: 156.3 59.5% 25.9%;           /* #1B694A */
     --success-foreground: 0 0% 100%;
-    --warning: 38 80% 45%;
-    --warning-foreground: 240 6% 10%;
+    --warning: 38 80% 27.3%;                /* #7D540E */
+    --warning-foreground: 0 0% 100%;
 
-    /* Charts (paleta categórica): lidera ouro/verde/neutro; azul só 1 slot de apoio. */
-    --chart-reserva: 150 45% 38%;       /* verde — reservas confirmadas */
-    --chart-fila: 40 72% 48%;           /* dourado/âmbar — fila de espera */
-    --chart-passante: 240 6% 45%;       /* cinza neutro — walk-in */
-    --chart-geral: 215 40% 48%;         /* azul de apoio — agregado */
-    --chart-whatsapp: 150 45% 38%;      /* verde WhatsApp */
-    --chart-email: 215 40% 48%;         /* azul de apoio */
-    --chart-issued: 350 55% 50%;        /* rose — vouchers emitidos */
-    --chart-used: 43 74% 42%;           /* dourado — vouchers consumidos */
-    --chart-trigger-rating: 150 45% 38%;
-    --chart-trigger-manual: 240 6% 45%;
-    --chart-trigger-birthday: 272 45% 58%; /* roxo (categórico) */
-    --chart-trigger-frequency: 40 72% 48%;
-    --chart-trigger-other: 240 5% 55%;
+    /* Status operacionais */
+    --status-free: 216.9 7.6% 33.5%;          /* #4F545C */
+    --status-reserved: 38.7 58.4% 30.2%;      /* #7A5A20 */
+    --status-arriving: 217.7 59.3% 45.3%;     /* #2F62B8 */
+    --status-seated: 156.3 59.5% 30%;       /* #1F7A56 */
+    --status-late: 11.3 62.2% 43.5%;          /* #B4442A */
+    --status-pending: 216.9 7.6% 33.5%;       /* #4F545C */
+
+    /* Vidro */
+    --glass-tint: 0 0% 100%;
+    --glass-alpha: 0.68;
+    --glass-strong-tint: 0 0% 100%;
+    --glass-strong-alpha: 0.82;
+    --glass-edge: 225 20% 7.8%;           /* HSL de #101218 */
+    --glass-edge-alpha: 0.08;
+    --glass-highlight: 0 0% 100%;
+    --glass-highlight-alpha: 0.9;
+    --glass-blur: 28px;
+    --shadow-color: 225 20% 8%;
+
+    /* Charts (paleta categórica) */
+    --chart-reserva: 156.3 59.5% 30%;       /* #1F7A56 */
+    --chart-fila: 37.6 49.5% 40.4%;           /* #9A7434 */
+    --chart-passante: 216.9 6.5% 39.4%;       /* #5E636B */
+    --chart-geral: 217.7 59.3% 45.3%;         /* #2F62B8 */
+    --chart-whatsapp: 156.3 59.5% 30%;      /* #1F7A56 */
+    --chart-email: 217.7 59.3% 45.3%;         /* #2F62B8 */
+    --chart-issued: 340.5 51.4% 50.8%;        /* #C2416B */
+    --chart-used: 37.6 49.5% 40.4%;           /* #9A7434 */
+    --chart-trigger-rating: 156.3 59.5% 30%;     /* #1F7A56 */
+    --chart-trigger-manual: 216.9 6.5% 39.4%;      /* #5E636B */
+    --chart-trigger-birthday: 260.7 52.4% 55.5%;   /* #7B52C9 */
+    --chart-trigger-frequency: 37.6 49.5% 40.4%;   /* #9A7434 */
+    --chart-trigger-other: 216.9 6.5% 39.4%;       /* #5E636B */
   }
 
-  .dark {
-    --background: 240 6% 5%;            /* #0D0D0F */
-    --foreground: 40 15% 90%;
+  /* Mobile: vidro menos borrado */
+  @media (max-width: 639px) {
+    :root, .theme-admin {
+      --glass-blur: 16px;
+    }
+  }
 
-    --card: 240 5% 7%;                  /* #111113 */
-    --card-foreground: 40 12% 92%;
+  .dark, .dark .theme-admin {
+    --background: 220 21.4% 5.5%;           /* #0B0D11 */
+    --foreground: 42.9 22.6% 93.9%;           /* #F3F1EC */
 
-    --popover: 240 5% 8%;
-    --popover-foreground: 40 12% 92%;
+    --card: 222.9 14.9% 9.2%;                 /* #14161B */
+    --card-foreground: 40 23% 94%;
 
-    --primary: 240 4% 20%;             /* grafite elevado (visível em fundo escuro) */
-    --primary-foreground: 40 12% 92%;
+    --popover: 220 7.9% 14.9%;              /* #232529 */
+    --popover-foreground: 40 23% 94%;
 
-    --secondary: 0 0% 9%;              /* #171717 */
-    --secondary-foreground: 40 12% 90%;
+    --primary: 39.5 60.3% 71.4%;              /* #E2C48A */
+    --primary-foreground: 40 52.9% 6.7%;    /* #1A1408 */
 
-    --muted: 0 0% 11%;
-    --muted-foreground: 40 6% 62%;
+    --secondary: 216 8.8% 11.2%;            /* #1A1C1F */
+    --secondary-foreground: 40 23% 94%;
 
-    --accent: 240 4% 14%;              /* hover neutro elevado */
-    --accent-foreground: 40 12% 90%;
+    --muted: 220 11.5% 10.2%;               /* #17191D */
+    --muted-foreground: 40 5.4% 67.3%;      /* #B0ADA7 */
+    --tertiary-foreground: 37.5 3.4% 54.1%;   /* #8E8B86 */
 
-    --destructive: 0 60% 52%;
-    --destructive-foreground: 0 0% 100%;
+    --accent: 220 9.7% 12.2%;               /* #1C1E22 */
+    --accent-foreground: 40 23% 94%;
 
-    --border: 240 4% 14%;              /* hairline discreto */
-    --input: 240 4% 16%;
-    --ring: 46 65% 52%;                /* foco dourado */
+    --destructive: 0 100% 71%;          /* #FF6B6B */
+    --destructive-foreground: 0 52.9% 6.7%; /* #1A0808 */
 
-    --gold: 46 65% 52%;               /* ≈ #D4AF37 */
-    --gold-foreground: 240 8% 8%;
-    --info: 210 45% 62%;
-    --info-foreground: 240 8% 8%;
-    --surface-elevated: 0 0% 9%;       /* #171717 */
+    --border: 228 7.5% 13.1%;               /* #1F2024 */
+    --input: 220 7.9% 14.9%;                /* #232529 */
+    --ring: 39.5 60.3% 71.4%;                 /* #E2C48A */
 
-    --sidebar-background: 240 9% 4%;   /* ≈ #050506 */
-    --sidebar-foreground: 40 8% 70%;
-    --sidebar-primary: 46 65% 52%;
-    --sidebar-primary-foreground: 240 8% 8%;
-    --sidebar-accent: 46 48% 13%;      /* dourado translúcido (escuro) */
-    --sidebar-accent-foreground: 46 65% 62%;
-    --sidebar-border: 240 5% 12%;
-    --sidebar-ring: 46 65% 52%;
+    --radius: 0.75rem;
 
-    --success: 150 40% 50%;
-    --success-foreground: 240 8% 8%;
+    --gold: 39.5 60.3% 71.4%;                 /* #E2C48A */
+    --gold-foreground: 40 52.9% 6.7%;       /* #1A1408 */
+    --gold-ink: 40.2 64.9% 74.3%;             /* #E8CC93 */
+    --logo-plate: 0 0% 100%;
+    --info: 218.4 100% 81%;               /* #9EC1FF */
+    --info-foreground: 220 21.4% 5.5%;      /* #0B0D11 */
+    --surface-elevated: 216 8.8% 11.2%;     /* #1A1C1F */
+
+    --sidebar-background: 225 20% 3.9%;   /* #08090C */
+    --sidebar-foreground: 40 5.4% 67.3%;    /* #B0ADA7 */
+    --sidebar-primary: 39.5 60.3% 71.4%;      /* #E2C48A */
+    --sidebar-primary-foreground: 40 52.9% 6.7%; /* #1A1408 */
+    --sidebar-accent: 34.3 11.5% 12%;       /* #221F1B */
+    --sidebar-accent-foreground: 40.2 64.9% 74.3%; /* #E8CC93 */
+    --sidebar-border: 225 8% 9.8%;      /* #17181B */
+    --sidebar-ring: 39.5 60.3% 71.4%;         /* #E2C48A */
+
+    --success: 153.3 53.6% 67.1%;             /* #7ED8B0 */
+    --success-foreground: 220 21.4% 5.5%;   /* #0B0D11 */
     --warning: 42 75% 56%;
     --warning-foreground: 240 8% 8%;
 
-    /* Charts no escuro — variantes mais claras pra contraste sobre fundo near-black. */
-    --chart-reserva: 150 42% 52%;
-    --chart-fila: 42 75% 58%;
-    --chart-passante: 240 5% 58%;
-    --chart-geral: 210 50% 62%;
-    --chart-whatsapp: 150 42% 52%;
-    --chart-email: 210 50% 62%;
-    --chart-issued: 350 60% 62%;
-    --chart-used: 46 65% 56%;
-    --chart-trigger-rating: 150 42% 52%;
-    --chart-trigger-manual: 240 5% 60%;
-    --chart-trigger-birthday: 272 50% 68%;
-    --chart-trigger-frequency: 42 75% 58%;
-    --chart-trigger-other: 240 5% 60%;
-  }
-}
+    /* Status operacionais */
+    --status-free: 220 2.8% 42.7%;          /* #6A6C70 */
+    --status-reserved: 39.5 60.3% 71.4%;      /* #E2C48A */
+    --status-arriving: 218.4 100% 81%;    /* #9EC1FF */
+    --status-seated: 153.3 53.6% 67.1%;       /* #7ED8B0 */
+    --status-late: 12.4 100% 73.5%;         /* #FF9478 */
+    --status-pending: 240 1.4% 71.8%;       /* #B6B6B8 */
 
-@layer base {
-  /* Painéis admin (Gestão, Operacional, Plataforma) — mesma identidade premium do :root.
-     Bloco mantido para preservar a estrutura de escopo; ALINHADO ao :root (claro).
-     O escuro dos painéis vive em `.dark .theme-admin` (combinador descendente, abaixo). */
-  .theme-admin {
-    --background: 43 33% 95%;
-    --foreground: 240 6% 10%;
+    /* Vidro */
+    --glass-tint: 0 0% 100%;
+    --glass-alpha: 0.045;
+    /* Tom do cartão, não branco: diálogos sólidos o bastante para a página de trás não manchar. */
+    --glass-strong-tint: 222.9 14.9% 13%;  /* um pouco acima do --card para popover sobre cartão destacar */
+    --glass-strong-alpha: 0.82;
+    --glass-edge: 0 0% 100%;
+    --glass-edge-alpha: 0.08;
+    --glass-highlight: 0 0% 100%;
+    --glass-highlight-alpha: 0.11;
+    --glass-blur: 28px;
+    --shadow-color: 0 0% 0%;
 
-    --card: 0 0% 100%;
-    --card-foreground: 240 6% 10%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 6% 10%;
-
-    --primary: 240 6% 12%;
-    --primary-foreground: 0 0% 98%;
-
-    --secondary: 40 20% 91%;
-    --secondary-foreground: 240 6% 14%;
-
-    --muted: 40 18% 92%;
-    --muted-foreground: 240 4% 40%;
-
-    --accent: 40 22% 90%;
-    --accent-foreground: 240 6% 14%;
-
-    --destructive: 0 65% 48%;
-    --destructive-foreground: 0 0% 100%;
-
-    --border: 40 14% 86%;
-    --input: 40 14% 86%;
-    --ring: 43 74% 38%;
-
-    --gold: 43 74% 38%;
-    --gold-foreground: 240 8% 8%;
-    --info: 215 38% 46%;
-    --info-foreground: 0 0% 100%;
-    --surface-elevated: 0 0% 100%;
-
-    --sidebar-background: 44 28% 94%;
-    --sidebar-foreground: 240 5% 30%;
-    --sidebar-primary: 43 74% 38%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 44 58% 87%;
-    --sidebar-accent-foreground: 43 74% 30%;
-    --sidebar-border: 40 14% 84%;
-    --sidebar-ring: 43 74% 38%;
-
-    --success: 150 45% 36%;
-    --success-foreground: 0 0% 100%;
-    --warning: 38 80% 45%;
-    --warning-foreground: 240 6% 10%;
-
-    --chart-reserva: 150 45% 38%;
-    --chart-fila: 40 72% 48%;
-    --chart-passante: 240 6% 45%;
-    --chart-geral: 215 40% 48%;
-    --chart-whatsapp: 150 45% 38%;
-    --chart-email: 215 40% 48%;
-    --chart-issued: 350 55% 50%;
-    --chart-used: 43 74% 42%;
-    --chart-trigger-rating: 150 45% 38%;
-    --chart-trigger-manual: 240 6% 45%;
-    --chart-trigger-birthday: 272 45% 58%;
-    --chart-trigger-frequency: 40 72% 48%;
-    --chart-trigger-other: 240 5% 55%;
+    /* Charts no escuro */
+    --chart-reserva: 153.3 53.6% 67.1%;       /* #7ED8B0 */
+    --chart-fila: 39.5 60.3% 71.4%;           /* #E2C48A */
+    --chart-passante: 37.5 3.4% 54.1%;        /* #8E8B86 */
+    --chart-geral: 218.4 100% 81%;        /* #9EC1FF */
+    --chart-whatsapp: 153.3 53.6% 67.1%;      /* #7ED8B0 */
+    --chart-email: 218.4 100% 81%;        /* #9EC1FF */
+    --chart-issued: 344.5 76.4% 75.1%;        /* #F08FA8 */
+    --chart-used: 39.5 60.3% 71.4%;           /* #E2C48A */
+    --chart-trigger-rating: 153.3 53.6% 67.1%;     /* #7ED8B0 */
+    --chart-trigger-manual: 37.5 3.4% 54.1%;       /* #8E8B86 */
+    --chart-trigger-birthday: 259.3 100% 82.9%;   /* #C4A8FF */
+    --chart-trigger-frequency: 39.5 60.3% 71.4%;   /* #E2C48A */
+    --chart-trigger-other: 37.5 3.4% 54.1%;        /* #8E8B86 */
   }
 
-  /* Escuro dos painéis admin. `.dark` fica em <html> (ancestral) e `.theme-admin` no
-     subtree → este combinador descendente (especificidade 0,2,0) vence `.theme-admin`
-     (0,1,0). Precisa redefinir TODOS os tokens, senão caem no claro do `.theme-admin`. */
-  .dark .theme-admin {
-    --background: 240 6% 5%;
-    --foreground: 40 15% 90%;
-
-    --card: 240 5% 7%;
-    --card-foreground: 40 12% 92%;
-
-    --popover: 240 5% 8%;
-    --popover-foreground: 40 12% 92%;
-
-    --primary: 240 4% 20%;
-    --primary-foreground: 40 12% 92%;
-
-    --secondary: 0 0% 9%;
-    --secondary-foreground: 40 12% 90%;
-
-    --muted: 0 0% 11%;
-    --muted-foreground: 40 6% 62%;
-
-    --accent: 240 4% 14%;
-    --accent-foreground: 40 12% 90%;
-
-    --destructive: 0 60% 52%;
-    --destructive-foreground: 0 0% 100%;
-
-    --border: 240 4% 14%;
-    --input: 240 4% 16%;
-    --ring: 46 65% 52%;
-
-    --gold: 46 65% 52%;
-    --gold-foreground: 240 8% 8%;
-    --info: 210 45% 62%;
-    --info-foreground: 240 8% 8%;
-    --surface-elevated: 0 0% 9%;
-
-    --sidebar-background: 240 9% 4%;
-    --sidebar-foreground: 40 8% 70%;
-    --sidebar-primary: 46 65% 52%;
-    --sidebar-primary-foreground: 240 8% 8%;
-    --sidebar-accent: 46 48% 13%;
-    --sidebar-accent-foreground: 46 65% 62%;
-    --sidebar-border: 240 5% 12%;
-    --sidebar-ring: 46 65% 52%;
-
-    --success: 150 40% 50%;
-    --success-foreground: 240 8% 8%;
-    --warning: 42 75% 56%;
-    --warning-foreground: 240 8% 8%;
-
-    --chart-reserva: 150 42% 52%;
-    --chart-fila: 42 75% 58%;
-    --chart-passante: 240 5% 58%;
-    --chart-geral: 210 50% 62%;
-    --chart-whatsapp: 150 42% 52%;
-    --chart-email: 210 50% 62%;
-    --chart-issued: 350 60% 62%;
-    --chart-used: 46 65% 56%;
-    --chart-trigger-rating: 150 42% 52%;
-    --chart-trigger-manual: 240 5% 60%;
-    --chart-trigger-birthday: 272 50% 68%;
-    --chart-trigger-frequency: 42 75% 58%;
-    --chart-trigger-other: 240 5% 60%;
+  /* Mobile: vidro menos borrado */
+  @media (max-width: 639px) {
+    .dark, .dark .theme-admin {
+      --glass-blur: 16px;
+    }
   }
 
   * {
@@ -285,6 +214,41 @@
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+/* Vidro em @layer components: o utilitário que o chamador passa (bg-*, border-*,
+   backdrop-blur-none) vence pela ordem do Tailwind. */
+@layer components {
+  /* .surface — vidro SEM desfoque. Para cards e itens repetidos de lista.
+     Só cor, borda e brilho interno; nunca backdrop-filter. */
+  .surface {
+    background-color: hsl(var(--glass-tint) / var(--glass-alpha));
+    border: 1px solid hsl(var(--glass-edge) / var(--glass-edge-alpha));
+    box-shadow: inset 0 1px 0 hsl(var(--glass-highlight) / var(--glass-highlight-alpha)),
+      0 1px 2px hsl(var(--shadow-color) / 0.10), 0 8px 24px -12px hsl(var(--shadow-color) / 0.25);
+  }
+
+  /* .glass — vidro desfocado. Use APENAS em superfícies únicas na tela
+     (sobreposições, casco, painel principal); nunca em item repetido de lista. */
+  .glass {
+    background-color: hsl(var(--glass-tint) / var(--glass-alpha));
+    border: 1px solid hsl(var(--glass-edge) / var(--glass-edge-alpha));
+    box-shadow: inset 0 1px 0 hsl(var(--glass-highlight) / var(--glass-highlight-alpha)),
+      0 2px 6px hsl(var(--shadow-color) / 0.12), 0 24px 48px -24px hsl(var(--shadow-color) / 0.40);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  }
+
+  /* .glass-strong — vidro desfocado mais opaco, para sobreposições que precisam
+     de contraste. Também restrito a superfícies únicas na tela. */
+  .glass-strong {
+    background-color: hsl(var(--glass-strong-tint) / var(--glass-strong-alpha));
+    border: 1px solid hsl(var(--glass-edge) / var(--glass-edge-alpha));
+    box-shadow: inset 0 1px 0 hsl(var(--glass-highlight) / var(--glass-highlight-alpha)),
+      0 4px 12px hsl(var(--shadow-color) / 0.14), 0 40px 80px -32px hsl(var(--shadow-color) / 0.55);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(150%);
   }
 }
 
@@ -311,6 +275,18 @@
   .scrollbar-premium::-webkit-scrollbar-thumb:hover {
     background-color: hsl(var(--gold));
   }
+
+  /* .ambient — brilho ambiente estático (dourado + info) para o fundo de painéis.
+     Sem animação e sem background-attachment fixed. */
+  .ambient {
+    background-image: radial-gradient(ellipse at top left, hsl(var(--gold) / 0.10), transparent 60%),
+      radial-gradient(ellipse at right, hsl(var(--info) / 0.06), transparent 55%);
+  }
+
+  /* .tabular — números tabulares para colunas de valores/datas alinhadas. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
 /* Transição suave de cor ao alternar tema — escopada aos painéis admin e respeitando
@@ -320,5 +296,38 @@
   .theme-admin,
   .theme-admin * {
     transition: background-color 0.25s ease, border-color 0.25s ease, color 0.2s ease;
+  }
+}
+
+/* A legenda do recharts pinta o texto com a cor da série (estilo inline), que no Dia
+   fica abaixo de 4.5:1. O texto vai para o token; a amostra ao lado mantém a cor. */
+.recharts-legend-item-text {
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+/* Fallback: navegadores sem backdrop-filter recebem cor sólida no lugar do vidro. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass {
+    background-color: hsl(var(--card));
+  }
+  .glass-strong {
+    background-color: hsl(var(--popover));
+  }
+}
+
+/* Fallback: quem pede menos transparência recebe cor sólida e sem desfoque. */
+@media (prefers-reduced-transparency: reduce) {
+  .surface,
+  .glass {
+    background-color: hsl(var(--card));
+  }
+  .glass-strong {
+    background-color: hsl(var(--popover));
+  }
+  .surface,
+  .glass,
+  .glass-strong {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 }

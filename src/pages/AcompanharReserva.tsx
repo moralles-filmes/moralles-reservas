@@ -17,7 +17,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDateBR } from "@/lib/utils";
+import { cn, formatDateBR } from "@/lib/utils";
 import {
   AlertCircle,
   Calendar,
@@ -208,8 +208,8 @@ export default function AcompanharReserva() {
   });
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-primary/5 via-background to-background flex flex-col items-center px-4 py-8 sm:py-12">
-      <div className="w-full max-w-md space-y-4">
+    <div className="min-h-screen ambient bg-background text-foreground flex flex-col items-center px-4 py-8 sm:py-12 pb-[max(2rem,env(safe-area-inset-bottom))]">
+      <div className="w-full max-w-md space-y-5">
         {!isValidToken ? (
           <NotFoundState />
         ) : isLoading ? (
@@ -233,7 +233,7 @@ export default function AcompanharReserva() {
 
 function LoadingState() {
   return (
-    <Card>
+    <Card className="surface rounded-panel">
       <CardContent className="py-8 space-y-4">
         <div className="flex flex-col items-center gap-3">
           <Skeleton className="h-16 w-16 rounded-full" />
@@ -252,13 +252,13 @@ function LoadingState() {
 
 function NotFoundState() {
   return (
-    <Card>
+    <Card className="surface rounded-panel">
       <CardContent className="py-12 flex flex-col items-center gap-4 text-center">
-        <div className="h-14 w-14 rounded-full bg-muted flex items-center justify-center">
-          <AlertCircle className="h-7 w-7 text-muted-foreground" />
+        <div className="h-14 w-14 rounded-full bg-gold/10 flex items-center justify-center">
+          <AlertCircle className="h-7 w-7 text-gold-ink" />
         </div>
         <div className="space-y-1.5">
-          <h1 className="text-lg font-semibold">Acompanhamento indisponível</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Acompanhamento indisponível</h1>
           <p className="text-sm text-muted-foreground">
             Não encontramos esta reserva ou fila de espera. O link pode ter
             expirado ou estar incorreto. Verifique o link ou fale com a equipe do
@@ -298,7 +298,7 @@ function TrackingView({
   return (
     <>
       {/* Cabeçalho com logo + nome da unidade */}
-      <div className="flex flex-col items-center gap-3 text-center">
+      <div className="surface rounded-card p-6 flex flex-col items-center gap-3 text-center">
         {data.unit_logo_url ? (
           <img
             src={data.unit_logo_url}
@@ -306,18 +306,18 @@ function TrackingView({
             className="h-16 w-16 rounded-full object-cover border border-border shadow-soft"
           />
         ) : (
-          <div className="h-16 w-16 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xl font-bold">
+          <div className="h-16 w-16 rounded-full bg-gold/10 text-gold-ink flex items-center justify-center text-xl font-semibold">
             {data.unit_name.charAt(0).toUpperCase()}
           </div>
         )}
-        <h1 className="text-lg font-bold leading-tight">{data.unit_name}</h1>
+        <h1 className="text-2xl font-semibold leading-tight tracking-tight break-words">{data.unit_name}</h1>
       </div>
 
       {/* Card principal de status */}
-      <Card className="overflow-hidden">
-        <CardContent className="py-6 space-y-5">
+      <Card className="surface rounded-panel overflow-hidden">
+        <CardContent className="p-5 sm:p-6 space-y-5">
           <div className="flex flex-col items-center gap-3 text-center">
-            <Badge variant={view.variant} className="text-xs px-3 py-1.5">
+            <Badge variant={view.variant} className="rounded-full text-xs px-3 py-1.5">
               {view.label}
             </Badge>
             <p className="text-sm text-foreground/90 leading-relaxed">
@@ -331,11 +331,11 @@ function TrackingView({
           {data.type === "waitlist" &&
             data.position != null &&
             (data.status === "waiting" || data.status === "notified") && (
-              <div className="flex flex-col items-center gap-0.5 rounded-xl bg-primary/5 py-4">
-                <span className="text-xs uppercase tracking-wider text-muted-foreground">
+              <div className="flex flex-col items-center gap-1 rounded-block border border-gold/20 bg-gold/10 py-5">
+                <span className="text-xs text-muted-foreground">
                   Sua posição na fila
                 </span>
-                <span className="text-3xl font-bold text-primary">
+                <span className="text-4xl font-semibold tracking-tight tabular text-gold-ink">
                   {data.position}º
                 </span>
               </div>
@@ -387,15 +387,15 @@ function TrackingView({
               size="sm"
               onClick={onRefresh}
               disabled={isFetching}
-              className="gap-2"
+              className="gap-2 rounded-full"
             >
               <RefreshCw
-                className={isFetching ? "animate-spin" : undefined}
+                className={cn(isFetching && "motion-safe:animate-spin")}
               />
               {isFetching ? "Atualizando…" : "Atualizar status"}
             </Button>
             {updatedLabel && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-tertiary tabular">
                 Última atualização: {updatedLabel}
               </p>
             )}
@@ -438,12 +438,12 @@ function InfoRow({
   value: string;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg bg-muted/40 px-3 py-2.5">
+    <div className="flex items-center gap-3 rounded-block border border-border bg-muted/40 px-3 py-3">
       <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
-      <span className="text-xs text-muted-foreground w-20 shrink-0">
+      <span className="text-xs text-muted-foreground w-14 sm:w-20 shrink-0">
         {label}
       </span>
-      <span className="text-sm font-medium text-foreground first-letter:uppercase ml-auto text-right">
+      <span className="text-sm font-medium tabular text-foreground first-letter:uppercase ml-auto text-right min-w-0 break-words">
         {value}
       </span>
     </div>

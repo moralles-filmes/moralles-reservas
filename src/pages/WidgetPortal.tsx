@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ChevronRight, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type {
   PublicBlockedDate,
   PublicCustomField,
@@ -66,10 +67,10 @@ export default function WidgetPortal() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-muted/40 flex items-center justify-center p-6">
-        <div className="w-full max-w-md space-y-3">
-          <Skeleton className="h-12 w-full" />
-          <Skeleton className="h-64 w-full" />
+      <div className="min-h-screen ambient bg-background text-foreground flex items-center justify-center p-6">
+        <div className="surface rounded-panel p-6 w-full max-w-md space-y-3">
+          <Skeleton className="h-12 w-full rounded-block" />
+          <Skeleton className="h-64 w-full rounded-card" />
         </div>
       </div>
     );
@@ -77,9 +78,9 @@ export default function WidgetPortal() {
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-muted/40 flex items-center justify-center p-6 text-center">
-        <div className="space-y-2">
-          <p className="text-lg font-semibold">Widget não encontrado.</p>
+      <div className="min-h-screen ambient bg-background text-foreground flex items-center justify-center p-6 text-center">
+        <div className="surface rounded-panel max-w-md p-8 space-y-2">
+          <p className="text-xl font-semibold tracking-tight">Widget não encontrado.</p>
           <p className="text-sm text-muted-foreground">
             Verifique o link e tente novamente.
           </p>
@@ -103,17 +104,17 @@ export default function WidgetPortal() {
   const galleryPhotos = (unit.gallery_photos ?? []).filter(Boolean);
 
   return (
-    <div className="min-h-screen bg-muted/40 flex items-center justify-center p-4 sm:p-6">
-      <div className="w-full max-w-md bg-card rounded-2xl shadow-xl overflow-hidden">
-        <div className="px-6 pt-6 flex items-center justify-between">
+    <div className="min-h-screen ambient bg-background text-foreground flex items-center justify-center p-3 sm:p-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+      <div className="surface w-full max-w-md rounded-panel overflow-hidden">
+        <div className="px-6 pt-5 flex items-center justify-between">
           <div className="text-xs text-muted-foreground">
-            Reserve com <span className="font-semibold text-foreground">moralles</span>
+            Reserve com <span className="font-semibold text-gold-ink">moralles</span>
           </div>
         </div>
 
         {unit.hero_image_url && (
-          <div className="px-6 pt-4">
-            <div className="aspect-[16/9] w-full overflow-hidden rounded-lg bg-muted">
+          <div className="px-3 pt-4">
+            <div className="aspect-[16/9] w-full overflow-hidden rounded-card bg-muted">
               <img
                 src={unit.hero_image_url}
                 alt={unit.name}
@@ -123,33 +124,36 @@ export default function WidgetPortal() {
           </div>
         )}
 
-        <div className="px-6 pt-4 pb-2 flex items-center gap-3">
+        <div className={cn(
+          "surface rounded-card relative mx-6 p-4 flex items-center gap-3",
+          unit.hero_image_url ? "-mt-6" : "mt-4",
+        )}>
           {unit.logo_url && (
             <img
               src={unit.logo_url}
               alt={`Logo ${unit.name}`}
-              className="h-10 w-10 rounded-full object-cover ring-2 ring-background"
+              className="h-12 w-12 shrink-0 rounded-full object-cover ring-2 ring-background"
             />
           )}
-          <h2 className="font-display text-xl">{unit.name}</h2>
+          <h1 className="font-display text-2xl font-semibold tracking-tight break-words min-w-0">{unit.name}</h1>
         </div>
 
         {galleryPhotos.length > 0 && (
-          <div className="px-6 pt-2 pb-1">
+          <div className="px-6 pt-4 pb-1">
             <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 snap-x snap-mandatory">
               {galleryPhotos.map((url, idx) => (
                 <button
                   key={`${url}-${idx}`}
                   type="button"
                   onClick={() => setLightboxIndex(idx)}
-                  className="relative shrink-0 w-20 h-20 rounded-md overflow-hidden bg-muted snap-start focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  className="relative shrink-0 w-20 h-20 rounded-block overflow-hidden bg-muted snap-start focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                   aria-label={`Abrir foto ${idx + 1}`}
                 >
                   <img
                     src={url}
                     alt={`Foto ${idx + 1} de ${unit.name}`}
                     loading="lazy"
-                    className="absolute inset-0 w-full h-full object-cover transition-transform duration-200 hover:scale-105"
+                    className="absolute inset-0 w-full h-full object-cover motion-safe:transition-transform motion-safe:duration-300 motion-safe:hover:scale-105"
                   />
                 </button>
               ))}
@@ -157,7 +161,7 @@ export default function WidgetPortal() {
           </div>
         )}
 
-        <div className="px-6 pt-2 pb-6">
+        <div className="px-6 pt-5 pb-6">
           <ReservaWizard
             mode="embedded"
             unit={{
@@ -185,7 +189,7 @@ export default function WidgetPortal() {
           if (!open) setLightboxIndex(null);
         }}
       >
-        <DialogContent className="max-w-5xl p-0 bg-black/95 border-0 sm:rounded-lg overflow-hidden">
+        <DialogContent className="max-w-5xl p-0 bg-background border-border sm:rounded-panel overflow-hidden">
           <DialogTitle className="sr-only">
             Foto {lightboxIndex !== null ? lightboxIndex + 1 : 0} de {unit.name}
           </DialogTitle>
@@ -199,7 +203,7 @@ export default function WidgetPortal() {
               <button
                 type="button"
                 onClick={() => setLightboxIndex(null)}
-                className="absolute top-3 right-3 h-9 w-9 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors"
+                className="surface absolute top-3 right-3 h-9 w-9 coarse:h-11 coarse:w-11 rounded-full bg-card hover:bg-muted text-foreground flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 aria-label="Fechar"
               >
                 <X className="h-5 w-5" />
@@ -213,7 +217,7 @@ export default function WidgetPortal() {
                         i === null ? null : (i - 1 + galleryPhotos.length) % galleryPhotos.length
                       )
                     }
-                    className="absolute left-3 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors"
+                    className="surface absolute left-3 top-1/2 -translate-y-1/2 h-10 w-10 coarse:h-11 coarse:w-11 rounded-full bg-card hover:bg-muted text-foreground flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                     aria-label="Foto anterior"
                   >
                     <ChevronRight className="h-5 w-5 rotate-180" />
@@ -225,12 +229,12 @@ export default function WidgetPortal() {
                         i === null ? null : (i + 1) % galleryPhotos.length
                       )
                     }
-                    className="absolute right-3 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors"
+                    className="surface absolute right-3 top-1/2 -translate-y-1/2 h-10 w-10 coarse:h-11 coarse:w-11 rounded-full bg-card hover:bg-muted text-foreground flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                     aria-label="Próxima foto"
                   >
                     <ChevronRight className="h-5 w-5" />
                   </button>
-                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-xs text-white/80 bg-black/60 rounded-full px-3 py-1">
+                  <div className="surface absolute bottom-3 left-1/2 -translate-x-1/2 text-xs tabular text-muted-foreground bg-card rounded-full px-3 py-1">
                     {lightboxIndex + 1} / {galleryPhotos.length}
                   </div>
                 </>

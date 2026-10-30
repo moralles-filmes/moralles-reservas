@@ -7,10 +7,16 @@ import { useUnitHourRange } from "@/hooks/useUnitHourRange";
 import { useWalkInStatsToday } from "@/hooks/useWalkInStatsToday";
 import { useWaitlist } from "@/hooks/useWaitlist";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { PageHeader } from "@/components/PageHeader";
-import { KpiCard } from "@/components/dashboard/KpiCard";
+import { DashboardHero } from "@/components/dashboard/DashboardHero";
+import { UpcomingArrivalsPanel } from "@/components/dashboard/UpcomingArrivalsPanel";
+import { ConversationsWaitingPanel } from "@/components/dashboard/ConversationsWaitingPanel";
+import { ManualReservaDialog } from "@/components/reserva/ManualReservaDialog";
+import { buildArrivalsByHour } from "@/lib/arrivals-today";
+import { KpiStrip } from "@/components/dashboard/KpiStrip";
+import { KpiStat } from "@/components/dashboard/KpiStat";
 import { PeriodFilter, type Period } from "@/components/dashboard/PeriodFilter";
 import { ChartCard } from "@/components/dashboard/ChartCard";
 import { EmptyChartCard } from "@/components/dashboard/EmptyChartCard";
@@ -24,9 +30,7 @@ const OccupancyByHourChart = lazy(() =>
   import("@/components/dashboard/OccupancyByHourChart").then((m) => ({ default: m.OccupancyByHourChart }))
 );
 import {
-  CalendarIcon,
   CheckCircle,
-  Clock,
   Users,
   XCircle,
   UserX,
@@ -49,10 +53,16 @@ export default function Dashboard() {
   const unitId = unit?.unit_id ?? "";
   const unitSlug = unit?.unit_slug ?? "";
 
+  const [manualOpen, setManualOpen] = useState(false);
   const [period, setPeriod] = useState<Period>("30d");
 
   const { data: stats } = useReservaStats(unitId);
-  const { data: reservasHoje, isLoading: isLoadingReservasHoje } = useReservasHoje(unitId);
+  const {
+    data: reservasHoje,
+    isLoading: isLoadingReservasHoje,
+    isError: isErrorReservasHoje,
+    refetch: refetchReservasHoje,
+  } = useReservasHoje(unitId);
   const unitHours = useUnitHourRange(unitId);
 
   const { kpis, charts, lists, hasDataInPeriod, isLoading: isLoadingMetrics } =
@@ -63,6 +73,7 @@ export default function Dashboard() {
 
   const today = useMemo(() => todayLocalISO(), []);
   const periodLabel = PERIOD_LABEL[period];
+  const hours = useMemo(() => buildArrivalsByHour(reservasHoje ?? [], unitHours), [reservasHoje, unitHours]);
 
   const extrasHoje =
     (stats?.canceladas_hoje ?? 0) + (stats?.no_show_hoje ?? 0);
@@ -71,41 +82,65 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
-      <PageHeader
-        title="Dashboard"
-        description={formatDateBR(today, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+      <DashboardHero
+        dateLabel={formatDateBR(today, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+        hours={hours}
+        todayStats={stats}
+        unitSlug={unitSlug}
+        onNewReservation={unitId && unit?.organization_id ? () => setManualOpen(true) : undefined}
+        isLoading={isLoadingReservasHoje}
+        isError={isErrorReservasHoje}
+        onRetry={() => refetchReservasHoje()}
+        aside={
+          <UpcomingArrivalsPanel
+            reservas={reservasHoje}
+            isLoading={isLoadingReservasHoje}
+            isError={isErrorReservasHoje}
+            onRetry={() => refetchReservasHoje()}
+          />
+        }
       />
+      {unitId && unit?.organization_id && (
+        <ManualReservaDialog open={manualOpen} onOpenChange={setManualOpen} unitId={unitId} organizationId={unit?.organization_id ?? ""} />
+      )}
 
-      {/* Bloco A — Operação de hoje */}
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Operação de hoje</h2>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <KpiCard
-            title="Reservas hoje"
-            value={stats?.total_hoje}
-            icon={CalendarIcon}
-            color="bg-primary/10 text-primary"
-          />
-          <KpiCard
-            title="Confirmadas"
-            value={stats?.confirmadas_hoje}
-            icon={CheckCircle}
-            color="bg-success/10 text-success"
-          />
-          <KpiCard
-            title="Pendentes"
-            value={stats?.pendentes_hoje}
-            icon={Clock}
-            color="bg-warning/10 text-warning"
-          />
-          <KpiCard
-            title="Pessoas esperadas"
-            value={stats?.pessoas_hoje}
-            icon={Users}
-            color="bg-accent/20 text-accent-foreground"
-          />
+      {/* Operação ao vivo: conversas, fila e walk-ins */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <ConversationsWaitingPanel unitId={unitId} unitSlug={unitSlug} />
+        <div className="surface rounded-card p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs text-muted-foreground">Fila de espera ativa</p>
+              <p className="text-2xl font-bold mt-1">{waitlist?.length ?? "—"}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Aguardando + notificados
+              </p>
+            </div>
+            <div className="p-2.5 rounded-full bg-warning/10 text-warning shrink-0">
+              <ListChecks className="h-4 w-4" />
+            </div>
+          </div>
         </div>
 
+        <div className="surface rounded-card p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-muted-foreground">Walk-ins hoje</p>
+              <p className="text-2xl font-bold mt-1">{walkInStats?.total ?? "—"}</p>
+              {walkInStats && walkInStats.total > 0 && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  {walkInStats.seated} sentados · {walkInStats.waiting} aguardando · {walkInStats.left + walkInStats.no_show} saíram
+                </p>
+              )}
+            </div>
+            <div className="p-2.5 rounded-full bg-accent/20 text-accent-foreground shrink-0">
+              <Footprints className="h-4 w-4" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
         <div className="pt-2">
           <h3 className="text-sm font-semibold text-muted-foreground mb-3">
             Reservas de hoje
@@ -119,6 +154,13 @@ export default function Dashboard() {
             <div className="space-y-3">
               {[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}
             </div>
+          ) : isErrorReservasHoje ? (
+            <Card>
+              <CardContent className="py-10 text-center text-muted-foreground space-y-3">
+                <p>Não foi possível carregar as reservas de hoje.</p>
+                <Button variant="outline" onClick={() => refetchReservasHoje()}>Tentar de novo</Button>
+              </CardContent>
+            </Card>
           ) : reservasHoje?.length === 0 ? (
             <Card>
               <CardContent className="py-10 text-center text-muted-foreground">
@@ -145,22 +187,22 @@ export default function Dashboard() {
       </section>
 
       {/* Bloco B — KPIs do período */}
-      <section className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-        <KpiCard
+      <KpiStrip className="lg:grid-cols-3">
+        <KpiStat
           title="Confirmadas"
           value={valueOrUndef(kpis.reservasConfirmadas)}
           icon={CheckCircle}
           color="bg-primary/10 text-primary"
           delta={kpis.deltas.reservasConfirmadas}
         />
-        <KpiCard
+        <KpiStat
           title="Pessoas atendidas"
           value={valueOrUndef(kpis.pessoasAtendidas)}
           icon={UsersRound}
           color="bg-accent/20 text-accent-foreground"
           delta={kpis.deltas.pessoasAtendidas}
         />
-        <KpiCard
+        <KpiStat
           title="No-show"
           value={valueOrUndef(kpis.noShowRate)}
           icon={UserX}
@@ -169,7 +211,7 @@ export default function Dashboard() {
           invertDelta
           suffix="%"
         />
-        <KpiCard
+        <KpiStat
           title="Cancelamento"
           value={valueOrUndef(kpis.cancelRate)}
           icon={XCircle}
@@ -178,7 +220,7 @@ export default function Dashboard() {
           invertDelta
           suffix="%"
         />
-        <KpiCard
+        <KpiStat
           title={`Avaliação média (${kpis.ratingsCount})`}
           value={valueOrUndef(kpis.avgRating ?? "—")}
           icon={Star}
@@ -187,14 +229,14 @@ export default function Dashboard() {
           deltaUnit="abs"
           suffix={kpis.avgRating !== null ? " ⭐" : undefined}
         />
-        <KpiCard
+        <KpiStat
           title="Tamanho médio do grupo"
           value={valueOrUndef(kpis.avgPartySize)}
           icon={Users}
           color="bg-info/10 text-info"
           delta={kpis.deltas.avgPartySize}
         />
-      </section>
+      </KpiStrip>
 
       {/* Bloco C — Charts principais */}
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -252,45 +294,6 @@ export default function Dashboard() {
           )}
         </div>
         <RecentRatingsList ratings={lists.recentRatings} />
-      </section>
-
-      {/* Bloco F — Operação live */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card>
-          <CardContent className="pt-5 pb-5">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs text-muted-foreground">Fila de espera ativa</p>
-                <p className="text-2xl font-bold mt-1">{waitlist?.length ?? "—"}</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Aguardando + notificados
-                </p>
-              </div>
-              <div className="p-2.5 rounded-full bg-warning/10 text-warning shrink-0">
-                <ListChecks className="h-4 w-4" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="pt-5 pb-5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-muted-foreground">Walk-ins hoje</p>
-                <p className="text-2xl font-bold mt-1">{walkInStats?.total ?? "—"}</p>
-                {walkInStats && walkInStats.total > 0 && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {walkInStats.seated} sentados · {walkInStats.waiting} aguardando · {walkInStats.left + walkInStats.no_show} saíram
-                  </p>
-                )}
-              </div>
-              <div className="p-2.5 rounded-full bg-accent/20 text-accent-foreground shrink-0">
-                <Footprints className="h-4 w-4" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
       </section>
     </div>
   );

@@ -36,8 +36,8 @@ export default function CardapiosAjustes() {
             </p>
 
             <div className="flex items-center gap-2 pt-1">
-              <Switch checked={false} disabled />
-              <Label className="text-sm flex items-center gap-1.5 text-muted-foreground">
+              <Switch id="cardapios-google-menu" checked={false} disabled />
+              <Label htmlFor="cardapios-google-menu" className="text-sm flex items-center gap-1.5 text-muted-foreground">
                 Habilitar Google Menu
                 <TooltipProvider>
                   <Tooltip>

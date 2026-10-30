@@ -1,7 +1,6 @@
 import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams, useLocation, matchPath } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
 import { GestaoLayout } from "@/components/layouts/GestaoLayout";
 import { OperacionalLayout } from "@/components/layouts/OperacionalLayout";
@@ -11,6 +10,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { BillingGuard } from "@/components/BillingGuard";
+import { RouteThemeProvider } from "@/components/RouteThemeProvider";
 import { useEffect } from "react";
 
 // ── Public ────────────────────────────────────────────────────────────────────
@@ -205,15 +205,9 @@ function PreferenceAuthBoundary({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <ErrorBoundary>
-      <ThemeProvider
-        attribute="class"
-        defaultTheme="light"
-        enableSystem={false}
-        storageKey="moralles-theme"
-        disableTransitionOnChange
-      >
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
+        <RouteThemeProvider>
         <PreferenceAuthBoundary>
           <Suspense fallback={<PageLoader />}>
             <Routes>
@@ -318,10 +312,10 @@ export default function App() {
             </Routes>
           </Suspense>
         </PreferenceAuthBoundary>
-        </BrowserRouter>
         <Toaster richColors position="top-right" />
+        </RouteThemeProvider>
+        </BrowserRouter>
       </QueryClientProvider>
-      </ThemeProvider>
     </ErrorBoundary>
   );
 }

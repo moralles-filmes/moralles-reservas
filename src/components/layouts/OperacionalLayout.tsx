@@ -5,6 +5,7 @@ import { useAwaitingHumanCount } from "@/hooks/useAwaitingHumanCount";
 import { useUndeliveredNotifications } from "@/hooks/useUndeliveredNotifications";
 import { SidebarUnitProfile } from "@/components/layouts/SidebarUnitProfile";
 import { AdminShell } from "@/components/layouts/AdminShell";
+import { BrandMark } from "@/components/layouts/BrandMark";
 import {
   SidebarActionButton,
   SidebarCopyCode,
@@ -66,6 +67,10 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
       mainPaddingClass="p-4"
       sidebar={
         <>
+          <div className="px-4 pt-2 pb-1">
+            <BrandMark />
+          </div>
+
           <div className="p-3">
             <SidebarUnitProfile basePath="o" />
           </div>

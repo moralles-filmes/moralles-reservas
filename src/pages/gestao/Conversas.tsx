@@ -6,11 +6,13 @@ import { useConversations, useConversationActions } from "@/hooks/useConversatio
 import { useSendManualMessage } from "@/hooks/useSendManualMessage";
 import { useWhatsappTemplates } from "@/hooks/useWhatsappTemplates";
 import { useDebounce } from "@/hooks/useDebounce";
+import { useResizableWidth } from "@/hooks/useResizableWidth";
 import {
   getConversationMessageAuthorLabel,
   sortConversationMessages,
 } from "@/lib/conversation-message";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -67,24 +69,23 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
   const authorLabel = getConversationMessageAuthorLabel(msg);
 
   return (
-    <div className={`flex ${isUser ? "justify-start" : "justify-end"}`}>
+    <div className={cn("flex", isUser ? "justify-start" : "justify-end")}>
       <div
-        className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${
+        className={cn(
+          "max-w-[75%] rounded-block px-4 py-2 text-sm",
           isBot
             ? "bg-primary text-primary-foreground rounded-br-sm"
             : isHuman
             ? "bg-success text-success-foreground rounded-br-sm"
             : "bg-muted rounded-bl-sm"
-        }`}
+        )}
       >
         <p className="text-[10px] font-semibold tracking-wide opacity-80 mb-0.5">
           {authorLabel}
         </p>
         <p className="whitespace-pre-wrap">{msg.content}</p>
         <p
-          className={`text-[10px] mt-1 ${
-            isUser ? "text-muted-foreground" : "text-white/60"
-          }`}
+          className={cn("text-[11px] mt-1 tabular", isUser ? "text-muted-foreground" : "opacity-80")}
         >
           {formatMessageTime(msg.timestamp)}
         </p>
@@ -428,6 +429,12 @@ export default function Conversas() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search.trim(), 200);
+  const { width: listWidth, handleProps: listResizeHandle } = useResizableWidth({
+    storageKey: "conversas-list-width",
+    defaultWidth: 320,
+    min: 240,
+    max: 560,
+  });
 
   const { data: allConversations, isLoading, isError, refetch } = useConversations(unitId, "all");
 
@@ -480,7 +487,7 @@ export default function Conversas() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-bold">Conversas WhatsApp</h1>
+      <PageHeader title="Conversas WhatsApp" />
 
       {/* Suspensão da automação — reservas/agenda continuam normais, só o
           agente de WhatsApp para de responder. */}
@@ -517,8 +524,8 @@ export default function Conversas() {
               {chip.label}
               {count !== null && count > 0 && (
                 <span className={cn(
-                  "inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full px-1 text-[10px] font-semibold",
-                  isActive ? "bg-white/30" : "bg-muted"
+                  "inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full px-1 text-[11px] font-semibold",
+                  isActive ? "bg-background/30" : "bg-muted"
                 )}>
                   {count > 99 ? "99+" : count}
                 </span>
@@ -528,7 +535,12 @@ export default function Conversas() {
         })}
       </div>
 
-      <div className="grid lg:grid-cols-[320px,1fr] gap-4 h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]">
+      {/* ≥lg: lista com largura ajustável pela alça; a conversa nunca fica
+          abaixo de 26rem, mesmo com largura salva numa tela maior. */}
+      <div
+        className="grid lg:grid-cols-[var(--conversas-cols)] gap-4 lg:gap-0 h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]"
+        style={{ "--conversas-cols": `min(${listWidth}px, calc(100% - 26rem)) 1rem minmax(0, 1fr)` } as React.CSSProperties}
+      >
         {/* List */}
         <Card className={cn("flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
           <CardHeader className="py-3 px-4 border-b">
@@ -571,7 +583,7 @@ export default function Conversas() {
                     </p>
                     <Badge
                       variant="outline"
-                      className={`text-[10px] shrink-0 ${STATUS_CLASSES[c.status ?? "ai_active"]}`}
+                      className={cn("text-[11px] shrink-0", STATUS_CLASSES[c.status ?? "ai_active"])}
                     >
                       {STATUS_LABEL[c.status ?? "ai_active"]}
                     </Badge>
@@ -582,7 +594,7 @@ export default function Conversas() {
                   {c.status === "awaiting_human" && c.handoff_reason && (
                     <p className="text-xs text-warning truncate mt-0.5">{c.handoff_reason}</p>
                   )}
-                  <p className="text-xs text-muted-foreground mt-0.5">
+                  <p className="text-xs text-muted-foreground mt-0.5 tabular">
                     {formatDateBR(c.last_message_at ?? c.updated_at)}
                   </p>
                 </button>
@@ -590,6 +602,15 @@ export default function Conversas() {
             )}
           </ScrollArea>
         </Card>
+
+        <div
+          {...listResizeHandle}
+          aria-label="Largura da lista de conversas"
+          title="Arraste para ajustar a largura · duplo clique volta ao padrão"
+          className="group hidden lg:flex justify-center cursor-col-resize touch-none select-none rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        >
+          <span className="my-auto h-12 w-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/50 group-focus-visible:bg-muted-foreground/50" />
+        </div>
 
         {/* Detail */}
         <Card className={cn("flex flex-col overflow-hidden", !selectedId && "hidden lg:flex")}>

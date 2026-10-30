@@ -39,7 +39,7 @@ export function StepGuestInfo() {
       <WizardSummary includeHall />
 
       {computed.chargeInfo && (
-        <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 flex items-start gap-2.5 text-sm text-warning">
+        <div className="rounded-block border border-warning/30 bg-warning/10 p-3 flex items-start gap-2.5 text-sm text-warning">
           <CreditCard className="h-4 w-4 mt-0.5 shrink-0" />
           <div>
             <p className="font-medium">
@@ -179,7 +179,7 @@ export function StepGuestInfo() {
                 </SelectContent>
               </Select>
             ) : f.type === "file" ? (
-              <p className="text-xs text-muted-foreground border rounded-md px-3 py-2 bg-muted/30">
+              <p className="text-xs text-muted-foreground border rounded-block px-3 py-2 bg-muted/30">
                 Upload de arquivo em breve.
               </p>
             ) : (
@@ -194,7 +194,7 @@ export function StepGuestInfo() {
           </Field>
         ))}
 
-        <div className="flex items-start gap-3 rounded-lg border p-3">
+        <div className="flex items-start gap-3 rounded-block border p-3">
           <Checkbox
             id="wizard-marketing-opt-in"
             checked={state.marketing_opt_in}
@@ -207,23 +207,23 @@ export function StepGuestInfo() {
         </div>
       </div>
 
-      {/* Card "Sobre a Reserva" — regras + instruções do widget */}
+      {/* Card "Sobre a reserva" — regras + instruções do widget */}
       {(input.rulesAndConditions || input.additionalInfo || input.widgetInstructions) && (
-        <div className="rounded-xl border bg-card p-4 space-y-3">
-          <h4 className="text-sm font-semibold text-foreground">Sobre a Reserva</h4>
+        <div className="surface rounded-card p-4 space-y-3">
+          <h4 className="text-sm font-semibold text-foreground">Sobre a reserva</h4>
           {input.widgetInstructions && (
-            <div className="rounded-md bg-warning/10 border border-warning/20 p-3 text-xs text-warning whitespace-pre-line">
+            <div className="rounded-block bg-warning/10 border border-warning/20 p-3 text-xs text-warning whitespace-pre-line">
               {input.widgetInstructions}
             </div>
           )}
           {input.rulesAndConditions && (
-            <div className="rounded-md bg-warning/10 border border-warning/20 p-3 text-xs text-warning whitespace-pre-line">
-              <strong className="block mb-1">Regras e Condições</strong>
+            <div className="rounded-block bg-warning/10 border border-warning/20 p-3 text-xs text-warning whitespace-pre-line">
+              <strong className="block mb-1">Regras e condições</strong>
               {input.rulesAndConditions}
             </div>
           )}
           {input.additionalInfo && (
-            <div className="rounded-md bg-muted/50 border p-3 text-xs whitespace-pre-line">
+            <div className="rounded-block bg-muted/50 border p-3 text-xs whitespace-pre-line">
               {input.additionalInfo}
             </div>
           )}

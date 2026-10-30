@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Link, NavLink, useLocation, useMatch, useResolvedPath } from "react-router-dom";
 import { ChevronDown, Copy } from "lucide-react";
 import { toast } from "sonner";
@@ -8,20 +8,20 @@ import { useSidebarCollapse } from "./sidebar-context";
 
 /* ────────────────────────────────────────────────────────────────────────────
    Estilos canônicos do item de navegação — fonte única, importada por todos os
-   layouts (Gestão/Operacional/Plataforma/Admin legado). Item ativo é DOURADO via
-   tokens da sidebar (--sidebar-accent + --sidebar-accent-foreground + anel
-   --sidebar-ring), sem azul chapado.
+   layouts (Gestão/Operacional/Plataforma/Admin legado). Item ativo usa os tokens
+   da sidebar (--sidebar-accent + --sidebar-accent-foreground) com um traço
+   dourado de 2px à esquerda. Superfícies únicas: sem vidro nos itens repetidos.
    ──────────────────────────────────────────────────────────────────────────── */
 export const navItemBase =
-  "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors";
+  "flex items-center gap-3 px-3 py-2 coarse:min-h-11 rounded-item text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset";
 export const navItemActive =
-  "bg-sidebar-accent text-sidebar-accent-foreground font-medium ring-1 ring-inset ring-sidebar-ring/25";
+  "relative bg-sidebar-accent text-sidebar-accent-foreground font-medium before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[2px] before:rounded-full before:bg-gold";
 export const navItemIdle =
   "text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-foreground";
 export const navItem = (isActive: boolean) =>
   cn(navItemBase, isActive ? navItemActive : navItemIdle);
 export const navSectionTitle =
-  "text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-3";
+  "text-[10px] font-semibold tracking-wider text-tertiary px-3";
 
 type IconType = React.ComponentType<{ className?: string }>;
 
@@ -34,7 +34,7 @@ function NavBadge({ value, collapsed }: { value: number; collapsed: boolean }) {
     );
   }
   return (
-    <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-warning text-warning-foreground text-[10px] font-bold flex items-center justify-center leading-none">
+    <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-warning text-warning-foreground text-[10px] font-bold flex items-center justify-center leading-none tabular">
       {value > 99 ? "99+" : value}
     </span>
   );
@@ -117,7 +117,7 @@ export function SidebarDisabledItem({ icon: Icon, label }: { icon: IconType; lab
     <span
       className={cn(
         navItemBase,
-        "text-muted-foreground/50 cursor-not-allowed select-none",
+        "text-muted-foreground/70 cursor-not-allowed select-none",
         collapsed && "justify-center",
       )}
       aria-disabled="true"
@@ -151,6 +151,7 @@ export function SidebarActionButton({
         "relative w-full text-muted-foreground hover:bg-sidebar-accent/50",
         collapsed ? "justify-center" : "hover:text-foreground",
         danger && "hover:text-destructive",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
       )}
     >
       <Icon className="h-4 w-4 shrink-0" />
@@ -158,29 +159,6 @@ export function SidebarActionButton({
     </button>
   );
   return withTooltip(btn, label, collapsed);
-}
-
-/** Cabeçalho de marca (ícone dourado + nome do painel). Recolhe pra ícone centrado. */
-export function SidebarBrand({ icon: Icon, label }: { icon: IconType; label: string }) {
-  const { collapsed } = useSidebarCollapse();
-  if (collapsed) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div className="h-12 flex items-center justify-center">
-            <Icon className="h-5 w-5 text-gold" />
-          </div>
-        </TooltipTrigger>
-        <TooltipContent side="right">{label}</TooltipContent>
-      </Tooltip>
-    );
-  }
-  return (
-    <div className="h-14 flex items-center px-5 gap-2">
-      <Icon className="h-5 w-5 text-gold shrink-0" />
-      <span className="font-semibold text-sm text-sidebar-foreground truncate">{label}</span>
-    </div>
-  );
 }
 
 /** Texto de rodapé (ex.: e-mail do admin) — some quando recolhido. */
@@ -211,7 +189,7 @@ export function SidebarCopyCode({ slug }: { slug: string }) {
     <button
       type="button"
       onClick={handleCopy}
-      className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-xs text-muted-foreground bg-muted hover:bg-muted/70 transition-colors group"
+      className="w-full flex items-center gap-2 px-3 py-1.5 rounded-item text-xs text-muted-foreground bg-muted hover:bg-muted/70 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <Copy className="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" />
       <span className="flex-1 text-left">Copiar código</span>
@@ -249,6 +227,7 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
   const location = useLocation();
   const isInside = location.pathname.startsWith(matchPrefix);
   const [open, setOpen] = useState(isInside);
+  const groupItemsId = useId();
 
   useEffect(() => {
     if (isInside) setOpen(true);
@@ -279,6 +258,7 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
         onClick={() => setOpen((v) => !v)}
         className={cn(navItemBase, "w-full", isInside ? navItemActive : navItemIdle)}
         aria-expanded={open}
+        aria-controls={groupItemsId}
       >
         <Icon className="h-4 w-4 shrink-0" />
         <span className="flex-1 text-left truncate">{label}</span>
@@ -286,8 +266,8 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
           className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
         />
       </button>
-      {open && (
-        <div className="mt-0.5 ml-3 pl-3 border-l border-sidebar-border/50 space-y-0.5">
+      <div id={groupItemsId} hidden={!open}>
+        {open && <div className="mt-0.5 ml-3 pl-3 border-l border-sidebar-border/50 space-y-0.5">
           {items.map((child) => {
             const ChildIcon = child.icon;
             return (
@@ -297,22 +277,22 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
                 end={child.end}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors",
+                    "flex items-center gap-2 px-3 py-1.5 rounded-item text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                     isActive ? navItemActive : navItemIdle,
                   )
                 }
               >
                 {({ isActive }) => (
                   <>
-                    <ChildIcon className={cn("h-3.5 w-3.5 shrink-0", !isActive && "text-muted-foreground")} />
+                    <ChildIcon className={cn("h-3.5 w-3.5 shrink-0", !isActive && "text-tertiary")} />
                     <span className="flex-1 truncate">{child.label}</span>
                   </>
                 )}
               </NavLink>
             );
           })}
-        </div>
-      )}
+        </div>}
+      </div>
     </div>
   );
 }

@@ -8,10 +8,9 @@ import {
 import { ReservaCard } from "@/components/reserva/ReservaCard";
 import { ManualReservaDialog } from "@/components/reserva/ManualReservaDialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/PageHeader";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertCircle, CalendarIcon, Plus } from "lucide-react";
+import { AlertCircle, Plus } from "lucide-react";
 import { formatDateBR, todayLocalISO } from "@/lib/utils";
 
 export default function ReservasDia() {
@@ -38,19 +37,18 @@ export default function ReservasDia() {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <CalendarIcon className="h-5 w-5 text-primary shrink-0" />
-        <h1 className="text-xl font-bold">Reservas de hoje</h1>
-        <Badge variant="outline">{formatDateBR(today, { weekday: "long", day: "numeric", month: "long" })}</Badge>
+      <PageHeader
+        title="Reservas de hoje"
+        description={formatDateBR(today, { weekday: "long", day: "numeric", month: "long" })}
+      >
         <Button
           size="sm"
-          className="w-full sm:w-auto sm:ml-auto"
           onClick={() => setManualOpen(true)}
           disabled={!unitId}
         >
           <Plus className="h-4 w-4 mr-1" /> Nova reserva manual
         </Button>
-      </div>
+      </PageHeader>
 
       {unitId && (
         <ManualReservaDialog
@@ -62,10 +60,9 @@ export default function ReservasDia() {
       )}
 
       {isLoading ? (
-        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
+        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full rounded-block" />)}</div>
       ) : isError ? (
-        <Card className="border-destructive">
-          <CardContent className="py-8 flex flex-col items-center gap-3 text-center">
+        <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
             <AlertCircle className="h-8 w-8 text-destructive" />
             <p className="text-sm font-medium">Erro ao carregar reservas de hoje.</p>
             <p className="text-xs text-muted-foreground">
@@ -74,11 +71,9 @@ export default function ReservasDia() {
             <Button size="sm" variant="outline" onClick={() => refetch()}>
               Tentar de novo
             </Button>
-          </CardContent>
-        </Card>
+        </div>
       ) : !hasActive ? (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground text-sm">
+        <div className="surface rounded-card py-12 text-center text-muted-foreground text-sm">
             <p>Nenhuma reserva ativa para hoje.</p>
             {(cancelled > 0 || noShow > 0) && (
               <p className="text-xs mt-2">
@@ -87,15 +82,14 @@ export default function ReservasDia() {
                 {noShow > 0 && <span>{noShow} não compareceu</span>}
               </p>
             )}
-          </CardContent>
-        </Card>
+        </div>
       ) : (
         <div className="space-y-5">
           {pending.length > 0 && (
             <div className="space-y-3">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+              <h2 className="text-sm font-medium text-muted-foreground">
                 Aguardando confirmação ({pending.length})
-              </p>
+              </h2>
               {pending.map((r) => (
                 <ReservaCard
                   key={r.id}
@@ -109,9 +103,9 @@ export default function ReservasDia() {
           )}
           {confirmed.length > 0 && (
             <div className="space-y-3">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+              <h2 className="text-sm font-medium text-muted-foreground">
                 Confirmadas ({confirmed.length})
-              </p>
+              </h2>
               {confirmed.map((r) => (
                 <ReservaCard
                   key={r.id}

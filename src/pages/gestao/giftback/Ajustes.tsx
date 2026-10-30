@@ -115,9 +115,9 @@ function AjustesDaUnidade({ unit }: { unit: NonNullable<ReturnType<typeof useCur
             </div>
             <Switch id="giftback-whatsapp" checked={whatsapp} onCheckedChange={setWhatsapp} disabled={!canSave} />
           </div>
-          <div className="flex items-center justify-between rounded-md border p-3 opacity-60">
+          <div className="flex items-center justify-between rounded-md border p-3">
             <div className="space-y-0.5">
-              <Label className="text-sm font-medium">E-mail</Label>
+              <Label className="text-sm font-medium text-muted-foreground">E-mail</Label>
               <p className="text-xs text-muted-foreground">
                 Envio por e-mail (Resend) chega em uma fase futura.
               </p>

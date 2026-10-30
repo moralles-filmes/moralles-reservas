@@ -300,7 +300,7 @@ export default function Clientes() {
         </Card>
       ) : (
         <>
-          <div className="grid gap-3">
+          <div className="grid grid-cols-1 gap-3">
             {customers.map((c) => {
               const emailsArr = getEmailsArray(c);
               const primaryEmail = emailsArr[0];

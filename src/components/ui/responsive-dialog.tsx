@@ -17,6 +17,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useDialogFocusReturn } from "@/components/ui/use-dialog-focus-return";
 
 const ResponsiveDialog = DialogPrimitive.Root;
 const ResponsiveDialogTrigger = DialogPrimitive.Trigger;
@@ -30,7 +31,7 @@ const ResponsiveDialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-50 bg-black/60 backdrop-blur-sm",
+      "fixed inset-0 z-50 bg-background/60 backdrop-blur-sm",
       "data-[state=open]:animate-in data-[state=closed]:animate-out",
       "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
       className,
@@ -54,19 +55,22 @@ interface ResponsiveDialogContentProps
 const ResponsiveDialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   ResponsiveDialogContentProps
->(({ className, children, hideClose = false, ...props }, ref) => (
+>(({ className, children, hideClose = false, onOpenAutoFocus, onCloseAutoFocus, ...props }, ref) => {
+  const focusReturn = useDialogFocusReturn(onOpenAutoFocus, onCloseAutoFocus);
+  return (
   <ResponsiveDialogPortal>
     <ResponsiveDialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
+      {...focusReturn}
       className={cn(
-        // Base: fullscreen mobile / centered desktop
-        "fixed z-50 bg-background shadow-2xl",
-        // Mobile: ocupa tudo, sem borda/raio
-        "inset-x-0 bottom-0 top-0 w-full max-w-none h-[100dvh] border-0 rounded-none",
+        // Base: vidro forte (superfície única)
+        "glass-strong",
+        // Mobile: ocupa a tela toda, sem raio
+        "fixed z-50 inset-x-0 bottom-0 top-0 w-full max-w-none h-[100dvh] rounded-none",
         // Desktop (sm+): centraliza, max-width, raio, max-height
         "sm:inset-auto sm:left-[50%] sm:top-[50%] sm:translate-x-[-50%] sm:translate-y-[-50%]",
-        "sm:max-w-lg sm:h-auto sm:max-h-[90dvh] sm:rounded-2xl sm:border",
+        "sm:max-w-lg sm:h-auto sm:max-h-[90dvh] sm:rounded-panel",
         // Layout interno: header / body scrollável / footer
         "grid grid-rows-[auto_1fr_auto]",
         // Animações
@@ -86,10 +90,10 @@ const ResponsiveDialogContent = React.forwardRef<
         <DialogPrimitive.Close
           className={cn(
             "absolute right-3 top-3 sm:right-4 sm:top-4 z-10",
-            "h-9 w-9 rounded-full inline-flex items-center justify-center",
-            "bg-background/80 backdrop-blur text-foreground/70",
+            "h-9 w-9 coarse:h-11 coarse:w-11 rounded-full inline-flex items-center justify-center",
+            "bg-background/80 text-foreground/70",
             "hover:text-foreground hover:bg-muted transition-colors",
-            "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
           )}
           aria-label="Fechar"
         >
@@ -98,7 +102,8 @@ const ResponsiveDialogContent = React.forwardRef<
       )}
     </DialogPrimitive.Content>
   </ResponsiveDialogPortal>
-));
+  );
+});
 ResponsiveDialogContent.displayName = "ResponsiveDialogContent";
 
 /** Header fixo no topo. Sem padding inferior (o body controla seu próprio padding). */
@@ -108,7 +113,7 @@ const ResponsiveDialogHeader = ({
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      "px-5 sm:px-6 pt-5 sm:pt-6 pb-4 border-b bg-background",
+      "px-5 sm:px-6 pt-5 sm:pt-6 pb-4 border-b",
       className,
     )}
     {...props}
@@ -140,7 +145,7 @@ const ResponsiveDialogFooter = ({
   <div
     className={cn(
       "px-5 sm:px-6 pt-3 pb-[calc(0.875rem+env(safe-area-inset-bottom))] sm:pb-4",
-      "border-t bg-background/95 backdrop-blur",
+      "border-t bg-background/95",
       "flex items-center gap-3",
       className,
     )}

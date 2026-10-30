@@ -12,7 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -39,15 +39,15 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { formatPhone } from "@/lib/utils";
+import { cn, formatPhone } from "@/lib/utils";
 import type { WalkIn, WalkInStatus } from "@/types/reserva";
-import { Clock, Plus, Trash2, UtensilsCrossed, Users } from "lucide-react";
+import { AlertCircle, Clock, Plus, Trash2, UtensilsCrossed, Users } from "lucide-react";
 import { toast } from "sonner";
 
 const STATUS_CONFIG: Record<WalkInStatus, { label: string; className: string }> = {
   waiting:  { label: "Aguardando", className: "bg-warning/10 text-warning border-warning/20" },
   seated:   { label: "Na mesa",    className: "bg-success/10 text-success border-success/20" },
-  left:     { label: "Foi embora", className: "bg-muted text-muted-foreground" },
+  left:     { label: "Foi embora", className: "bg-muted text-muted-foreground border-border" },
   no_show:  { label: "Não apareceu", className: "bg-destructive/10 text-destructive border-destructive/20" },
 };
 
@@ -55,7 +55,7 @@ function WaitingTime({ arrivedAt }: { arrivedAt: string }) {
   const mins = Math.floor((Date.now() - new Date(arrivedAt).getTime()) / 60_000);
   const className = mins >= 30 ? "text-destructive font-semibold" : mins >= 15 ? "text-warning" : "text-muted-foreground";
   return (
-    <span className={`flex items-center gap-1 text-xs ${className}`}>
+    <span className={cn("flex items-center gap-1 text-xs tabular", className)}>
       <Clock className="h-3 w-3" />
       {mins < 1 ? "agora" : `${mins} min`}
     </span>
@@ -72,7 +72,7 @@ export default function Passantes() {
   const [partySize, setPartySize] = useState("2");
   const [notes, setNotes] = useState("");
 
-  const { data: walkIns, isLoading } = useWalkIns(unitId);
+  const { data: walkIns, isLoading, isError, refetch } = useWalkIns(unitId);
   const createWalkIn = useCreateWalkIn(unitId);
   const updateStatus = useUpdateWalkInStatus(unitId);
   const deleteWalkIn = useDeleteWalkIn(unitId);
@@ -113,37 +113,36 @@ export default function Passantes() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <UtensilsCrossed className="h-5 w-5 text-primary" />
-          <h1 className="text-xl font-bold">Walk-ins</h1>
-          {waiting.length > 0 && (
-            <Badge className="bg-warning/10 text-warning border-warning/20">
-              {waiting.length} aguardando
-            </Badge>
-          )}
-        </div>
+      <PageHeader title="Walk-ins">
+        {waiting.length > 0 && <span className="rounded-full border px-2 py-0.5 text-xs font-medium tabular bg-warning/10 text-warning border-warning/20">{waiting.length} aguardando</span>}
         <Button size="sm" onClick={() => setOpen(true)}>
           <Plus className="h-4 w-4 mr-1" /> Registrar
         </Button>
-      </div>
+      </PageHeader>
 
       {isLoading ? (
-        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
+        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full rounded-block" />)}</div>
+      ) : isError ? (
+        <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
+          <AlertCircle className="h-8 w-8 text-destructive" />
+          <p className="text-sm font-medium">Erro ao carregar os walk-ins.</p>
+          <p className="text-xs text-muted-foreground">Verifique sua conexão e tente novamente.</p>
+          <Button size="sm" variant="outline" onClick={() => refetch()}>
+            Tentar de novo
+          </Button>
+        </div>
       ) : !walkIns?.length ? (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground text-sm">
+        <div className="surface rounded-card py-12 text-center text-muted-foreground text-sm">
             <UtensilsCrossed className="h-8 w-8 mx-auto mb-2 opacity-30" />
             Nenhum walk-in no momento.
-          </CardContent>
-        </Card>
+        </div>
       ) : (
         <div className="space-y-5">
           {waiting.length > 0 && (
             <div className="space-y-3">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+              <h2 className="text-sm font-medium text-muted-foreground">
                 Aguardando ({waiting.length})
-              </p>
+              </h2>
               {waiting.map((w) => (
                 <WalkInCard
                   key={w.id}
@@ -160,9 +159,9 @@ export default function Passantes() {
           )}
           {seated.length > 0 && (
             <div className="space-y-3">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+              <h2 className="text-sm font-medium text-muted-foreground">
                 Na mesa ({seated.length})
-              </p>
+              </h2>
               {seated.map((w) => (
                 <WalkInCard
                   key={w.id}
@@ -186,18 +185,18 @@ export default function Passantes() {
           <DialogHeader><DialogTitle>Registrar walk-in</DialogTitle></DialogHeader>
           <div className="space-y-4 mt-2">
             <div className="space-y-1">
-              <Label>Nome do cliente *</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: João Silva" />
+              <Label htmlFor="walkin-name">Nome do cliente *</Label>
+              <Input id="walkin-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: João Silva" />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label>WhatsApp (opcional)</Label>
-                <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />
+                <Label htmlFor="walkin-phone">WhatsApp (opcional)</Label>
+                <Input id="walkin-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />
               </div>
               <div className="space-y-1">
-                <Label>Pessoas *</Label>
+                <Label htmlFor="walkin-party-size">Pessoas *</Label>
                 <Select value={partySize} onValueChange={setPartySize}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="walkin-party-size"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
                       <SelectItem key={n} value={String(n)}>{n} {n === 1 ? "pessoa" : "pessoas"}</SelectItem>
@@ -207,8 +206,8 @@ export default function Passantes() {
               </div>
             </div>
             <div className="space-y-1">
-              <Label>Observações (opcional)</Label>
-              <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ex: aniversário, alergia..." />
+              <Label htmlFor="walkin-notes">Observações (opcional)</Label>
+              <Input id="walkin-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ex: aniversário, alergia..." />
             </div>
             <Button onClick={handleCreate} disabled={createWalkIn.isPending} className="w-full">
               Registrar
@@ -261,14 +260,13 @@ function WalkInCard({
   });
 
   return (
-    <Card>
-      <CardContent className="py-3 flex items-start gap-4 flex-wrap">
+    <div className="surface rounded-block p-4 flex items-start gap-4 flex-wrap">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-1">
             <p className="font-medium text-sm">{walkIn.customer_name}</p>
-            <Badge variant="outline" className={`text-[10px] ${statusCfg.className}`}>{statusCfg.label}</Badge>
+            <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium shrink-0", statusCfg.className)}>{statusCfg.label}</span>
             {walkIn.table && (
-              <Badge variant="outline" className="text-[10px]">Mesa {walkIn.table.number}</Badge>
+              <Badge variant="outline" className="text-[11px]">Mesa {walkIn.table.number}</Badge>
             )}
           </div>
           <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
@@ -288,7 +286,7 @@ function WalkInCard({
           {walkIn.status === "waiting" && (
             <>
               <Select value={selectedTable} onValueChange={setSelectedTable}>
-                <SelectTrigger className="h-8 w-44 text-xs">
+                <SelectTrigger className="h-8 w-44 text-xs" aria-label="Alocar mesa">
                   <SelectValue placeholder="Alocar mesa" />
                 </SelectTrigger>
                 <SelectContent>
@@ -337,7 +335,7 @@ function WalkInCard({
           )}
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="ghost" size="icon">
+              <Button variant="ghost" size="icon" aria-label="Remover walk-in">
                 <Trash2 className="h-4 w-4 text-destructive" />
               </Button>
             </AlertDialogTrigger>
@@ -359,7 +357,6 @@ function WalkInCard({
             </AlertDialogContent>
           </AlertDialog>
         </div>
-      </CardContent>
-    </Card>
+    </div>
   );
 }

@@ -52,21 +52,23 @@ export function ReservasCalendar({ unitId }: ReservasCalendarProps) {
     else setMonth(m => m + 1);
   };
 
-  const monthLabel = new Date(year, month).toLocaleDateString("pt-BR", {
+  // Só a primeira letra: `capitalize` do CSS escrevia "Outubro De 2026".
+  const rawMonthLabel = new Date(year, month).toLocaleDateString("pt-BR", {
     month: "long",
     year: "numeric",
   });
+  const monthLabel = rawMonthLabel.charAt(0).toUpperCase() + rawMonthLabel.slice(1);
 
   return (
     <div className="grid lg:grid-cols-[360px,1fr] gap-6">
       <Card>
         <CardContent className="pt-4">
           <div className="flex items-center justify-between mb-4">
-            <Button variant="ghost" size="icon" onClick={prevMonth}>
+            <Button variant="ghost" size="icon" aria-label="Mês anterior" onClick={prevMonth}>
               <ChevronLeft className="h-4 w-4" />
             </Button>
-            <span className="font-semibold capitalize">{monthLabel}</span>
-            <Button variant="ghost" size="icon" onClick={nextMonth}>
+            <span className="font-semibold">{monthLabel}</span>
+            <Button variant="ghost" size="icon" aria-label="Próximo mês" onClick={nextMonth}>
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
@@ -127,14 +129,12 @@ export function ReservasCalendar({ unitId }: ReservasCalendarProps) {
 
         {isLoading ? (
           <div className="space-y-3">
-            {[1, 2].map((i) => <Skeleton key={i} className="h-20 w-full" />)}
+            {[1, 2].map((i) => <Skeleton key={i} className="h-24 w-full rounded-block" />)}
           </div>
         ) : dayReservas?.length === 0 ? (
-          <Card>
-            <CardContent className="py-10 text-center text-muted-foreground text-sm">
-              Nenhuma reserva neste dia.
-            </CardContent>
-          </Card>
+          <div className="surface rounded-card py-10 text-center text-muted-foreground text-sm">
+            Nenhuma reserva neste dia.
+          </div>
         ) : (
           dayReservas?.map((r) => (
             <ReservaCard key={r.id} reserva={r} showActions unitId={unitId} />

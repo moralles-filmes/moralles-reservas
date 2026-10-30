@@ -5,8 +5,8 @@ import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { UtensilsCrossed } from "lucide-react";
+import { CardContent, CardHeader } from "@/components/ui/card";
+import { BrandMark } from "@/components/layouts/BrandMark";
 import { toast } from "sonner";
 
 export default function Auth() {
@@ -51,21 +51,22 @@ export default function Auth() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader className="text-center">
-          <div className="flex justify-center mb-2">
-            <UtensilsCrossed className="h-8 w-8 text-primary" />
+    <div className="ambient min-h-[100dvh] flex items-center justify-center bg-background px-4 py-8">
+      <div className="glass rounded-panel w-full max-w-[400px] text-card-foreground">
+        <CardHeader className="p-6 text-center sm:p-8">
+          <div className="mb-4 flex justify-center">
+            <BrandMark />
           </div>
-          <CardTitle>{mode === "login" ? "Área Administrativa" : "Redefinir senha"}</CardTitle>
+          <h1 className="text-2xl font-semibold tracking-tight">{mode === "login" ? "Área Administrativa" : "Redefinir senha"}</h1>
           <p className="text-sm text-muted-foreground">Moralles Reservas</p>
         </CardHeader>
-        <CardContent>
+        <CardContent className="px-6 pb-6 sm:px-8 sm:pb-8">
           {mode === "login" ? (
             <form onSubmit={handleLogin} className="space-y-4">
               <div className="space-y-1">
                 <Label htmlFor="email">E-mail</Label>
                 <Input
+                  className="h-12 sm:h-11 coarse:h-12 text-base"
                   id="email"
                   type="email"
                   value={email}
@@ -77,6 +78,7 @@ export default function Auth() {
               <div className="space-y-1">
                 <Label htmlFor="password">Senha</Label>
                 <Input
+                  className="h-12 sm:h-11 coarse:h-12 text-base"
                   id="password"
                   type="password"
                   value={password}
@@ -84,7 +86,7 @@ export default function Auth() {
                   required
                 />
               </div>
-              <Button type="submit" className="w-full" disabled={loading}>
+              <Button type="submit" className="w-full h-12 sm:h-11" disabled={loading}>
                 {loading ? "Entrando..." : "Entrar"}
               </Button>
               <Button
@@ -104,6 +106,7 @@ export default function Auth() {
               <div className="space-y-1">
                 <Label htmlFor="email-forgot">E-mail</Label>
                 <Input
+                  className="h-12 sm:h-11 coarse:h-12 text-base"
                   id="email-forgot"
                   type="email"
                   value={email}
@@ -112,7 +115,7 @@ export default function Auth() {
                   autoFocus
                 />
               </div>
-              <Button type="submit" className="w-full" disabled={loading}>
+              <Button type="submit" className="w-full h-12 sm:h-11" disabled={loading}>
                 {loading ? "Enviando..." : "Enviar link"}
               </Button>
               <Button
@@ -126,7 +129,7 @@ export default function Auth() {
             </form>
           )}
         </CardContent>
-      </Card>
+      </div>
     </div>
   );
 }

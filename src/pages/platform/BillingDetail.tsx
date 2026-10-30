@@ -96,7 +96,7 @@ export default function BillingDetail() {
       {/* Header */}
       <div className="flex items-center gap-4">
         <Link to="/platform/billing">
-          <Button variant="ghost" size="icon"><ArrowLeft className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon" aria-label="Voltar"><ArrowLeft className="h-4 w-4" /></Button>
         </Link>
         <div className="flex-1">
           <h1 className="text-2xl font-bold">{org.name}</h1>
@@ -352,11 +352,11 @@ function InvoicesTable({ invoices }: { invoices: BillingInvoice[] }) {
               <TableCell>
                 {inv.hosted_invoice_url && (
                   <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { navigator.clipboard.writeText(inv.hosted_invoice_url!); toast.success("Link copiado."); }}>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Copiar link da fatura" onClick={() => { navigator.clipboard.writeText(inv.hosted_invoice_url!); toast.success("Link copiado."); }}>
                       <Copy className="h-3 w-3" />
                     </Button>
                     <a href={inv.hosted_invoice_url} target="_blank" rel="noopener noreferrer">
-                      <Button variant="ghost" size="icon" className="h-8 w-8"><ExternalLink className="h-3 w-3" /></Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Abrir fatura"><ExternalLink className="h-3 w-3" /></Button>
                     </a>
                   </div>
                 )}

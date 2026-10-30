@@ -39,7 +39,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
   // Trilho recolhido: só o avatar circular (logo ou ícone), com tooltip do nome.
   if (collapsed) {
     const avatar = (
-      <div className="mx-auto h-10 w-10 rounded-full bg-card border border-sidebar-border shadow-sm overflow-hidden flex items-center justify-center">
+      <div className="mx-auto h-10 w-10 rounded-full bg-card ring-1 ring-sidebar-border shadow-depth-1 overflow-hidden flex items-center justify-center">
         {logoUrl ? (
           <img src={logoUrl} alt="" className="h-full w-full object-cover" />
         ) : (
@@ -58,7 +58,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" className="w-full">
+          <button type="button" aria-label={`${unit.unit_name}, trocar unidade`} className="w-full rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             {avatar}
           </button>
         </DropdownMenuTrigger>
@@ -82,9 +82,8 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
   const card = (
     <div
       className={cn(
-        "relative w-full h-32 rounded-lg overflow-hidden border border-sidebar-border",
-        "shadow-sm group",
-        hasMultiple && "cursor-pointer hover:shadow-md transition-shadow",
+        "surface relative w-full h-32 rounded-block overflow-hidden group",
+        hasMultiple && "cursor-pointer hover:shadow-depth-2 transition-shadow",
       )}
     >
       {heroUrl ? (
@@ -97,10 +96,11 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
         <div className="absolute inset-0 bg-gradient-to-br from-gold to-gold/70" />
       )}
 
+      {/* Véu e texto sobre a foto de capa são fixos (preto/branco): a foto não muda com o tema. */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent" />
 
       <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-end gap-2.5">
-        <div className="h-11 w-11 rounded-full bg-white border-2 border-white shadow-md overflow-hidden shrink-0 flex items-center justify-center">
+        <div className="h-11 w-11 rounded-full bg-logo-plate ring-2 ring-background shadow-depth-1 overflow-hidden shrink-0 flex items-center justify-center">
           {logoUrl ? (
             <img src={logoUrl} alt="" className="h-full w-full object-cover" />
           ) : (
@@ -112,7 +112,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
             {unit.unit_name}
           </p>
           {unit.organization_slug && (
-            <p className="text-[11px] text-white/80 truncate drop-shadow-md leading-tight mt-0.5">
+            <p className="text-[11px] text-white/90 truncate drop-shadow-md leading-tight mt-0.5">
               {unit.role === "owner" ? "Proprietário" : unit.role === "gerente" ? "Gerente" : "Operador"}
             </p>
           )}
@@ -131,7 +131,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="w-full text-left">
+        <button type="button" className="w-full text-left rounded-block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {card}
         </button>
       </DropdownMenuTrigger>

@@ -25,10 +25,10 @@ export function ChartCard({
   height = "h-72",
 }: ChartCardProps) {
   return (
-    <Card className={className}>
+    <Card className={cn("surface rounded-card", className)}>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium">{title}</CardTitle>
-        {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
+        {subtitle && <p className="text-xs text-tertiary mt-1">{subtitle}</p>}
       </CardHeader>
       <CardContent className={cn(height, "p-2")}>
         {loading ? <Skeleton className="h-full w-full" /> : empty ? emptyContent : children}

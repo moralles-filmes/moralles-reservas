@@ -16,7 +16,7 @@ export function WizardSummary({ includeHall = false }: WizardSummaryProps) {
   const hall = input.halls.find((h) => h.id === state.hall_id);
 
   return (
-    <div className="rounded-xl border bg-muted/40 px-4 py-3 flex items-start justify-between gap-3">
+    <div className="surface rounded-card px-4 py-3 flex items-start justify-between gap-3">
       <div className="min-w-0 space-y-1.5">
         {includeHall && hall && (
           <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
@@ -28,19 +28,19 @@ export function WizardSummary({ includeHall = false }: WizardSummaryProps) {
           {state.date && (
             <span className="inline-flex items-center gap-1">
               <CalendarDays className="h-3.5 w-3.5 text-primary" />
-              {formatDateBR(state.date)}
+              <span className="tabular">{formatDateBR(state.date)}</span>
             </span>
           )}
           {state.party_size > 0 && (
             <span className="inline-flex items-center gap-1">
               <Users className="h-3.5 w-3.5 text-primary" />
-              {state.party_size}
+              <span className="tabular">{state.party_size}</span>
             </span>
           )}
           {state.time && (
             <span className="inline-flex items-center gap-1">
               <Clock className="h-3.5 w-3.5 text-primary" />
-              {state.time}
+              <span className="tabular">{state.time}</span>
             </span>
           )}
           {computed.chargeInfo && (
@@ -54,8 +54,8 @@ export function WizardSummary({ includeHall = false }: WizardSummaryProps) {
       <button
         type="button"
         onClick={() => actions.goToStep(1)}
-        className="shrink-0 text-xs font-medium text-primary hover:text-primary/80 inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-primary/5 transition-colors"
-        aria-label="Editar passo 1"
+        className="shrink-0 rounded-full coarse:min-h-11 text-xs font-medium text-primary hover:text-primary/80 inline-flex items-center gap-1 px-2 py-1 hover:bg-primary/5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-label="Editar data, horário e pessoas"
       >
         <Pencil className="h-3 w-3" />
         Editar

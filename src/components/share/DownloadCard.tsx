@@ -36,6 +36,7 @@ export function DownloadCard({
     QRCode.toCanvas(canvasRef.current, url, {
       width: 200,
       margin: 1,
+      // QR fica escuro sobre branco nos dois temas: leitores falham com contraste invertido.
       color: { dark: "#0f172a", light: "#ffffff" },
     }).catch(() => {
       /* noop */

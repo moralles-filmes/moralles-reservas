@@ -81,18 +81,20 @@ export default function Bloqueios() {
         <Card className="p-0 overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b">
             <div className="flex items-center gap-2 text-sm">
-              <Label className="text-xs text-muted-foreground">Data inicial</Label>
+              <Label htmlFor="bloqueios-filtro-inicio" className="text-xs text-muted-foreground">Data inicial</Label>
               <Input
                 type="date"
                 className="w-40"
+                id="bloqueios-filtro-inicio"
                 value={filterFrom}
                 onChange={(e) => setFilterFrom(e.target.value)}
               />
               <span className="text-muted-foreground">→</span>
-              <Label className="text-xs text-muted-foreground">Data final</Label>
+              <Label htmlFor="bloqueios-filtro-fim" className="text-xs text-muted-foreground">Data final</Label>
               <Input
                 type="date"
                 className="w-40"
+                id="bloqueios-filtro-fim"
                 value={filterTo}
                 onChange={(e) => setFilterTo(e.target.value)}
               />
@@ -175,7 +177,7 @@ export default function Bloqueios() {
                           </Button>
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-8 w-8">
+                              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Excluir bloqueio">
                                 <Trash2 className="h-3.5 w-3.5 text-destructive" />
                               </Button>
                             </AlertDialogTrigger>
@@ -361,6 +363,7 @@ function BloqueioModal({
                   setStartDate(e.target.value);
                   if (!endDate || endDate < e.target.value) setEndDate(e.target.value);
                 }}
+                aria-label="Data inicial"
                 placeholder="Data inicial"
               />
               <Input
@@ -368,6 +371,7 @@ function BloqueioModal({
                 value={endDate}
                 min={startDate}
                 onChange={(e) => setEndDate(e.target.value)}
+                aria-label="Data final"
                 placeholder="Data final"
               />
             </div>
