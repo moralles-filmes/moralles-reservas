@@ -837,12 +837,12 @@ Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Convers
   - `finish` = `complete_instagram_message` com outcome e meta, sem conteúdo;
   - `appendToConversation` = `append_conversation_message` com `provider_message_ids` nas mensagens que saíram.
 
-- [ ] **Step 1: Testes do core.**
+- [x] **Step 1: Testes do core.**
   - Corpo com duas contas devolve só as da conta pedida.
   - Fora de ordem sai ordenado.
   - Eco, `self`, `story_mention`, `media`, `deleted` e `unsupported` são classificados.
   - Corpo malformado dá `[]` sem lançar.
-- [ ] **Step 2: Testes de Request no harness, com SDK Anthropic falso e `fetch` falso do Graph.**
+- [x] **Step 2: Testes de Request no harness, com SDK Anthropic falso e `fetch` falso do Graph.**
   - `DM sem telefone: a IA pede o WhatsApp`: o prompt contém `INSTAGRAM_CHANNEL_RULES` e a identidade, e a lista de ferramentas termina em `link_customer_phone`.
   - `DM com telefone: link → reserva instagram`: `reserveSlot` recebe `source:"instagram"`, o ledger ganha a reserva e a conversa ganha `customer_id`.
   - `worker ignora entradas de outra conta no mesmo corpo`, com a outra conta em **outra organização**: nenhuma linha de contato, conversa ou ledger da unidade pedida nasce de item da outra conta (gate de tenant do Bloco 1).
@@ -854,8 +854,8 @@ Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Convers
   - Turno que lança depois do lock libera, solta o lock e só então completa a mensagem.
   - Org bloqueada dá `org_billing_blocked`, sem LLM.
   - Contato ligado a cliente com vouchers e alergias: o prompt não os contém.
-- [ ] **Step 3: Rode e confira FAIL. Implemente. Rode e confira PASS.** Controle positivo: inverter a ordem do catch (completar antes de soltar o lock) reprova o teste do turno que lança.
-- [ ] **Step 4: Rode `npx vitest run src/lib/agent-turn-parity.test.ts` e confira PASS sem regravar**, o que prova que a mudança de `MEDIA_REPLY_TEXT` é inócua. Rode o `deno check` do worker e do `webhook-whatsapp`. Commit `feat(instagram): worker do Direct roda o agente com o contexto do Instagram`.
+- [x] **Step 3: Rode e confira FAIL. Implemente. Rode e confira PASS.** Controle positivo: inverter a ordem do catch (completar antes de soltar o lock) reprova o teste do turno que lança.
+- [x] **Step 4: Rode `npx vitest run src/lib/agent-turn-parity.test.ts` e confira PASS sem regravar**, o que prova que a mudança de `MEDIA_REPLY_TEXT` é inócua. Rode o `deno check` do worker e do `webhook-whatsapp`. Commit `feat(instagram): worker do Direct roda o agente com o contexto do Instagram`.
 
 ### Task 4.2: `send-manual-message` por canal (Opus)
 
@@ -876,22 +876,22 @@ Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Convers
     7. 190 marca `reauth_required` e dá 409 `INSTAGRAM_REAUTH_REQUIRED`.
   - Herdado do Bloco 2: parte com `isGraphOutcomeUnknown(r, "POST")` conta como "pode ter saído": o `PARTIAL_SEND` informa `sent` só com as partes confirmadas e a resposta diz que o desfecho da parte seguinte é desconhecido, sem reenviar.
 
-- [ ] **Step 1: Testes.**
+- [x] **Step 1: Testes.**
   - Conversa IG ligada a cliente com telefone **não** chama envio WhatsApp. Controle positivo: sem o ramo, o teste vê o POST do provider.
   - Janela fechada dá 409.
   - Janela fecha entre a leitura e o POST dá 409, sem POST.
   - `envio manual parcial grava só o que saiu`.
   - Membro de outra unidade dá 403.
   - O fluxo WhatsApp atual continua com os mesmos testes verdes.
-- [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode o `deno check`. Commit** `feat(conversas): envio manual pelo Instagram com janela de 24h`.
+- [x] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode o `deno check`. Commit** `feat(conversas): envio manual pelo Instagram com janela de 24h`.
 
 ### Task 4.3: dead-letter do WhatsApp preso ao canal
 
 **Files:**
 - Modify: `supabase/functions/webhook-whatsapp/index.ts:1135-1142`, `src/lib/whatsapp-inbound-reentry.test.ts:539-670`
 
-- [ ] **Step 1: Atualize o teste textual:** a consulta do dead-letter contém `.eq("channel", "whatsapp")`. Acrescente o caso de comportamento: com uma conversa IG mais recente do mesmo cliente, o dead-letter promove a conversa WhatsApp.
-- [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS, com a paridade inalterada. Rode o `deno check`. Commit** `fix(whatsapp): dead-letter promove só a conversa do WhatsApp`.
+- [x] **Step 1: Atualize o teste textual:** a consulta do dead-letter contém `.eq("channel", "whatsapp")`. Acrescente o caso de comportamento: com uma conversa IG mais recente do mesmo cliente, o dead-letter promove a conversa WhatsApp.
+- [x] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS, com a paridade inalterada. Rode o `deno check`. Commit** `fix(whatsapp): dead-letter promove só a conversa do WhatsApp`.
 
 ### Task 4.5: rota gerenciada aceita `source='instagram'` (Opus) — D9
 
@@ -900,18 +900,18 @@ Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Convers
 - Modify: `supabase/functions/_shared/whatsapp-automation-resources.ts` (`captureExpected`, ramo `confirmation`/`reminder_d1`/`survey_d1`/`cancellation`)
 - Modify: `src/lib/whatsapp-reservation-automation-routing.test.ts` e o teste de recursos da automação; caso novo no pré-voo `79`
 
-- [ ] **Step 1: Testes.** `captureExpected` aceita `source='instagram'` e continua recusando origem desconhecida e `null`. No pré-voo, `app_private.whatsapp_automation_post_inner` aceita reserva `instagram` e recusa origem desconhecida. Controle positivo: voltar a lista para `('web','whatsapp')` reprova os dois.
-- [ ] **Step 2: Migration.** Recrie `app_private.whatsapp_automation_post_inner` a partir do corpo **mais recente** (`20261019193132` ou posterior, se outra migration o recriou até lá), trocando só `not in('web','whatsapp')` por `not in('web','whatsapp','instagram')`. Confira com `diff` que a única linha alterada é essa e repita os `revoke` com a assinatura completa.
-- [ ] **Step 3: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode o `deno check` das consumidoras dadas por `node scripts/ef-import-graph.mjs supabase/functions/_shared/whatsapp-automation-resources.ts` (hoje `send-scheduled-whatsapp`) e acrescente-as à matriz de redeploy.**
-- [ ] **Step 4: Commit** `feat(automacoes): rota gerenciada aceita reserva do Instagram`.
+- [x] **Step 1: Testes.** `captureExpected` aceita `source='instagram'` e continua recusando origem desconhecida e `null`. No pré-voo, `app_private.whatsapp_automation_post_inner` aceita reserva `instagram` e recusa origem desconhecida. Controle positivo: voltar a lista para `('web','whatsapp')` reprova os dois.
+- [x] **Step 2: Migration.** Recrie `app_private.whatsapp_automation_post_inner` a partir do corpo **mais recente** (`20261019193132` ou posterior, se outra migration o recriou até lá), trocando só `not in('web','whatsapp')` por `not in('web','whatsapp','instagram')`. Confira com `diff` que a única linha alterada é essa e repita os `revoke` com a assinatura completa.
+- [x] **Step 3: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode o `deno check` das consumidoras dadas por `node scripts/ef-import-graph.mjs supabase/functions/_shared/whatsapp-automation-resources.ts` (hoje `send-scheduled-whatsapp`) e acrescente-as à matriz de redeploy.**
+- [x] **Step 4: Commit** `feat(automacoes): rota gerenciada aceita reserva do Instagram`.
 
 ### Task 4.4: gates do Bloco 4
 
-- [ ] Rode `npm run typecheck`, `npm run lint`, as suítes do bloco, a paridade e o `deno check` de `process-instagram-inbound`, `send-manual-message` e `webhook-whatsapp`.
-- [ ] Rode `node scripts/check-portabilidade.mjs`. Acima da linha de base: **pare e pergunte**.
-- [ ] Rode os gates com o Opus: `integration-reliability-auditor` (worker, ledger, envio), `tenant-isolation-auditor` (worker, envio manual) e `identity-access-auditor` (envio manual).
-- [ ] Atualize `whatsapp.md`: `conversations.channel`, RPCs WhatsApp presas ao canal, `get_or_create_instagram_conversation` como único criador IG, envio manual por canal e ordem de exibição do nome. Atualize também `instagram.md`: worker, eco medido e `ignored_story_mention`.
-- [ ] Commit `docs(conversas): conversa por canal nas regras`.
+- [x] Rode `npm run typecheck`, `npm run lint`, as suítes do bloco, a paridade e o `deno check` de `process-instagram-inbound`, `send-manual-message` e `webhook-whatsapp`.
+- [x] Rode `node scripts/check-portabilidade.mjs`. Acima da linha de base: **pare e pergunte**.
+- [x] Rode os gates com o Opus: `integration-reliability-auditor` (worker, ledger, envio), `tenant-isolation-auditor` (worker, envio manual) e `identity-access-auditor` (envio manual).
+- [x] Atualize `whatsapp.md`: `conversations.channel`, RPCs WhatsApp presas ao canal, `get_or_create_instagram_conversation` como único criador IG, envio manual por canal e ordem de exibição do nome. Atualize também `instagram.md`: worker, eco medido e `ignored_story_mention`.
+- [x] Commit `docs(conversas): conversa por canal nas regras`.
 
 ---
 
@@ -1133,14 +1133,18 @@ Recalcular com `node scripts/ef-import-graph.mjs --all` no Bloco 6.
 
 | Origem da mudança | EFs |
 |---|---|
-| `_shared/agent/{turn,system-prompt,tools,tool-dispatch}.ts`, `agent-reservation-tools.ts`, `instagram-format.ts`, `instagram-inbound-core.ts`, `media-reply-text.ts` | `webhook-whatsapp`, `process-instagram-inbound` |
-| `_shared/availability.ts` (tipo de `source`) | `webhook-whatsapp`, `create-reservation`, `update-reservation`, `create-manual-reservation`, `process-instagram-inbound` |
+| `_shared/agent/{turn,system-prompt,tools,tool-dispatch,unit-context,reservation-notes}.ts`, `agent-reservation-tools.ts`, `media-reply-text.ts`, `org-billing-gate-core.ts` | `webhook-whatsapp`, `process-instagram-inbound` |
+| `_shared/availability.ts` (hook `insertReservation`, com comportamento) | `webhook-whatsapp`, `create-reservation`, `update-reservation`, `create-manual-reservation`, `process-instagram-inbound` |
+| `_shared/instagram-format.ts` | `process-instagram-inbound`, `send-manual-message` |
+| `_shared/instagram-inbound-core.ts` | `process-instagram-inbound` |
+| `_shared/whatsapp-automation-resources.ts` (Task 4.5) | `send-scheduled-whatsapp` |
 | `_shared/instagram-graph*.ts` | `instagram-connect`, `process-instagram-inbound`, `process-instagram-token-refresh`, `send-manual-message` |
 | `_shared/instagram-config*.ts`, `instagram-webhook-core.ts` | `webhook-instagram`, `instagram-connect` |
 | `_shared/instagram-access-core.ts`, `instagram-oauth-state.ts` | `instagram-connect` |
 | `_shared/instagram-token-refresh-core.ts` | `process-instagram-token-refresh` |
-| `index.ts` alterado | `webhook-whatsapp`, `send-manual-message`, `manage-platform-secrets` |
-| `org-billing-gate-core.ts` (se extraído) | `webhook-whatsapp`, `process-instagram-inbound` |
+| `index.ts` alterado | `webhook-whatsapp`, `send-manual-message`, `manage-platform-secrets`, `process-instagram-inbound` (nova), `process-instagram-token-refresh` |
+
+Conferido no Bloco 4 com `node scripts/ef-import-graph.mjs` sobre cada `_shared` tocado (`agent/channel-context.ts` não entra por valor em nenhuma EF). Ordem de deploy: ver "Evidências → Bloco 4".
 
 Linha de base de 2026-10-20:
 - `agent/turn.ts`, `agent/system-prompt.ts`, `agent/tools.ts`, `agent-reservation-tools.ts` → só `webhook-whatsapp`;
@@ -1340,7 +1344,66 @@ Review final do bloco (Opus): pronto, sem Critical; os dois Important são contr
 **Documentação:** `.claude/rules/agente-ia.md` (cliente opcional, porta, ledger, `link_customer_phone`, `channelRules`/`channelLabel`, CAS do handoff), `.claude/rules/reservas.md` (`source='instagram'` confirma pelo WhatsApp, D6), a spec acompanhando D6 e os rótulos de desfecho em Automação → Diagnóstico.
 
 ### Bloco 4
-_(preencher)_
+Executado em 2026-10-30 na branch `feat/instagram-fase-1`, local, sem push, sem `db push`, sem deploy, sem `secrets set` e sem chamada real à Meta ou a LLM (fakes em todos os testes). Base `12ae802`.
+
+Execução por tarefa: implementador (Opus em 4.0b, 4.1, 4.2 e 4.5; Sonnet em 4.0a, 4.0c, 4.0d e 4.3), review de spec (Sonnet) e de qualidade e segurança (Opus), teste falhando primeiro e controle positivo em cada task. Antes da 4.1 entraram quatro tasks de núcleo (4.0a–4.0d) que a herança do Bloco 3 exigia.
+
+**Commits:**
+- 4.0a (primeiro commit sem snapshot + frases do canal): `48482ba`, `e037f18`.
+- 4.0b (ledger atômico e tetos): `7f70116`.
+- 4.0c (`notes` com limite e marcado como dado; único commit do bloco que regravou o snapshot: regra 13 e `maxLength`/descrição de `notes`): `c39d0fe`.
+- 4.0d (gate de ACL de `public`, travas da RPC, ajustes de `notes`): `b7f321d`, `f9377d3`, `d1ad19c`, `5e6c5e6`, `5bade65` (uma rodada).
+- 4.1 (worker): `0791d92`, `f9866ef`, `d7619b9` (uma rodada).
+- 4.2 (envio manual por canal): `652f57d`, `414b49e`.
+- 4.3 (caso de comportamento do dead-letter): `75ef583`.
+- 4.5 (rota gerenciada, CAS e release): `e12b876`, `9c9e56e`, `99a6789`, `d9d5463`, `827c36c` (uma rodada).
+- 4.4 (regras): ver commit de docs.
+
+**Desvios do texto do plano (rulings):**
+- **R4-a, ledger atômico:** a porta cria a reserva. `reserveSlot` ganhou o hook genérico `insertReservation` (só troca o INSERT; disponibilidade, mesa, retry 23505 e código ficam em TS uma vez). `ClaimedIdentityPort.recordReservation` saiu; entrou `insertReservation`, que o adapter liga à RPC nova `create_instagram_contact_reservation` (reserva + ledger numa transação, sob lock do cliente e do contato). Sem porta, caminho idêntico (paridade byte a byte).
+- **R4-b, tetos:** 3 reservas ativas por contato (na RPC de criação) e 3 trocas de telefone em 30 dias (na RPC de link, com contador em `instagram_contacts`). Estouro de reserva volta ao LLM com mensagem própria (R4-h); estouro de troca vira `unavailable`, com pré-checagem no adapter antes de tocar `customers` (R4-l).
+- **R4-c, migrations novas:** `20261029200600` (ledger atômico, tetos, `record_` recusa reserva de outro contato e ficou sem EXECUTE para todos), `200700` (rota gerenciada aceita `instagram`), `200800` (CAS por `connected_at`, retorno booleano, versões de 3 argumentos dropadas), `200900` (`release_instagram_message_claim` cercada). As migrations 200000–200500 não mudaram.
+- **R4-d, texto exato em `INSTAGRAM_CHANNEL_RULES`:** "Se o cliente informar outro número de WhatsApp, as reservas feitas com o número anterior deixam de aparecer nesta conversa." e "Vouchers e créditos não são consultados por aqui: oriente o cliente a consultá-los pelo WhatsApp do cadastro."
+- **R4-f, portabilidade:** a leitura de `customers` no núcleo subiria a linha de base para 490. Com porta, `createReservation` não faz I/O de cliente; a RPC é a única barreira (cliente vivo, da organização, igual ao ligado ao contato). Linha de base ficou em 489.
+- **R4-g, gate de ACL:** o teste estático passou a exigir `revoke` de `public, anon, authenticated` depois do último `create` de toda função de `public` em migration a partir de `20261018000000` (91 criações legadas antes do corte), com assinatura lida por parênteses balanceados.
+- **R4-i:** `notes` com 280 code points na escrita do agente, envelope `<<<OBSERVACAO_DA_RESERVA>>>` na leitura do WhatsApp, NEL/U+2028/U+2029 viram espaço, `notes` não-string no update é ignorado.
+- **R4-k:** billing bloqueado segue o WhatsApp (inbound no histórico, `org_billing_blocked`, sem LLM; polaridade aberta, no cabeçalho do worker). `provider_timeout` no lembrete de handoff não devolve a janela, também no WhatsApp.
+- **R4-m:** envio manual pelo Instagram exige grant ativo do módulo (409 `INSTAGRAM_MODULE_DISABLED`; erro de leitura 503, fechado); `dm_enabled` não bloqueia o painel.
+- **R4-n:** CAS `false` no envio manual responde 409 `INSTAGRAM_ACCOUNT_RECONNECTED`, não reauth.
+- **Task 4.3:** só o caso de comportamento (filtro já em `58f89c1`); o controle positivo tirou o filtro e restaurou.
+
+**Gates locais (HEAD `827c36c`):**
+- `npm run typecheck` exit 0; lint 0 erros (17 warnings anteriores ao bloco).
+- `npx vitest run src/lib scripts`: 172 arquivos, 4521 testes, 0 falhas (1 skip).
+- Paridade sem `-u` verde depois da 4.0c.
+- `deno check` limpo: `process-instagram-inbound`, `send-manual-message`, `webhook-whatsapp`, `process-instagram-token-refresh`, `send-scheduled-whatsapp`, `create-reservation`, `create-manual-reservation`, `update-reservation`, `webhook-instagram`.
+- `check-portabilidade` 489 = linha de base; `check-padrao` ok.
+- Pré-voo 79: 98/98 em PG próprio (porta 55452), aplicando e reaplicando as migrations, em CRLF e LF. Projeção de ACL inalterada (9/48/57).
+- Matriz de redeploy do bloco: `webhook-whatsapp`, `create-reservation`, `create-manual-reservation`, `update-reservation` (núcleo/`availability.ts`), `process-instagram-inbound` (novo), `send-manual-message`, `process-instagram-token-refresh`, `send-scheduled-whatsapp`.
+
+**Gates (Opus), todos PASS_WITH_WARNINGS, 0 bloqueante:** `integration-reliability-auditor`, `tenant-isolation-auditor` e `identity-access-auditor`.
+
+**Ordem de deploy (obrigatória):** `db push` de 200000–200900 → `webhook-whatsapp` só depois da 200300 → `send-manual-message` só depois da 200100 e da 200300 (o select novo dá 403 também no WhatsApp sem elas) → `process-instagram-token-refresh`, `process-instagram-inbound` e `send-manual-message` logo depois da 200800 (as versões antigas das RPCs foram dropadas; a falha é fechada) → `send-scheduled-whatsapp` junto da 200700. **Antes do push:** rodar o harness Docker 73/78 (o pré-voo IG-8.1 prova a decisão do snapshot da rota gerenciada, não o `allowed:true` final).
+
+**Atenções estacionadas (follow-up, P3):**
+- Corrida no `linkPhone`: dois turnos simultâneos podem criar um cadastro a mais; a RPC continua barrando o link. Fecha com uma RPC única que cria e liga sob lock (também resolve o telefone de cadastro apagado, que hoje sempre dá `unavailable`).
+- `complete_instagram_message` que falha depois do envio deixa a linha `processing`; o takeover do lease reenvia (mesma janela do WhatsApp).
+- Turno mais longo que o lease de 90 s do evento consome tentativas; heartbeat do lease ou `message_in_flight` sem contar tentativa.
+- Rate limit do worker falha aberto sem comentário de polaridade (paridade com o WhatsApp).
+- Handoff do agente (`tool-dispatch.ts`) grava a conversa só pelo id; ledger sem FK composta com a unidade (já registrados no Bloco 3).
+- Gate de ACL: overloads de mesma aridade contam como uma; migration nova com timestamp anterior ao corte escaparia (o `db push` recusa fora de ordem).
+- Worker com ~860 linhas; extrair a porta para `_shared/agent/adapters/` é opcional.
+- Variantes parecidas do marcador de `notes` (acento, largura total, cirílico) sobrevivem, como em `DADOS_DA_LOJA`.
+- O teto de 3 reservas ativas conta pelo ledger do contato sem filtrar o cliente, e as ferramentas filtram pelo cliente ligado: depois de religar outro telefone, o contato pode receber "ofereça alterar ou cancelar" sobre reservas que não vê mais.
+- O worker descarta sem log o erro de `check_rate_limit` (a polaridade está comentada; falta o `jsonLog`).
+- A mensagem do `RAISE` do teto é literal repetida no pré-voo e nos testes TS, sem teste que leia a migration (falha segura: só perde a mensagem própria).
+- Cada texto de um mesmo corpo roda um turno com debounce, o que pressiona o lease de 90 s; observar no piloto.
+
+Review final do bloco (Opus): pronto com ressalvas, sem Critical; o Important era o registro destas evidências, da ordem de deploy e da matriz de redeploy, feito neste commit. O item "contato anonimizado chega ao turno?" fica fechado: contato anonimizado tem `igsid` nulo, e o worker cria outro contato.
+
+**Herdado pelo Bloco 5:**
+- A UI de Conversas mapeia os códigos novos do envio manual (`INSTAGRAM_NOT_CONNECTED`, `INSTAGRAM_MODULE_DISABLED`, `INSTAGRAM_REAUTH_REQUIRED`, `INSTAGRAM_ACCOUNT_RECONNECTED`, `OUTSIDE_SERVICE_WINDOW`, `PARTIAL_SEND` com `sent`/`total`/`outcome_unknown`) e força refetch no 502 parcial (a parte que saiu já está no histórico).
+- A UI de Conversas marca o telefone como declarado e não abre o cadastro privado na conversa do IG (herança do Bloco 3).
 
 ### Bloco 5
 _(preencher)_
