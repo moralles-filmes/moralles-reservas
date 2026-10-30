@@ -47,11 +47,27 @@ export function StepDateTimeParty() {
     if (step == null && edge == null) return;
     e.preventDefault();
     const current = dates.indexOf(tabStopDate);
-    const next = edge ?? Math.min(dates.length - 1, Math.max(0, current + step));
+    const next = edge ?? Math.min(dates.length - 1, Math.max(0, current + (step ?? 0)));
     pickDate(dates[next]);
     daysRef.current
       ?.querySelector<HTMLButtonElement>(`[data-date="${dates[next]}"]`)
       ?.focus();
+  };
+
+  const timeTabStop = computed.timeSlots.some((slot) => slot.time === state.time)
+    ? state.time
+    : computed.timeSlots[0]?.time;
+  const onTimesKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    const edge = e.key === "Home" ? 0 : e.key === "End" ? computed.timeSlots.length - 1 : null;
+    if (step == null && edge == null) return;
+    e.preventDefault();
+    const currentIndex = Math.max(0, computed.timeSlots.findIndex((slot) => slot.time === timeTabStop));
+    const next = edge ?? Math.min(computed.timeSlots.length - 1, Math.max(0, currentIndex + (step ?? 0)));
+    const nextTime = computed.timeSlots[next]?.time;
+    if (!nextTime) return;
+    actions.set("time", nextTime);
+    document.getElementById(`wizard-time-${nextTime.replace(":", "-")}`)?.focus();
   };
 
   const pickDate = (date: string) => {
@@ -129,7 +145,7 @@ export function StepDateTimeParty() {
         )}
       </div>
 
-      <div role="group" aria-labelledby="wizard-time-label" className="space-y-1.5">
+      <div role="radiogroup" aria-labelledby="wizard-time-label" onKeyDown={onTimesKeyDown} className="space-y-1.5">
         <span id="wizard-time-label" className="block text-sm font-medium">
           Horário <span className="text-destructive">*</span>
         </span>
@@ -153,7 +169,10 @@ export function StepDateTimeParty() {
                 <button
                   key={s.time}
                   type="button"
-                  aria-pressed={selected}
+                  id={`wizard-time-${s.time.replace(":", "-")}`}
+                  role="radio"
+                  aria-checked={selected}
+                  tabIndex={s.time === timeTabStop ? 0 : -1}
                   onClick={() => actions.set("time", s.time)}
                   className={cn(
                     "flex min-h-11 flex-col items-center justify-center rounded-block border border-input bg-card px-1 py-1.5",
@@ -164,7 +183,7 @@ export function StepDateTimeParty() {
                 >
                   {s.time}
                   {s.discountPercent ? (
-                    <span className={cn("text-[11px] font-medium text-success", selected && "text-background/80")}>
+                    <span className={cn("text-xs font-medium text-success", selected && "text-background/80")}>
                       {s.discountPercent}% off
                     </span>
                   ) : null}

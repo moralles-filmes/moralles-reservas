@@ -185,18 +185,18 @@ export default function Passantes() {
           <DialogHeader><DialogTitle>Registrar walk-in</DialogTitle></DialogHeader>
           <div className="space-y-4 mt-2">
             <div className="space-y-1">
-              <Label>Nome do cliente *</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: João Silva" />
+              <Label htmlFor="walkin-name">Nome do cliente *</Label>
+              <Input id="walkin-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: João Silva" />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label>WhatsApp (opcional)</Label>
-                <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />
+                <Label htmlFor="walkin-phone">WhatsApp (opcional)</Label>
+                <Input id="walkin-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />
               </div>
               <div className="space-y-1">
-                <Label>Pessoas *</Label>
+                <Label htmlFor="walkin-party-size">Pessoas *</Label>
                 <Select value={partySize} onValueChange={setPartySize}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="walkin-party-size"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
                       <SelectItem key={n} value={String(n)}>{n} {n === 1 ? "pessoa" : "pessoas"}</SelectItem>
@@ -206,8 +206,8 @@ export default function Passantes() {
               </div>
             </div>
             <div className="space-y-1">
-              <Label>Observações (opcional)</Label>
-              <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ex: aniversário, alergia..." />
+              <Label htmlFor="walkin-notes">Observações (opcional)</Label>
+              <Input id="walkin-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ex: aniversário, alergia..." />
             </div>
             <Button onClick={handleCreate} disabled={createWalkIn.isPending} className="w-full">
               Registrar
@@ -286,7 +286,7 @@ function WalkInCard({
           {walkIn.status === "waiting" && (
             <>
               <Select value={selectedTable} onValueChange={setSelectedTable}>
-                <SelectTrigger className="h-8 w-44 text-xs">
+                <SelectTrigger className="h-8 w-44 text-xs" aria-label="Alocar mesa">
                   <SelectValue placeholder="Alocar mesa" />
                 </SelectTrigger>
                 <SelectContent>
@@ -335,7 +335,7 @@ function WalkInCard({
           )}
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="ghost" size="icon">
+              <Button variant="ghost" size="icon" aria-label="Remover walk-in">
                 <Trash2 className="h-4 w-4 text-destructive" />
               </Button>
             </AlertDialogTrigger>

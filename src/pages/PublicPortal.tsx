@@ -705,7 +705,7 @@ function ReservaCTA({
               <CalendarDays className="h-5 w-5" />
             </div>
             <div className="flex-1 min-w-0">
-              <h3 className="font-display text-2xl font-semibold tracking-tight leading-tight">Reserve Agora</h3>
+              <h2 className="font-display text-2xl font-semibold tracking-tight leading-tight">Reserve Agora</h2>
               <p className="text-sm text-muted-foreground mt-1">
                 Garanta sua mesa, evite filas
               </p>
@@ -770,7 +770,7 @@ function WaitlistCTA({
               <Smartphone className="h-4 w-4" />
             </div>
             <div className="flex-1 min-w-0">
-              <h3 className="font-display text-xl font-semibold tracking-tight leading-tight">Entrar na Fila</h3>
+              <h2 className="font-display text-xl font-semibold tracking-tight leading-tight">Entrar na Fila</h2>
               <p className="text-sm text-muted-foreground mt-0.5">
                 Guarde seu lugar sem sair de casa
               </p>

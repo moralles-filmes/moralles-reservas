@@ -58,7 +58,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" className="w-full">
+          <button type="button" aria-label={`Trocar unidade (${unit.unit_name})`} className="w-full rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             {avatar}
           </button>
         </DropdownMenuTrigger>
@@ -112,7 +112,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
             {unit.unit_name}
           </p>
           {unit.organization_slug && (
-            <p className="text-[11px] text-white/80 truncate drop-shadow-md leading-tight mt-0.5">
+            <p className="text-[11px] text-white/90 truncate drop-shadow-md leading-tight mt-0.5">
               {unit.role === "owner" ? "Proprietário" : unit.role === "gerente" ? "Gerente" : "Operador"}
             </p>
           )}
@@ -131,7 +131,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="w-full text-left">
+        <button type="button" className="w-full text-left rounded-block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {card}
         </button>
       </DropdownMenuTrigger>

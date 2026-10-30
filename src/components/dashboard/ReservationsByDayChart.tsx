@@ -17,9 +17,14 @@ interface ReservationsByDayChartProps {
 
 const formatTick = { fill: "hsl(var(--muted-foreground))" };
 export function ReservationsByDayChart({ data }: ReservationsByDayChartProps) {
+  const summary = data.length
+    ? `Reservas por dia, ${data.length} ${data.length === 1 ? "dia" : "dias"}`
+    : "Sem dados de reservas por dia";
   // useId tem ":" — inválido em url(#...) sem escape
   const gradientId = `reservas-dia-${useId().replace(/:/g, "")}`;
   return (
+    <>
+      <div role="img" aria-label={summary} className="h-full w-full">
     <ResponsiveContainer width="100%" height="100%">
       <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: -16 }}>
         <defs>
@@ -77,5 +82,10 @@ export function ReservationsByDayChart({ data }: ReservationsByDayChartProps) {
         />
       </ComposedChart>
     </ResponsiveContainer>
+      </div>
+    <ul className="sr-only">
+      {data.map(({ date, label, confirmed, lost }) => <li key={date}>{`${label}: ${confirmed} confirmadas, ${lost} canceladas ou não compareceram`}</li>)}
+    </ul>
+    </>
   );
 }

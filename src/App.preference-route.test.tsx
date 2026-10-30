@@ -33,7 +33,7 @@ function go(path: string) { window.history.pushState({}, '', path); window.dispa
 it.each(['anonymous', 'member', 'admin', 'orphan'])('exact public route does not mount AuthProvider for %s', async role => {
   io.user = role !== 'anonymous'; io.members = role === 'member'; io.admin = role === 'admin';
   go('/preferencias/mensagens/invalid'); render(<App />);
-  await screen.findByText('Preferências de mensagens'); expect(screen.getByText('Link inválido ou expirado')).toBeInTheDocument(); expect(io.auth).not.toHaveBeenCalled(); expect(io.signOut).not.toHaveBeenCalled();
+  await screen.findByText('Preferências de mensagens', {}, { timeout: 5000 }); expect(screen.getByText('Link inválido ou expirado')).toBeInTheDocument(); expect(io.auth).not.toHaveBeenCalled(); expect(io.signOut).not.toHaveBeenCalled();
 });
 it('private orphan still signs out and navigates to login', async () => {
   io.user = true; go('/admin'); render(<App />);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { ChevronDown, SquareStack, Banknote } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useReservaWizardContext } from "./useReservaWizard";
@@ -21,6 +21,19 @@ export function StepHall() {
   const hasAlternatives = alternative.length > 0;
   const noCompatible = compatible.length === 0;
   const selectedHall = compatible.find((hall) => hall.id === state.hall_id);
+  const tabStopHallId = selectedHall?.id ?? compatible[0]?.id;
+  const onHallsKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    const edge = e.key === "Home" ? 0 : e.key === "End" ? compatible.length - 1 : null;
+    if (step == null && edge == null || compatible.length === 0) return;
+    e.preventDefault();
+    const current = Math.max(0, compatible.findIndex((hall) => hall.id === tabStopHallId));
+    const nextIndex = edge ?? Math.min(compatible.length - 1, Math.max(0, current + (step ?? 0)));
+    const nextHall = compatible[nextIndex];
+    if (!nextHall) return;
+    actions.set("hall_id", nextHall.id);
+    document.getElementById(`wizard-hall-${nextHall.id}`)?.focus();
+  };
 
   // Acordeão aberto por default quando não há compatíveis
   const [showAlternatives, setShowAlternatives] = useState(noCompatible && hasAlternatives);
@@ -51,7 +64,7 @@ export function StepHall() {
           </div>
         ) : (
           <>
-            <div role="group" aria-label="Ambiente" className="flex flex-wrap gap-1 rounded-panel bg-muted p-1">
+            <div role="radiogroup" aria-label="Ambiente" onKeyDown={onHallsKeyDown} className="flex flex-wrap gap-1 rounded-panel bg-muted p-1">
               {compatible.map((hall) => {
                 const selected = state.hall_id === hall.id;
                 // A caução aparece em cada opção para o cliente comparar antes de escolher.
@@ -60,7 +73,10 @@ export function StepHall() {
                   <button
                     key={hall.id}
                     type="button"
-                    aria-pressed={selected}
+                    id={`wizard-hall-${hall.id}`}
+                    role="radio"
+                    aria-checked={selected}
+                    tabIndex={hall.id === tabStopHallId ? 0 : -1}
                     onClick={() => actions.set("hall_id", hall.id)}
                     className={cn(
                       "flex min-h-11 flex-1 basis-[8rem] flex-col items-center justify-center rounded-full px-4 py-1",
@@ -96,7 +112,7 @@ export function StepHall() {
           <button
             type="button"
             onClick={() => setShowAlternatives((v) => !v)}
-            className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-foreground/80 hover:bg-muted/50 transition-colors"
+            className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-foreground/80 hover:bg-muted/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
             aria-expanded={showAlternatives}
           >
             <span>Não encontrou opção ideal?</span>
@@ -123,7 +139,7 @@ export function StepHall() {
                       actions.set("time", "");
                       actions.goToStep(1);
                     }}
-                    className="flex min-h-[88px] flex-col items-center justify-center gap-2 rounded-block border bg-card p-3 transition-colors"
+                    className="flex min-h-[88px] flex-col items-center justify-center gap-2 rounded-block border bg-card p-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <SquareStack className="h-5 w-5 text-muted-foreground" />
                     <span className="text-xs text-center text-foreground/80 leading-tight line-clamp-2">
