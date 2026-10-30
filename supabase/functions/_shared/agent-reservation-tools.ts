@@ -23,6 +23,7 @@
  */
 
 import type { AvailabilityParams, AvailabilityResult } from "./availability.ts";
+import { reservationNotesForLlm, sanitizeReservationNotes } from "./agent/reservation-notes.ts";
 
 export type ReservationToolScope = { unitId: string; customerId: string; reservationIds?: readonly string[] };
 
@@ -96,7 +97,7 @@ export async function getReservationScoped(
     time: row.time,
     party_size: row.party_size,
     status: row.status,
-    notes: row.notes,
+    notes: reservationNotesForLlm(row.notes),
   };
 }
 
@@ -114,7 +115,7 @@ export async function updateReservationScoped(
   if (params.date) updates.date = params.date;
   if (params.time) updates.time = params.time;
   if (params.party_size) updates.party_size = params.party_size;
-  if (params.notes !== undefined) updates.notes = params.notes;
+  if (params.notes !== undefined) updates.notes = sanitizeReservationNotes(params.notes) ?? null;
   if (!Object.keys(updates).length) return { success: false, message: "Nenhuma alteração informada." };
   if (emptyLedger(scope)) return { success: false, error: NOT_FOUND };
 

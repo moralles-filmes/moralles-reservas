@@ -486,7 +486,7 @@ describe("identidade declarada só alcança reservas do ledger", () => {
       port: null, rows: rowsDoTelefone(),
       ctx: { channel: "whatsapp", customer: LINKED, phone: LINKED.phone, reservationSource: "whatsapp" },
     });
-    expect(await call("get_reservation", { reservation_code: "FORA2345" })).toMatchObject({ found: true, notes: "ALERGIA NA RESERVA" });
+    expect(await call("get_reservation", { reservation_code: "FORA2345" })).toMatchObject({ found: true, notes: "<<<OBSERVACAO_DA_RESERVA>>>\nALERGIA NA RESERVA\n<<<FIM_OBSERVACAO_DA_RESERVA>>>" });
     expect(calls.some((c) => c[0] === "in" && c[1] === "id")).toBe(false);
   });
 });

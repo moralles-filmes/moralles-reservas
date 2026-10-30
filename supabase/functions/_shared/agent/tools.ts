@@ -18,6 +18,13 @@ import {
 } from "../availability.ts";
 import { resolveOrCreateCustomer } from "../resolve-customer.ts";
 import type { AgentReservationSource } from "./channel-context.ts";
+import {
+  AGENT_RESERVATION_NOTES_MAX_CHARS,
+  reservationNotesForLlm,
+  sanitizeReservationNotes,
+} from "./reservation-notes.ts";
+
+export { AGENT_RESERVATION_NOTES_MAX_CHARS };
 
 // ─── Agent tools ──────────────────────────────────────────────────────────────
 
@@ -62,7 +69,7 @@ export const agentTools: AgentToolDefinition[] = [
         date: { type: "string", description: "Data YYYY-MM-DD" },
         time: { type: "string", description: "Horário HH:MM" },
         party_size: { type: "number", description: "Número de pessoas" },
-        notes: { type: "string", description: "Observações opcionais" },
+        notes: { type: "string", maxLength: AGENT_RESERVATION_NOTES_MAX_CHARS, description: `Observações opcionais (até ${AGENT_RESERVATION_NOTES_MAX_CHARS} caracteres)` },
         hall_name: { type: "string", description: "Opcional: nome do salão preferido." },
       },
       required: ["customer_name", "date", "time", "party_size"],
@@ -89,7 +96,7 @@ export const agentTools: AgentToolDefinition[] = [
         date: { type: "string" },
         time: { type: "string" },
         party_size: { type: "number" },
-        notes: { type: "string" },
+        notes: { type: "string", maxLength: AGENT_RESERVATION_NOTES_MAX_CHARS, description: `Observações (até ${AGENT_RESERVATION_NOTES_MAX_CHARS} caracteres)` },
       },
       required: ["reservation_code"],
     },
@@ -275,7 +282,7 @@ export async function createReservation(supabase: SupabaseClient, params: {
     time: params.time,
     partySize: params.party_size,
     customerId,
-    notes: params.notes ?? null,
+    notes: sanitizeReservationNotes(params.notes) ?? null,
     status: "confirmed",
     // Load-bearing: o trigger `enqueue_confirmation_notification` pula a
     // origem do agente; sem isso o cliente recebe a confirmação duplicada.
@@ -340,7 +347,7 @@ export async function listCustomerReservations(
   return {
     found: true,
     count: data.length,
-    reservations: data.map((r) => { const [y, m, d] = r.date.split("-"); return { reservation_code: r.reservation_code, date: `${d}/${m}/${y}`, time: r.time, party_size: r.party_size, status: r.status, notes: r.notes }; }),
+    reservations: data.map((r) => { const [y, m, d] = r.date.split("-"); return { reservation_code: r.reservation_code, date: `${d}/${m}/${y}`, time: r.time, party_size: r.party_size, status: r.status, notes: reservationNotesForLlm(r.notes) }; }),
   };
 }
 
