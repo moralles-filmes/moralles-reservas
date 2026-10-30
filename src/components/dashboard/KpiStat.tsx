@@ -45,39 +45,47 @@ export function KpiStat({ title, value, icon: Icon, color, delta, invertDelta, d
     : "text-muted-foreground";
 
   const DeltaIcon = !hasDelta || delta === 0 ? Minus : positive ? ArrowUpRight : ArrowDownRight;
+  // Valor monetário ("R$ 113.250,00") não cabe em text-3xl na grade 2×2 do celular:
+  // fonte menor e quebra depois do "R$" (o Intl usa espaço não separável ali).
+  const formatted = formatValue(value);
+  const longValue = formatted.length > 8;
+  const display = longValue ? formatted.replace(/\u00a0/g, " ") : formatted;
 
   return (
     <div className="p-4 sm:p-6">
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-xs leading-snug text-tertiary">{title}</p>
-          {isLoading ? (
-            <Skeleton className="h-9 w-20 mt-2" />
-          ) : (
-            <p className="tabular text-3xl font-semibold tracking-tight mt-1.5">
-              {formatValue(value)}
-              {suffix && hasNumericValue && (
-                <span className="text-lg font-medium text-tertiary ml-0.5">{suffix}</span>
-              )}
-            </p>
-          )}
-          {hasDelta && !isLoading && (
-            <div className={cn("flex items-center gap-0.5 mt-1.5 text-xs font-medium tabular", deltaColor)}>
-              <DeltaIcon className="h-3 w-3" />
-              <span>
-                {delta === 0
-                  ? "—"
-                  : deltaUnit === "abs"
-                  ? Math.abs(delta!).toFixed(1)
-                  : `${Math.abs(delta!).toFixed(1)}%`}
-              </span>
-            </div>
-          )}
-        </div>
+        <p className="min-w-0 flex-1 text-xs leading-snug text-tertiary">{title}</p>
         <div className={cn("p-2 rounded-item shrink-0", color)}>
           <Icon className="h-4 w-4" />
         </div>
       </div>
+      {isLoading ? (
+        <Skeleton className="h-9 w-20 mt-1" />
+      ) : (
+        <p
+          className={cn(
+            "tabular font-semibold tracking-tight mt-1 break-words",
+            longValue ? "text-xl sm:text-2xl" : "text-3xl",
+          )}
+        >
+          {display}
+          {suffix && hasNumericValue && (
+            <span className="text-lg font-medium text-tertiary ml-0.5">{suffix}</span>
+          )}
+        </p>
+      )}
+      {hasDelta && !isLoading && (
+        <div className={cn("flex items-center gap-0.5 mt-1.5 text-xs font-medium tabular", deltaColor)}>
+          <DeltaIcon className="h-3 w-3" />
+          <span>
+            {delta === 0
+              ? "—"
+              : deltaUnit === "abs"
+              ? Math.abs(delta!).toFixed(1)
+              : `${Math.abs(delta!).toFixed(1)}%`}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

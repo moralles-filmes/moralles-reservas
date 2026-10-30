@@ -144,7 +144,7 @@ export default function FluxoClientes() {
         </TooltipProvider>
       </PageHeader>
 
-      <div className="flex border-b">
+      <div className="flex border-b overflow-x-auto">
         {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
           <TabButton key={t} active={tab === t} onClick={() => setTab(t)}>
             {TAB_LABELS[t]}
