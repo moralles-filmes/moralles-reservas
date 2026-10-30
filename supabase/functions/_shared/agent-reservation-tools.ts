@@ -115,7 +115,11 @@ export async function updateReservationScoped(
   if (params.date) updates.date = params.date;
   if (params.time) updates.time = params.time;
   if (params.party_size) updates.party_size = params.party_size;
-  if (params.notes !== undefined) updates.notes = sanitizeReservationNotes(params.notes) ?? null;
+  if (params.notes !== undefined) {
+    // notes que não é string (o LLM errou o tipo) é ignorado: não apaga a observação existente.
+    const notes = sanitizeReservationNotes(params.notes);
+    if (notes !== undefined) updates.notes = notes;
+  }
   if (!Object.keys(updates).length) return { success: false, message: "Nenhuma alteração informada." };
   if (emptyLedger(scope)) return { success: false, error: NOT_FOUND };
 

@@ -20,13 +20,13 @@ export const RESERVATION_NOTES_CLOSE = "<<<FIM_OBSERVACAO_DA_RESERVA>>>";
 
 /** Sem o nome, nenhuma variante de colchete forja o bloco. */
 const NOTES_MARKER_NAME_RE = /(?:FIM_)?OBSERVACAO_DA_RESERVA/gi;
-/** Controle (inclui C1); quebras e tabs viram espaço antes. */
+/** Controle (inclui C1); quebras, tabs, NEL (U+0085) e separadores de linha/parágrafo (U+2028/2029) viram espaço antes. */
 const CONTROL_RE = /\p{Cc}/gu;
 
 /** Escrita: sem controles, cortado por code point (nunca deixa meio par substituto). */
 export function sanitizeReservationNotes(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const cleaned = value.replace(/[\r\n\t]+/g, " ").replace(CONTROL_RE, "");
+  const cleaned = value.replace(/[\r\n\t\u0085\u2028\u2029]+/g, " ").replace(CONTROL_RE, "");
   return truncateChars(cleaned, AGENT_RESERVATION_NOTES_MAX_CHARS).trim();
 }
 

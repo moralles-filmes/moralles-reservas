@@ -68,12 +68,48 @@ describe("escrita de notes", () => {
     const saved = h.reserveSlot.mock.calls[0][1].notes as string;
     expect(Array.from(saved)).toHaveLength(280);
     expect(saved.endsWith("😀")).toBe(true);
-    expect(Array.from(saved).every((c) => c.length === 2 || !/[�-�]/.test(c))).toBe(true);
+    expect(Array.from(saved).every((c) => c.length === 2 || !/[\uD800-\uDFFF]/.test(c))).toBe(true);
+  });
+
+  it("controle positivo: o regex de meio par substituto reprova um corte por unidade UTF-16", () => {
+    // Um corte por unidade (slice) deixa o substituto alto solto no fim; o regex tem de pegá-lo.
+    const cortePorUnidade = ("a".repeat(279) + "😀").slice(0, 280);
+    expect(/[\uD800-\uDFFF]/.test(cortePorUnidade)).toBe(true);
+    expect(Array.from(cortePorUnidade).every((c) => c.length === 2 || !/[\uD800-\uDFFF]/.test(c))).toBe(false);
   });
 
   it("caracteres de controle são removidos", async () => {
-    await create("mesa\u0000 perto\u001b da\u0085 janela\r\nfora");
+    await create("mesa\u0000 perto\u001b da\u0085janela\r\nfora");
     expect(h.reserveSlot.mock.calls[0][1].notes).toBe("mesa perto da janela fora");
+  });
+
+  it("NEL, U+2028 e U+2029 viram espaço, não somem", async () => {
+    await create("a\u0085b\u2028c\u2029d");
+    expect(h.reserveSlot.mock.calls[0][1].notes).toBe("a b c d");
+  });
+
+  it("update com notes que não é string ignora o campo e não apaga a observação", async () => {
+    const row = { id: "r1", date: "2099-01-10", time: "20:00:00", party_size: 2, table_id: null };
+    const scope = { unitId: "u", customerId: "c" };
+    const deps = { checkAvailability: async () => ({ available: true, message: "ok" }) as never };
+    const sozinho = fakeDb({ data: row, error: null });
+    const res = await updateReservationScoped(sozinho.db as never, { reservation_code: "ABCD2345", notes: 123 as never }, scope, deps);
+    expect(res.success).toBe(false);
+    expect(sozinho.updates).toEqual([]);
+    const junto = fakeDb({ data: row, error: null });
+    await updateReservationScoped(junto.db as never, { reservation_code: "ABCD2345", party_size: 3, notes: { a: 1 } as never }, scope, deps);
+    expect(junto.updates).toHaveLength(1);
+    expect(junto.updates[0]).not.toHaveProperty("notes");
+    expect(junto.updates[0]).toMatchObject({ party_size: 3 });
+  });
+
+  it("update com notes string vazia grava vazio (comportamento mantido)", async () => {
+    const row = { id: "r1", date: "2099-01-10", time: "20:00:00", party_size: 2, table_id: null };
+    const { db, updates } = fakeDb({ data: row, error: null });
+    await updateReservationScoped(db as never, { reservation_code: "ABCD2345", notes: "" }, { unitId: "u", customerId: "c" }, {
+      checkAvailability: async () => ({ available: true, message: "ok" }) as never,
+    });
+    expect((updates[0] as { notes: string }).notes).toBe("");
   });
 
   it("update_reservation também corta e limpa", async () => {
