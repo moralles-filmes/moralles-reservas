@@ -52,10 +52,12 @@ export function ReservasCalendar({ unitId }: ReservasCalendarProps) {
     else setMonth(m => m + 1);
   };
 
-  const monthLabel = new Date(year, month).toLocaleDateString("pt-BR", {
+  // Só a primeira letra: `capitalize` do CSS escrevia "Outubro De 2026".
+  const rawMonthLabel = new Date(year, month).toLocaleDateString("pt-BR", {
     month: "long",
     year: "numeric",
   });
+  const monthLabel = rawMonthLabel.charAt(0).toUpperCase() + rawMonthLabel.slice(1);
 
   return (
     <div className="grid lg:grid-cols-[360px,1fr] gap-6">
@@ -65,7 +67,7 @@ export function ReservasCalendar({ unitId }: ReservasCalendarProps) {
             <Button variant="ghost" size="icon" aria-label="Mês anterior" onClick={prevMonth}>
               <ChevronLeft className="h-4 w-4" />
             </Button>
-            <span className="font-semibold capitalize">{monthLabel}</span>
+            <span className="font-semibold">{monthLabel}</span>
             <Button variant="ghost" size="icon" aria-label="Próximo mês" onClick={nextMonth}>
               <ChevronRight className="h-4 w-4" />
             </Button>
