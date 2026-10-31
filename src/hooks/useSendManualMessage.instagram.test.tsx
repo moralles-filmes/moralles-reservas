@@ -71,6 +71,33 @@ describe("send-manual-message: mensagem por código (Instagram)", () => {
   });
 });
 
+describe("conexão relida e corpos atípicos", () => {
+  it.each(["INSTAGRAM_NOT_CONNECTED", "INSTAGRAM_REAUTH_REQUIRED", "INSTAGRAM_ACCOUNT_RECONNECTED"])("409 %s invalida a conexão", async (code) => {
+    const { invalidate } = await fail(409, { error: code });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["instagram-connection", "unit"] });
+  });
+  it("409 OUTSIDE_SERVICE_WINDOW não invalida a conexão", async () => {
+    const { invalidate } = await fail(409, { error: "OUTSIDE_SERVICE_WINDOW" });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["instagram-connection", "unit"] });
+  });
+  it("PARTIAL_SEND com sent/total não numéricos usa texto genérico", async () => {
+    const { error } = await fail(502, { error: "PARTIAL_SEND", code: "PARTIAL_SEND", sent: "1", total: null });
+    expect(error.message).toContain("Só parte da mensagem foi enviada.");
+    expect(error.message).not.toContain("undefined");
+  });
+  it("502 que não é JSON cai em HTTP 502", async () => {
+    io.invoke.mockResolvedValue({ data: null, error: new FunctionsHttpError(new Response("<html>bad gateway</html>", { status: 502 })) });
+    const { result } = setup();
+    await act(async () => {
+      await expect(result.current.mutateAsync({ conversationId: "c1", message: "oi", channel: "instagram" })).rejects.toThrow("HTTP 502");
+    });
+  });
+  it("reason herdada do protótipo não vira mensagem", async () => {
+    const { error } = await fail(409, { error: "constructor" });
+    expect(error.message).toBe("constructor");
+  });
+});
+
 describe("502 PARTIAL_SEND recarrega a conversa", () => {
   it("invalida o detalhe e a lista de conversas", async () => {
     const { invalidate } = await fail(502, { error: "PARTIAL_SEND", code: "PARTIAL_SEND", sent: 1, total: 2, outcome_unknown: false });

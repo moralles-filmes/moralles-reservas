@@ -16,6 +16,7 @@ const io = vi.hoisted(() => ({
   },
   waMode: "unavailable" as "official" | "unofficial" | "unavailable",
   send: vi.fn(),
+  sendError: null as null | Error,
 }));
 const unitId = "aaaaaaaa-0000-0000-0000-000000000001";
 const recent = () => new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
@@ -47,7 +48,13 @@ vi.mock("@/hooks/useInstagram", () => ({
     data: io.connection.data,
   }),
 }));
-vi.mock("@/hooks/useSendManualMessage", () => ({ useSendManualMessage: () => ({ isPending: false, mutate: io.send }) }));
+vi.mock("@/hooks/useSendManualMessage", () => ({ useSendManualMessage: () => ({
+  isPending: false,
+  mutate: (vars: unknown, opts: { onError?: (e: Error) => void }) => {
+    io.send(vars, opts);
+    if (io.sendError) opts.onError?.(io.sendError);
+  },
+}) }));
 vi.mock("@/hooks/useDebounce", () => ({ useDebounce: (v: string) => v }));
 vi.mock("@/hooks/useWhatsappTemplates", () => ({
   useWhatsappTemplates: () => ({
@@ -83,6 +90,7 @@ beforeEach(() => {
   io.connection = { state: "success", data: { status: "connected" } };
   io.waMode = "unavailable";
   io.send.mockReset();
+  io.sendError = null;
   io.list = [
     wa("w1", "human_active", "Ana WA"), wa("w2", "awaiting_human", "Bia WA"),
     ig("i1", "human_active", "Caio IG"), ig("i2", "ai_active", "Dani IG"),
@@ -192,6 +200,27 @@ describe("Conversa do Instagram: envio, copy e identidade", () => {
       expect.objectContaining({ conversationId: "i1", message: "resposta", channel: "instagram" }),
       expect.anything(),
     );
+  });
+
+  it("depois de PARTIAL_SEND o composer fica vazio (não reenvia as partes)", async () => {
+    io.sendError = Object.assign(new Error("Enviadas 1 de 2 partes da mensagem."), { code: "PARTIAL_SEND", httpStatus: 502 });
+    openIg(inbound(recent()));
+    await screen.findByText("Oi");
+    await waitFor(() => expect(composer().disabled).toBe(false));
+    fireEvent.change(composer(), { target: { value: "mensagem longa" } });
+    fireEvent.click(screen.getByRole("button", { name: /Enviar/ }));
+    expect(io.send).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(composer().value).toBe(""));
+  });
+
+  it("outro erro mantém o texto para nova tentativa", async () => {
+    io.sendError = Object.assign(new Error("falhou"), { httpStatus: 503 });
+    openIg(inbound(recent()));
+    await screen.findByText("Oi");
+    await waitFor(() => expect(composer().disabled).toBe(false));
+    fireEvent.change(composer(), { target: { value: "mensagem" } });
+    fireEvent.click(screen.getByRole("button", { name: /Enviar/ }));
+    expect(composer().value).toBe("mensagem");
   });
 
   it("janela vencida bloqueia com a copy do Instagram", async () => {

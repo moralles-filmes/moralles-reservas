@@ -25,6 +25,10 @@ vi.mock("@/hooks/useConversations", () => ({
   useConversations: () => ({ data: [list], isLoading: false, isError: false, refetch: vi.fn() }),
   useConversationActions: () => ({ assumeConversation: { isPending: false }, releaseToAI: { isPending: false }, markResolved: { isPending: false } }),
 }));
+vi.mock("@/hooks/useInstagram", () => ({
+  useInstagramModule: () => ({ isSuccess: true, data: { instagram: { active: false, granted_at: null } } }),
+  useInstagramConnection: () => ({ isSuccess: false, isError: false, isLoading: false, data: undefined }),
+}));
 vi.mock("@/hooks/useSendManualMessage", () => ({ useSendManualMessage: () => ({ isPending: false, mutate: io.send }) }));
 vi.mock("@/hooks/useDebounce", () => ({ useDebounce: (value: string) => value }));
 vi.mock("@/hooks/useWhatsappTemplates", async () => {

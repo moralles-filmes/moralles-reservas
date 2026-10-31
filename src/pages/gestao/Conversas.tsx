@@ -300,7 +300,11 @@ function ConversationDetail({
             toast.success("Mensagem enviada.");
           }
         },
-        onError: (e) => toast.error(`Erro: ${(e as Error).message}`),
+        onError: (e) => {
+          // PARTIAL_SEND: parte já saiu e está no histórico; manter o texto reenviaria tudo.
+          if ((e as { code?: string }).code === "PARTIAL_SEND") setReplyText("");
+          toast.error(`Erro: ${(e as Error).message}`);
+        },
       }
     );
   }

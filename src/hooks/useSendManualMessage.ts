@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
+import { instagramKeys } from "@/features/instagram/types";
 import { INSTAGRAM_WINDOW_MESSAGE } from "@/lib/conversation-channel";
 import type { Conversation, ConversationMessage } from "@/types/reserva";
 
@@ -54,7 +55,7 @@ export function manualMessageErrorMessage(
     return channel === "instagram" ? INSTAGRAM_WINDOW_MESSAGE : OUTSIDE_SERVICE_WINDOW_MESSAGE;
   }
   if (reason === "PARTIAL_SEND" && body) return partialSendMessage(body);
-  return INSTAGRAM_ERROR_MESSAGES[reason] ?? reason;
+  return Object.prototype.hasOwnProperty.call(INSTAGRAM_ERROR_MESSAGES, reason) ? INSTAGRAM_ERROR_MESSAGES[reason] : reason;
 }
 
 export function useSendManualMessage(unitId: string) {
@@ -78,6 +79,7 @@ export function useSendManualMessage(unitId: string) {
           throw Object.assign(new Error(manualMessageErrorMessage(reason, channel, body)), {
             httpStatus: error.context.status,
             code: body?.code ?? (reason === "PARTIAL_SEND" ? reason : undefined),
+            reason,
           });
         }
         throw error;
@@ -116,11 +118,10 @@ export function useSendManualMessage(unitId: string) {
       // Cache local ficou stale — forçar refetch traz o status real do banco, esconde o
       // input de envio e revela o botão "Assumir" condicional em Conversas.tsx.
       const httpStatus = (err as { httpStatus?: number } | null)?.httpStatus;
-      // 502 PARTIAL_SEND: parte da mensagem já saiu e está no histórico — recarrega a
-      // conversa (o rollback acima removeria o que o servidor registrou).
-      if ((err as { code?: string } | null)?.code === "PARTIAL_SEND") {
-        queryClient.invalidateQueries({ queryKey: ["conversation-detail", conversationId] });
-        queryClient.invalidateQueries({ queryKey: ["conversations", unitId] });
+      // Conta mudou de estado no servidor: a tela não pode seguir mostrando "conectada".
+      const reason = (err as { reason?: string } | null)?.reason;
+      if (reason === "INSTAGRAM_NOT_CONNECTED" || reason === "INSTAGRAM_REAUTH_REQUIRED" || reason === "INSTAGRAM_ACCOUNT_RECONNECTED") {
+        queryClient.invalidateQueries({ queryKey: instagramKeys.connection(unitId) });
       }
       if (httpStatus === 409) {
         queryClient.invalidateQueries({ queryKey: ["conversation-detail", conversationId] });
