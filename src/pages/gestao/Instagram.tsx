@@ -115,7 +115,7 @@ function AccountPanel({ unitId, account }: { unitId: string; account: InstagramA
       const { authorize_url, state } = await start.mutateAsync();
       // O state vai ao sessionStorage ANTES do redirecionamento.
       if (!saveOauthState(state)) {
-        toast.error("Seu navegador bloqueou o armazenamento necessário para conectar. Libere-o e tente de novo.");
+        toast.error("Seu navegador bloqueou o armazenamento necessário para conectar. Libere-o e tente novamente.");
         return;
       }
       setRedirecting(true);

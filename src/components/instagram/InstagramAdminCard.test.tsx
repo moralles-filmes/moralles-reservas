@@ -32,7 +32,7 @@ const diagnostics = {
   last_event_at: "2026-10-30T15:30:00Z",
   queue: { received: 3, processing: 1, done_24h: 42, dead: 2 },
   oldest_pending_received_at: "2026-10-30T14:00:00Z",
-  outcomes_24h: { replied: 40 },
+  outcomes_24h: { success: 40, algo_novo: 2 },
 };
 
 function mount() {
@@ -91,7 +91,7 @@ describe("InstagramAdminCard", () => {
     });
     mount();
     expect(await screen.findByText(/@moralles/)).toBeInTheDocument();
-    expect(screen.getByText(/Token válido até 31\/12\/2026/)).toBeInTheDocument();
+    expect(screen.getByText(/Acesso válido até 31\/12\/2026/)).toBeInTheDocument();
     expect(screen.queryByText("Reconectar necessário")).not.toBeInTheDocument();
   });
 
@@ -125,6 +125,9 @@ describe("InstagramAdminCard", () => {
     expect(screen.getByText("Com falha definitiva: 2")).toBeInTheDocument();
     expect(screen.getByText(/Último evento: 30\/10\/2026/)).toBeInTheDocument();
     expect(screen.queryByText(/segredo do cliente/)).not.toBeInTheDocument();
+    // Desfecho conhecido vai em PT-BR; desconhecido cai na chave crua.
+    expect(screen.getByText("Respondida (24 h): 40")).toBeInTheDocument();
+    expect(screen.getByText("algo_novo (24 h): 2")).toBeInTheDocument();
   });
 
   it("erro de leitura do módulo tem 'Tentar de novo' que refaz a leitura", async () => {

@@ -9,6 +9,7 @@ import {
   useSetUnitModule,
 } from "@/hooks/useInstagram";
 import type { InstagramAccount, InstagramDiagnostics } from "@/features/instagram/types";
+import { outcomeLabel } from "@/features/instagram/outcome-labels";
 
 function formatDate(value: string | null | undefined) {
   return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleDateString("pt-BR") : "Não disponível";
@@ -69,7 +70,7 @@ function AccountDetails({ account }: { account: InstagramAccount }) {
           <Badge variant="outline">Desconectada</Badge>
         )}
       </div>
-      {account.token_expires_at && <p>Token válido até {formatDate(account.token_expires_at)}</p>}
+      {account.token_expires_at && <p>Acesso válido até {formatDate(account.token_expires_at)}</p>}
       <p className="text-muted-foreground">Conectada em {formatDate(account.connected_at)}</p>
       <p className="text-muted-foreground">Recebimento de eventos: {account.subscribed ? "ativo" : "inativo"}</p>
     </div>
@@ -111,7 +112,7 @@ function DiagnosticsDetails({ data }: { data: InstagramDiagnostics }) {
       )}
       {outcomes.length > 0 && (
         <ul className="text-muted-foreground">
-          {outcomes.map(([outcome, count]) => <li key={outcome}>Resultado {outcome} (24 h): {count}</li>)}
+          {outcomes.map(([outcome, count]) => <li key={outcome}>{outcomeLabel(outcome)} (24 h): {count}</li>)}
         </ul>
       )}
     </div>

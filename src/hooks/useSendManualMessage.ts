@@ -21,7 +21,7 @@ export { INSTAGRAM_WINDOW_MESSAGE };
 const INSTAGRAM_ERROR_MESSAGES: Record<string, string> = {
   INSTAGRAM_NOT_CONNECTED:
     "A conta do Instagram desta loja não está conectada. Conecte a conta na página do Instagram para responder.",
-  INSTAGRAM_MODULE_DISABLED: "O módulo do Instagram está desativado para esta loja.",
+  INSTAGRAM_MODULE_DISABLED: "O módulo do Instagram não está liberado para esta unidade. Fale com o suporte para liberar.",
   INSTAGRAM_REAUTH_REQUIRED:
     "A conexão com o Instagram expirou. Reconecte a conta na página do Instagram para responder.",
   INSTAGRAM_ACCOUNT_RECONNECTED: "A conta do Instagram foi reconectada. Tente enviar de novo.",

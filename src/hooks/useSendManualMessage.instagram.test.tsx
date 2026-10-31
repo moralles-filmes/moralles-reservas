@@ -37,7 +37,7 @@ describe("send-manual-message: mensagem por código (Instagram)", () => {
   });
   it("409 INSTAGRAM_MODULE_DISABLED", async () => {
     const { error } = await fail(409, { error: "INSTAGRAM_MODULE_DISABLED" });
-    expect(error.message).toMatch(/módulo do Instagram.*desativado/i);
+    expect(error.message).toMatch(/módulo do Instagram.*não está liberado/i);
   });
   it("409 INSTAGRAM_REAUTH_REQUIRED", async () => {
     const { error } = await fail(409, { error: "INSTAGRAM_REAUTH_REQUIRED" });
