@@ -336,7 +336,7 @@ git add src/types/reserva.ts src/hooks/useHallTables.ts supabase/tests/local-pre
 git commit -m "feat(planta): tipos de layout e presença; README do harness 81"
 ```
 
-- [ ] **Step 5: PR para `main` (autorização do dono)**
+- [x] **Step 5: PR para `main` (autorização do dono)**
   - `gh pr create --base main --head feat/planta-b1-banco`.
   - Corpo:
     - o que é aditivo e inerte (nenhuma tela usa ainda);
@@ -345,7 +345,7 @@ git commit -m "feat(planta): tipos de layout e presença; README do harness 81"
     - o aviso de ordem para o Instagram (`db push --include-all`);
     - o rodapé de atribuição.
   - Conferir o `acl-estatico` verde na aba Checks antes do merge.
-- [ ] **Step 6: Merge e `supabase db push` (autorização do dono)**
+- [x] **Step 6: Merge e `supabase db push` (autorização do dono)**
   - Depois do merge: `git switch main && git pull`.
   - `supabase db push --dry-run` lista só `<ts1>` e `<ts2>`; depois, `supabase db push`.
   - Conferir com `supabase migration list` que as duas versões estão em local e remoto.
