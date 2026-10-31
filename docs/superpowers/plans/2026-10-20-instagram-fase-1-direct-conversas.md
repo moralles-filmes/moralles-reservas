@@ -938,11 +938,11 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 - Produces (hooks): `useInstagramModule(unitId)`, `useInstagramAccount(unitId)`, `useInstagramSettings(unitId)` e as mutations. Todas as chaves começam por `["instagram-<entidade>", unitId]`.
 - Rótulo de origem: `instagram: "Instagram"`.
 
-- [ ] **Step 1: Testes da API com client falso.**
+- [x] **Step 1: Testes da API com client falso.**
   - Toda leitura filtra pela unidade.
   - Update com zero linhas lança.
   - Chaves com `unitId` na posição 1.
-- [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode `npm run typecheck`, que deve continuar com zero erros e pega os leitores de `customer_id`. Commit** `feat(instagram): api e hooks do módulo no frontend`.
+- [x] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode `npm run typecheck`, que deve continuar com zero erros e pega os leitores de `customer_id`. Commit** `feat(instagram): api e hooks do módulo no frontend`.
 
 ### Task 5.2: aba "Instagram" na Plataforma (Sonnet)
 
@@ -950,12 +950,12 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 - Create: `src/components/instagram/InstagramAdminCard.tsx`, `src/components/instagram/InstagramAdminCard.test.tsx`
 - Modify: `src/pages/gestao/Automacao.tsx:222-273` (aba `instagram` só quando o usuário é `platform_admin`, no padrão do `DatafyAdminCard`)
 
-- [ ] **Step 1: Testes.**
+- [x] **Step 1: Testes.**
   - Liberar e revogar chamam `setUnitModule`.
   - O card mostra o status da conta (`@`, validade do token, "Reconectar necessário" em `reauth_required`).
   - O diagnóstico mostra contagens e o último evento, sem texto de mensagem.
   - O ramo de erro tem "Tentar de novo".
-- [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Commit** `feat(instagram): liberação e diagnóstico na plataforma`.
+- [x] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Commit** `feat(instagram): liberação e diagnóstico na plataforma`.
 
 ### Task 5.3: página da loja e callback (Sonnet, review Opus no callback)
 
@@ -981,7 +981,7 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
   - chama `connectCallback` e navega para `/g/<unit_slug>/instagram`;
   - em erro, mostra a mensagem do backend e um link de volta.
 
-- [ ] **Step 1: Testes.**
+- [x] **Step 1: Testes.**
   - Operador é redirecionado.
   - Sem grant, o item não aparece no menu.
   - O callback limpa a URL antes do `connectCallback`. Controle positivo: sem `replaceState`, o teste vê o `code` na URL durante a chamada.
@@ -989,7 +989,7 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
   - Em StrictMode (efeito duplo), `connectCallback` roda uma vez.
   - Operador não vê o cartão de status (a EF nega `status` a operador; a RPC aceitaria, mas a régua da tela é a da EF).
   - O interruptor desfaz o estado otimista quando a mutation falha.
-- [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Commit** `feat(instagram): página da loja com conexão e Direct`.
+- [x] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Commit** `feat(instagram): página da loja com conexão e Direct`.
 
 ### Task 5.4: Conversas com canal (Sonnet)
 
@@ -1013,14 +1013,14 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
   - em conversa IG, `canSend` depende da conta conectada e da janela, não do canal WhatsApp;
   - erros `INSTAGRAM_NOT_CONNECTED`, `INSTAGRAM_REAUTH_REQUIRED` e `PARTIAL_SEND` com mensagens próprias.
 
-- [ ] **Step 1: Testes.**
+- [x] **Step 1: Testes.**
   - Filtro de canal com cada chip de status.
   - Contagens.
   - `localStorage` que lança não quebra a tela.
   - Nome exibido nas 6 ordens.
   - Conversa IG sem canal WhatsApp na unidade permite enviar.
   - Lista vazia filtrada mostra o vazio, não branco.
-- [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Commit** `feat(conversas): filtro e exibição por canal`.
+- [x] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Commit** `feat(conversas): filtro e exibição por canal`.
 
 ### Task 5.5: páginas de privacidade (Sonnet)
 
@@ -1033,11 +1033,11 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 
 ### Task 5.6: gates do Bloco 5
 
-- [ ] Rode `npm run typecheck`, `npm run lint`, `npm run build` e as suítes de `src/pages`, `src/components/instagram` e `src/lib/conversation-channel`.
-- [ ] Rode `node scripts/check-portabilidade.mjs`. Acima da linha de base: **pare e pergunte**.
-- [ ] Rode `tenant-isolation-auditor` (Opus) sobre `api.ts`, hooks e Conversas: chaves e filtros por unidade.
-- [ ] Rode a revisão de copy com a skill `pt-br-utils:pt-br-translator` nas telas novas.
-- [ ] Atualize `frontend.md`: as rotas `/instagram/callback` e `/privacidade*`, e a chave `localStorage`. Commit.
+- [x] Rode `npm run typecheck`, `npm run lint`, `npm run build` e as suítes de `src/pages`, `src/components/instagram` e `src/lib/conversation-channel`.
+- [x] Rode `node scripts/check-portabilidade.mjs`. Acima da linha de base: **pare e pergunte**.
+- [x] Rode `tenant-isolation-auditor` (Opus) sobre `api.ts`, hooks e Conversas: chaves e filtros por unidade.
+- [x] Rode a revisão de copy com a skill `pt-br-utils:pt-br-translator` nas telas novas.
+- [x] Atualize `frontend.md`: as rotas `/instagram/callback` e `/privacidade*`, e a chave `localStorage`. Commit. (`/privacidade*` entra com a 5.5.)
 
 ---
 
@@ -1406,7 +1406,42 @@ Review final do bloco (Opus): pronto com ressalvas, sem Critical; o Important er
 - A UI de Conversas marca o telefone como declarado e não abre o cadastro privado na conversa do IG (herança do Bloco 3).
 
 ### Bloco 5
-_(preencher)_
+Executado em 2026-10-31 na branch `feat/instagram-fase-1`, local, sem push, sem `db push`, sem deploy, sem `secrets set` e sem chamada real à Meta ou a LLM. Base `f2f8022`, sem rebase sobre `origin/main` (pedido do responsável: partir do `f2f8022`).
+
+Execução por tarefa: implementador Sonnet; revisão Opus em 5.1, 5.3 (callback) e 5.4; Sonnet em 5.2; re-revisões curtas em Sonnet/Haiku.
+
+**Commits:**
+- 5.1 (api, tipos, hooks, origem `instagram`): `2478006`, `55cb38b` (uma rodada).
+- 5.2 (aba Instagram na plataforma): `4182cef`.
+- 5.3 (página da loja e callback): `57c69fa`, `88975d5` (uma rodada de endurecimento do callback).
+- 5.4 (Conversas por canal e herança do Bloco 4): `cdcbd65`, `b81ebcf`, `4dbf0fa` (uma rodada).
+- 5.6 (copy, regras e gate de tenant): `0cdd900`, `0a2a9e2`, `9e7bb85`, `f131f24`; revisão final do bloco: `485768e`.
+- 5.5: **pendente**, à espera dos dois textos do responsável (política de privacidade e exclusão de dados). Sem placeholder. O Bloco 6 não publica o app Meta sem as duas URLs no ar.
+
+**Desvios do texto do plano (rulings):**
+- **R5-a:** `unit_module_grants` é FORCE RLS sem grant a `authenticated`; liberar/ler o módulo usa as RPCs `set_unit_module_grant`/`get_unit_modules`.
+- **R5-b:** a união de `source` com `"instagram"` vive nos tipos dos hooks (`useDashboardMetrics`, `useFluxoClientes`, `exportCsv`), porque `src/types/reserva.ts` não tem campo `source`. Instagram virou canal próprio no relatório de origem. A reserva manual continua só `web|whatsapp`, porque `create-manual-reservation` recusa `instagram`.
+- **R5-c:** o cartão de status da página da loja usa a EF `instagram-connect` `status` (operador negado). Conversas lê a conexão pela RPC `get_instagram_account_status` (`readInstagramConnection`, qualquer membro, sem token), porque o operador atende ali. Em erro dessa leitura o envio do IG não trava (polaridade aberta; o servidor responde 409/503 com copy própria).
+- **R5-d:** a 5.4 entregou a herança inteira do Bloco 4: 6 códigos com copy própria (as de conta pedem "Peça a um gerente…"), refetch da conversa e da lista no 502 `PARTIAL_SEND`, composer limpo no envio parcial (evita reenviar as partes que saíram), telefone "(declarado)" e nenhum caminho para a ficha do cliente na conversa do IG. Conversas não tem link de ficha hoje; a garantia é por ausência, com teste.
+- **R5-e:** o callback trava por `code` (Set de módulo) além de apagar o `state`, porque o efeito roda de novo quando o `AuthProvider` publica outro `user` (refresh de token) e mostraria erro falso com a chamada em voo; `replaceState` preserva `history.state` do React Router.
+
+**Gates locais (HEAD `485768e`):**
+- `npm run typecheck` exit 0; lint 0 erros (17 warnings anteriores); `npm run build` ok.
+- `npx vitest run src/pages src/components src/lib/conversation-channel src/features/instagram src/hooks`: 66 arquivos, 699 testes; só falha o `OfficialConnectionCard` (sem `.env.local` no worktree, esperado).
+- `src/lib` + `scripts`: as suítes de harness de Edge Request (`agent-turn-parity`, `edge-request-harness`, `whatsapp-automation-receipts-request`, `whatsapp-scheduled-templates-integration`, `whatsapp-survey-tenant-routing`) estouram o timeout de 5 s com a máquina sob carga; isoladas com `--testTimeout=30000`, 5 arquivos e 117 testes verdes. O bloco não toca `supabase/`.
+- `check-portabilidade` 489 = linha de base; `check-padrao` ok.
+
+**Gates:** `tenant-isolation-auditor` (Opus) PASS_WITH_WARNINGS, 0 bloqueante. F-002 (operador lê a projeção da conta pela RPC) documentado em `instagram.md`; F-003 parcial (callback invalida conexão e módulo) corrigido. Revisão de copy (`pt-br-translator`): 4 strings e rótulos PT-BR de `outcomes_24h` (`outcome-labels.ts`). Revisão final do bloco (Opus): pronto com ressalvas, sem Critical.
+
+**Antes de `main` (obrigatório):** smoke manual em navegador de Conversas no WhatsApp e no Instagram e do fluxo OAuth no E2E do Bloco 6 (nenhuma task deste bloco rodou em navegador real). A conexão OAuth só funciona na origem de `APP_BASE_URL`: o `state` vive no `sessionStorage` (por aba e por origem), então preview da Vercel, `www` ou login aberto em outra aba ou no navegador do app recusam com "sessão de segurança não confere". É o comportamento seguro esperado; registrar no runbook do piloto.
+
+**Atenções estacionadas (follow-up, P3):**
+- Detalhe da conversa sem `.eq("unit_id")` e chave `["conversation-detail", id]` sem `unitId` (pré-existente; a RLS cobre).
+- Sem `queryClient.clear()` no logout (pré-existente; o `GestaoGuard` impede exibir cache de outra unidade).
+- `customer:customers(*)` no select da lista e do detalhe também em conversa do IG: a UI só mostra o telefone, mas o cadastro inteiro fica no cache do navegador (minimização de dados, LGPD).
+- Copy/helpers duplicados (`formatDate`/`RetryLine` em `Instagram.tsx` e `InstagramAdminCard.tsx`); sem toast de sucesso no callback; "Voltar ao Instagram" quando o link cai em `/admin`.
+- Cor do IG no gráfico reaproveita `--chart-trigger-birthday`; `useInstagramModule` com retry padrão 3; diagnóstico não invalidado ao liberar/revogar; allowlist de host no redirect do OAuth (hoje só https).
+- Lacunas de teste: refetch do card depois de liberar, erro propagado em settings/dm/diagnóstico, controles positivos dos testes de operador/menu/grant, mock síncrono de `onError` em `Conversas.channel.test.tsx`.
 
 ### Bloco 6
 _(preencher)_
