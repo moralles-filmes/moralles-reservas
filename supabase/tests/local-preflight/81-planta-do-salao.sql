@@ -265,6 +265,33 @@ select pg_temp.caso(8132, 'L-CP2 controle: trigger sem o modo estrito, o L-10b d
        '[{"id":"{T11}","x":null,"y":null,"w":null,"h":null,"rotation":null,"shape":null}]')::text$s$,
   'ok', $c$$1::timestamptz > '2026-01-01 12:00:00+00'$c$);
 
+select pg_temp.caso(8133, 'L-21a salão só com a largura', 'OWN',
+  $s$update public.halls set plan_width_cm=800 where id='{S1}'; select 'x'$s$,
+  '23514 %halls_plan_dims%');
+select pg_temp.caso(8134, 'L-21b entrada sem a distância', 'OWN',
+  $s$update public.halls set plan_entrance_wall='top' where id='{S1}'; select 'x'$s$,
+  '23514 %halls_plan_entrance%');
+select pg_temp.caso(8135, 'L-21c save_hall_plan com profundidade nula', 'OWN',
+  $s$select public.save_hall_plan('{S1}', (select updated_at from public.halls where id='{S1}'),
+     '{"width_cm":800,"depth_cm":null,"entrance_wall":null,"entrance_offset_cm":null,"window_walls":[]}', '[]')::text$s$,
+  '23514 %halls_plan_dims%');
+select pg_temp.caso(8136, 'L-CP3 controle: CHECK na forma antiga aceita só a largura', 'postgres',
+  $s$alter table public.halls drop constraint halls_plan_dims;
+     alter table public.halls add constraint halls_plan_dims check (
+       (plan_width_cm is null and plan_depth_cm is null)
+       or (plan_width_cm between 200 and 5000 and plan_depth_cm between 200 and 5000));
+     update public.halls set plan_width_cm=800 where id='{S1}'; select 'x'$s$, 'ok',
+  $c$(select plan_width_cm from public.halls where id='{S1}') = 800$c$);
+-- Mesa de B pendurada no salão de A (o FK de hall_id não olha a unidade).
+select pg_temp.caso(8137, 'L-22 platform_admin salva S1 com mesa de B pendurada nele', 'postgres',
+  $s$update public.tables set hall_id='{S1}' where id='{TB1}';
+     select set_config('role', 'authenticated', true),
+            set_config('request.jwt.claims', '{"sub":"{PA}","role":"authenticated"}', true);
+     select public.save_hall_plan('{S1}', (select updated_at from public.halls where id='{S1}'),
+       '{"width_cm":null,"depth_cm":null,"entrance_wall":null,"entrance_offset_cm":null,"window_walls":[]}',
+       '[{"id":"{TB1}","x":100,"y":100,"w":80,"h":80,"rotation":0,"shape":"round"}]')::text$s$,
+  '42501 hall_plan_forbidden');
+
 -- ═══ P — Presença (migration 20261030120100) ═════════════════════════════════
 -- Casos com ator 'postgres' preparam estado (carimbo no passado, com o trigger
 -- desligado só naquele UPDATE) e depois trocam de papel por pg_temp.como().

@@ -47,13 +47,15 @@ alter table public.halls
   add column if not exists plan_window_walls text[] not null default '{}';
 
 alter table public.halls drop constraint if exists halls_plan_dims;
+-- num_nulls: CHECK com NULL passa, e `between 200 and null` deixaria meia planta.
 alter table public.halls add constraint halls_plan_dims check (
-  (plan_width_cm is null and plan_depth_cm is null)
-  or (plan_width_cm between 200 and 5000 and plan_depth_cm between 200 and 5000));
+  num_nulls(plan_width_cm, plan_depth_cm) in (0, 2)
+  and (plan_width_cm is null or (plan_width_cm between 200 and 5000 and plan_depth_cm between 200 and 5000)));
 alter table public.halls drop constraint if exists halls_plan_entrance;
 alter table public.halls add constraint halls_plan_entrance check (
-  (plan_entrance_wall is null and plan_entrance_offset_cm is null)
-  or (plan_entrance_wall in ('top', 'right', 'bottom', 'left') and plan_entrance_offset_cm >= 0));
+  num_nulls(plan_entrance_wall, plan_entrance_offset_cm) in (0, 2)
+  and (plan_entrance_wall is null
+       or (plan_entrance_wall in ('top', 'right', 'bottom', 'left') and plan_entrance_offset_cm >= 0)));
 alter table public.halls drop constraint if exists halls_plan_windows;
 alter table public.halls add constraint halls_plan_windows check (
   plan_window_walls <@ array['top', 'right', 'bottom', 'left']);
@@ -67,8 +69,8 @@ returns boolean language sql stable security definer set search_path = '' as $$
 $$;
 comment on function app_private.is_unit_manager(uuid, uuid) is
   'Verdadeiro se a pessoa é owner ou gerente da unidade. Não inclui platform_admin: quem chama faz o OR com app_private.is_platform_admin.';
+-- Sem grant: só o guard_plan_write (definer, roda como dono) chama; nenhuma policy usa.
 revoke all on function app_private.is_unit_manager(uuid, uuid) from public, anon, authenticated, service_role;
-grant execute on function app_private.is_unit_manager(uuid, uuid) to authenticated;
 
 -- ─── Trigger de papel nas colunas plan_* ─────────────────────────────────────
 -- Molde: app_private.guard_unit_setting_write() (20261019180000).
@@ -231,11 +233,12 @@ begin
     raise exception 'hall_plan_invalid' using errcode = '22023';
   end;
 
-  -- 5. Ids distintos e todos do próprio salão (visíveis pela RLS).
+  -- 5. Ids distintos e todos do próprio salão e da unidade dele (visíveis pela
+  -- RLS). `tables.hall_id` não tem FK composta com a unidade.
   if v_n > 0 then
     if (select count(distinct i) from unnest(v_ids) as i) <> v_n
        or (select count(*) from public.tables t
-            where t.id = any (v_ids) and t.hall_id = p_hall_id) <> v_n then
+            where t.id = any (v_ids) and t.hall_id = p_hall_id and t.unit_id = v_unit) <> v_n then
       raise exception 'hall_plan_forbidden' using errcode = '42501';
     end if;
   end if;
@@ -253,7 +256,7 @@ begin
            plan_rotation = r.rotation, plan_shape = r.shape
       from jsonb_to_recordset(p_tables)
         as r(id uuid, x integer, y integer, w integer, h integer, rotation smallint, shape text)
-     where t.id = r.id and t.hall_id = p_hall_id;
+     where t.id = r.id and t.hall_id = p_hall_id and t.unit_id = v_unit;
     get diagnostics v_count = row_count;
     if v_count <> v_n then
       raise exception 'hall_plan_forbidden' using errcode = '42501';
