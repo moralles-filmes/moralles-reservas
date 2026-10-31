@@ -48,7 +48,9 @@ vi.mock("@/hooks/useInstagram", () => ({
     data: io.connection.data,
   }),
 }));
-vi.mock("@/hooks/useSendManualMessage", () => ({ useSendManualMessage: () => ({
+vi.mock("@/hooks/useSendManualMessage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/useSendManualMessage")>()),
+  useSendManualMessage: () => ({
   isPending: false,
   mutate: (vars: unknown, opts: { onError?: (e: Error) => void }) => {
     io.send(vars, opts);
@@ -234,7 +236,7 @@ describe("Conversa do Instagram: envio, copy e identidade", () => {
     openIg(inbound(recent()));
     await screen.findByText("Oi");
     expect(composer().disabled).toBe(true);
-    expect(screen.getByRole("status").textContent).toMatch(/Reconecte/);
+    expect(screen.getByRole("status").textContent).toMatch(/Peça a um gerente para reconectar/);
   });
 
   it("sem conta ativa (null) bloqueia com a copy de não conectada", async () => {
@@ -242,7 +244,7 @@ describe("Conversa do Instagram: envio, copy e identidade", () => {
     openIg(inbound(recent()));
     await screen.findByText("Oi");
     expect(composer().disabled).toBe(true);
-    expect(screen.getByRole("status").textContent).toMatch(/não está conectada/);
+    expect(screen.getByRole("status").textContent).toMatch(/não está conectada.*Peça a um gerente/);
   });
 
   it("leitura da conexão com erro não bloqueia (o servidor é o portão)", async () => {

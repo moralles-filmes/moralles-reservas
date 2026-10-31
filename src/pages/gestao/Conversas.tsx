@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useConversations, useConversationActions } from "@/hooks/useConversations";
-import { useSendManualMessage } from "@/hooks/useSendManualMessage";
+import { INSTAGRAM_ERROR_MESSAGES, useSendManualMessage } from "@/hooks/useSendManualMessage";
 import { useInstagramConnection, useInstagramModule } from "@/hooks/useInstagram";
 import {
   INSTAGRAM_WINDOW_MESSAGE,
@@ -423,8 +423,8 @@ function ConversationDetail({
                   ? INSTAGRAM_WINDOW_MESSAGE
                   : igBlockedByConnection
                     ? igConnectionStatus === "reauth_required"
-                      ? "A conexão com o Instagram expirou. Reconecte a conta na página do Instagram para responder."
-                      : "A conta do Instagram desta loja não está conectada. Conecte a conta na página do Instagram para responder."
+                      ? INSTAGRAM_ERROR_MESSAGES.INSTAGRAM_REAUTH_REQUIRED
+                      : INSTAGRAM_ERROR_MESSAGES.INSTAGRAM_NOT_CONNECTED
                     : "Aguarde a validação da conversa para responder."
                 : outsideOfficialWindow
                   ? "A janela de 24 horas da Meta terminou. Aguarde uma nova mensagem do cliente para responder."

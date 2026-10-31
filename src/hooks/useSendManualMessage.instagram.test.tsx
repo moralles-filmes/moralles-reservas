@@ -33,7 +33,7 @@ async function fail(status: number, body: Record<string, unknown>, channel: "wha
 describe("send-manual-message: mensagem por código (Instagram)", () => {
   it("409 INSTAGRAM_NOT_CONNECTED", async () => {
     const { error } = await fail(409, { error: "INSTAGRAM_NOT_CONNECTED" });
-    expect(error.message).toMatch(/Instagram.*não está conectada/);
+    expect(error.message).toMatch(/Instagram não está conectada.*Peça a um gerente/);
   });
   it("409 INSTAGRAM_MODULE_DISABLED", async () => {
     const { error } = await fail(409, { error: "INSTAGRAM_MODULE_DISABLED" });
@@ -41,7 +41,7 @@ describe("send-manual-message: mensagem por código (Instagram)", () => {
   });
   it("409 INSTAGRAM_REAUTH_REQUIRED", async () => {
     const { error } = await fail(409, { error: "INSTAGRAM_REAUTH_REQUIRED" });
-    expect(error.message).toMatch(/Reconecte/);
+    expect(error.message).toMatch(/Peça a um gerente para reconectar/);
   });
   it("409 INSTAGRAM_ACCOUNT_RECONNECTED", async () => {
     const { error } = await fail(409, { error: "INSTAGRAM_ACCOUNT_RECONNECTED" });

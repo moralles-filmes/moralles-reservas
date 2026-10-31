@@ -100,7 +100,11 @@ export function useDisconnectInstagram(unitId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => disconnectInstagram(unitId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: instagramKeys.account(unitId) }),
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: instagramKeys.account(unitId) }),
+        qc.invalidateQueries({ queryKey: instagramKeys.connection(unitId) }),
+      ]),
   });
 }
 
