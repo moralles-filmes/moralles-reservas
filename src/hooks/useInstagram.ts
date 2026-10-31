@@ -82,7 +82,7 @@ export function useConnectInstagramStart(unitId: string) {
   return useMutation({ mutationFn: () => connectStart(unitId) });
 }
 
-/** Callback não tem unitId: a unidade vem do state; invalida todas as contas. */
+/** Callback não tem unitId: a unidade vem do state; invalida conta, configurações, conexão e módulo de todas as unidades. */
 export function useConnectInstagramCallback() {
   const qc = useQueryClient();
   return useMutation({
@@ -90,6 +90,8 @@ export function useConnectInstagramCallback() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["instagram-account"] });
       qc.invalidateQueries({ queryKey: ["instagram-settings"] });
+      qc.invalidateQueries({ queryKey: ["instagram-connection"] });
+      qc.invalidateQueries({ queryKey: ["instagram-module"] });
     },
   });
 }
