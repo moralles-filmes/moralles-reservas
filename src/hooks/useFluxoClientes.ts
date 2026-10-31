@@ -151,7 +151,7 @@ const CANAL_LABEL: Record<ReservaCanal, string> = {
 const CANAL_ORDER: ReservaCanal[] = ["whatsapp", "instagram", "web", "outros"];
 
 /** Mapeia o `source` cru da reserva pro canal exibido. Defensivo: qualquer
- *  valor fora de web/whatsapp (nulo, legado, futuro) cai em "outros". */
+ *  valor fora de web/whatsapp/instagram (nulo, legado, futuro) cai em "outros". */
 function canalDe(source: string | null | undefined): ReservaCanal {
   if (source === "whatsapp") return "whatsapp";
   if (source === "instagram") return "instagram";
