@@ -59,7 +59,7 @@ export interface KpiSet {
   receita_centavos: number;
 }
 
-export type ReservaCanal = "whatsapp" | "web" | "outros";
+export type ReservaCanal = "whatsapp" | "instagram" | "web" | "outros";
 
 export interface CanalStat {
   canal: ReservaCanal;
@@ -142,17 +142,19 @@ const ALL_BUCKETS = [
 
 const CANAL_LABEL: Record<ReservaCanal, string> = {
   whatsapp: "WhatsApp",
+  instagram: "Instagram",
   web: "Site",
   outros: "Não identificado",
 };
 
 // Ordem de exibição fixa (mantém cor/posição estáveis entre renders).
-const CANAL_ORDER: ReservaCanal[] = ["whatsapp", "web", "outros"];
+const CANAL_ORDER: ReservaCanal[] = ["whatsapp", "instagram", "web", "outros"];
 
 /** Mapeia o `source` cru da reserva pro canal exibido. Defensivo: qualquer
  *  valor fora de web/whatsapp (nulo, legado, futuro) cai em "outros". */
 function canalDe(source: string | null | undefined): ReservaCanal {
   if (source === "whatsapp") return "whatsapp";
+  if (source === "instagram") return "instagram";
   if (source === "web") return "web";
   return "outros";
 }
@@ -327,6 +329,7 @@ export function useFluxoClientes(
       { reservas: number; pessoas: number; pessoasConfirmadas: number }
     > = {
       whatsapp: { reservas: 0, pessoas: 0, pessoasConfirmadas: 0 },
+      instagram: { reservas: 0, pessoas: 0, pessoasConfirmadas: 0 },
       web: { reservas: 0, pessoas: 0, pessoasConfirmadas: 0 },
       outros: { reservas: 0, pessoas: 0, pessoasConfirmadas: 0 },
     };

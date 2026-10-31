@@ -199,7 +199,7 @@ export interface CreateManualReservaParams {
   party_size: number;
   notes?: string | null;
   /** Origem registrada na reserva — só pra relatório "Origem das reservas". */
-  source: "web" | "whatsapp";
+  source: "web" | "whatsapp" | "instagram";
   /** Disparar confirmação automática (desacoplado da origem). */
   notify: boolean;
   /** Forçar reserva mesmo sem mesa/fora de horário (cria flutuante). */

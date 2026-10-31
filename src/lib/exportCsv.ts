@@ -21,6 +21,7 @@ interface CustomerSummary {
   totalReservas: number;
   totalPessoas: number;
   reservasWhatsapp: number;
+  reservasInstagram: number;
   reservasSite: number;
   ultimaVisita: string;
 }
@@ -83,11 +84,13 @@ export async function exportClientesCsv(
     if (!r.customer) continue;
     const key = r.customer.id;
     const isWhatsapp = r.source === "whatsapp";
+    const isInstagram = r.source === "instagram";
     const existing = map.get(key);
     if (existing) {
       existing.totalReservas += 1;
       existing.totalPessoas += r.party_size;
       if (isWhatsapp) existing.reservasWhatsapp += 1;
+      else if (isInstagram) existing.reservasInstagram += 1;
       else existing.reservasSite += 1;
       if (r.date > existing.ultimaVisita) existing.ultimaVisita = r.date;
     } else {
@@ -98,7 +101,8 @@ export async function exportClientesCsv(
         totalReservas: 1,
         totalPessoas: r.party_size,
         reservasWhatsapp: isWhatsapp ? 1 : 0,
-        reservasSite: isWhatsapp ? 0 : 1,
+        reservasInstagram: isInstagram ? 1 : 0,
+        reservasSite: isWhatsapp || isInstagram ? 0 : 1,
         ultimaVisita: r.date,
       });
     }
@@ -116,6 +120,7 @@ export async function exportClientesCsv(
       "Reservas no período",
       "Total de pessoas",
       "Reservas WhatsApp",
+      "Reservas Instagram",
       "Reservas Site",
       "Última visita",
     ],
@@ -126,6 +131,7 @@ export async function exportClientesCsv(
       String(c.totalReservas),
       String(c.totalPessoas),
       String(c.reservasWhatsapp),
+      String(c.reservasInstagram),
       String(c.reservasSite),
       c.ultimaVisita,
     ]),
