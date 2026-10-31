@@ -12,7 +12,7 @@ export type ConversationFilter = ConversationStatus | "all";
 // explícitas sem `messages` derruba o payload por linha e viabiliza carregar
 // TODAS as conversas (sem o antigo cap de 200) sem custo proibitivo.
 const LIST_COLUMNS =
-  "id, unit_id, customer_id, status, contact_name, assigned_to, handoff_reason, handoff_at, last_message_at, updated_at, created_at, customer:customers(*)";
+  "id, unit_id, customer_id, channel, instagram_contact_id, instagram_contact:instagram_contacts(username,name), status, contact_name, assigned_to, handoff_reason, handoff_at, last_message_at, updated_at, created_at, customer:customers(*)";
 const PAGE = 1000;
 
 export function useConversations(unitId: string, filter: ConversationFilter = "all") {

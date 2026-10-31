@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
+import { INSTAGRAM_WINDOW_MESSAGE } from "@/lib/conversation-channel";
 import type { Conversation, ConversationMessage } from "@/types/reserva";
 
 export interface ManualMessageSendResult {
@@ -14,8 +15,46 @@ export interface ManualMessageSendResult {
 export const OUTSIDE_SERVICE_WINDOW_MESSAGE =
   "A janela de 24 horas da Meta terminou. Aguarde uma nova mensagem do cliente para responder.";
 
-export function manualMessageErrorMessage(reason: string): string {
-  return reason === "OUTSIDE_SERVICE_WINDOW" ? OUTSIDE_SERVICE_WINDOW_MESSAGE : reason;
+export { INSTAGRAM_WINDOW_MESSAGE };
+
+const INSTAGRAM_ERROR_MESSAGES: Record<string, string> = {
+  INSTAGRAM_NOT_CONNECTED:
+    "A conta do Instagram desta loja não está conectada. Conecte a conta na página do Instagram para responder.",
+  INSTAGRAM_MODULE_DISABLED: "O módulo do Instagram está desativado para esta loja.",
+  INSTAGRAM_REAUTH_REQUIRED:
+    "A conexão com o Instagram expirou. Reconecte a conta na página do Instagram para responder.",
+  INSTAGRAM_ACCOUNT_RECONNECTED: "A conta do Instagram foi reconectada. Tente enviar de novo.",
+};
+
+export type ManualSendErrorBody = {
+  error?: string;
+  reason?: string;
+  code?: string;
+  sent?: number;
+  total?: number;
+  outcome_unknown?: boolean;
+} | null;
+
+function partialSendMessage(body: NonNullable<ManualSendErrorBody>): string {
+  const head =
+    typeof body.sent === "number" && typeof body.total === "number"
+      ? `Enviadas ${body.sent} de ${body.total} partes da mensagem.`
+      : "Só parte da mensagem foi enviada.";
+  return body.outcome_unknown === true
+    ? `${head} A parte seguinte pode ter sido entregue: confira a conversa e não reenvie a mensagem.`
+    : `${head} Confira a conversa antes de tentar enviar o restante.`;
+}
+
+export function manualMessageErrorMessage(
+  reason: string,
+  channel: "whatsapp" | "instagram" = "whatsapp",
+  body: ManualSendErrorBody = null,
+): string {
+  if (reason === "OUTSIDE_SERVICE_WINDOW") {
+    return channel === "instagram" ? INSTAGRAM_WINDOW_MESSAGE : OUTSIDE_SERVICE_WINDOW_MESSAGE;
+  }
+  if (reason === "PARTIAL_SEND" && body) return partialSendMessage(body);
+  return INSTAGRAM_ERROR_MESSAGES[reason] ?? reason;
 }
 
 export function useSendManualMessage(unitId: string) {
@@ -23,7 +62,7 @@ export function useSendManualMessage(unitId: string) {
   const { user } = useAuth();
 
   return useMutation({
-    mutationFn: async ({ conversationId, message }: { conversationId: string; message: string }) => {
+    mutationFn: async ({ conversationId, message, channel = "whatsapp" }: { conversationId: string; message: string; channel?: "whatsapp" | "instagram" }) => {
       const { data, error } = await supabase.functions.invoke("send-manual-message", {
         body: { conversation_id: conversationId, message },
       });
@@ -34,11 +73,12 @@ export function useSendManualMessage(unitId: string) {
         // atendimento humano", "telefone do cliente não encontrado", etc.) e anexamos o
         // status pro onError decidir se precisa ressincronizar o cache.
         if (error instanceof FunctionsHttpError) {
-          const body = (await error.context.json().catch(() => null)) as
-            | { error?: string; reason?: string }
-            | null;
+          const body = (await error.context.json().catch(() => null)) as ManualSendErrorBody;
           const reason = body?.error ?? body?.reason ?? `HTTP ${error.context.status}`;
-          throw Object.assign(new Error(manualMessageErrorMessage(reason)), { httpStatus: error.context.status });
+          throw Object.assign(new Error(manualMessageErrorMessage(reason, channel, body)), {
+            httpStatus: error.context.status,
+            code: body?.code ?? (reason === "PARTIAL_SEND" ? reason : undefined),
+          });
         }
         throw error;
       }
@@ -76,6 +116,12 @@ export function useSendManualMessage(unitId: string) {
       // Cache local ficou stale — forçar refetch traz o status real do banco, esconde o
       // input de envio e revela o botão "Assumir" condicional em Conversas.tsx.
       const httpStatus = (err as { httpStatus?: number } | null)?.httpStatus;
+      // 502 PARTIAL_SEND: parte da mensagem já saiu e está no histórico — recarrega a
+      // conversa (o rollback acima removeria o que o servidor registrou).
+      if ((err as { code?: string } | null)?.code === "PARTIAL_SEND") {
+        queryClient.invalidateQueries({ queryKey: ["conversation-detail", conversationId] });
+        queryClient.invalidateQueries({ queryKey: ["conversations", unitId] });
+      }
       if (httpStatus === 409) {
         queryClient.invalidateQueries({ queryKey: ["conversation-detail", conversationId] });
         queryClient.invalidateQueries({ queryKey: ["conversations", unitId] });

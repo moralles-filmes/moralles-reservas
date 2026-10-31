@@ -142,7 +142,9 @@ export function generateReservationCode(): string {
 
 export function getConversationDisplayName(
   conv: {
+    channel?: "whatsapp" | "instagram" | null;
     contact_name?: string | null;
+    instagram_contact?: { username?: string | null; name?: string | null } | null;
     customer?: { name?: string | null; phone?: string | null } | null;
   }
 ): string {
@@ -151,8 +153,11 @@ export function getConversationDisplayName(
   if (customerName && customerName !== phone) return customerName;
   const contactName = conv.contact_name?.trim();
   if (contactName) return contactName;
+  const username = conv.instagram_contact?.username?.trim();
+  if (username) return `@${username.replace(/^@/, "")}`;
   const formatted = formatPhone(phone);
-  return formatted || "Cliente sem nome";
+  if (formatted) return formatted;
+  return conv.channel === "instagram" ? "Contato do Instagram" : "Cliente sem nome";
 }
 
 /**
