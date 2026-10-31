@@ -45,6 +45,11 @@ describe("GestaoLayout: item Instagram", () => {
     renderLayout();
     expect(screen.queryByRole("link", { name: "Instagram" })).toBeNull();
   });
+  it("não aparece em erro mesmo com data antigo ativo", () => {
+    mocks.grant.current = { isError: true, data: { instagram: { active: true } } };
+    renderLayout();
+    expect(screen.queryByRole("link", { name: "Instagram" })).toBeNull();
+  });
   it("não aparece com erro de leitura nem carregando", () => {
     mocks.grant.current = { isError: true };
     renderLayout();

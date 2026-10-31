@@ -80,7 +80,7 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
   const awaitingCount = useAwaitingHumanCount(unit?.unit_id ?? "");
   // Grant lendo/erro => item oculto (erro de leitura nunca vira "liberado").
   const instagramModule = useInstagramModule(unit?.isGerente ? unit.unit_id : undefined);
-  const showInstagram = !!unit?.isGerente && instagramModule.data?.instagram.active === true;
+  const showInstagram = !!unit?.isGerente && !instagramModule.isError && instagramModule.data?.instagram.active === true;
 
   const navItems: NavItem[] = [
     { to: base, label: "Dashboard", icon: LayoutDashboard, end: true },

@@ -12,6 +12,7 @@ import {
   useUpdateInstagramDm,
 } from "@/hooks/useInstagram";
 import { redirectToAuthorize, saveOauthState } from "@/features/instagram/oauth";
+import { actionError } from "@/features/instagram/errors";
 import type { InstagramAccount } from "@/features/instagram/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,13 +35,6 @@ const DM_NOTICE =
 
 function formatDate(value: string | null | undefined) {
   return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleDateString("pt-BR") : "Não disponível";
-}
-
-/** Mensagem do backend (PT-BR) quando existe; nunca texto técnico cru. */
-function actionError(error: unknown, fallback: string) {
-  const name = (error as { name?: string } | null)?.name;
-  const message = error instanceof Error ? error.message : "";
-  return name === "InstagramApiError" && message ? message : fallback;
 }
 
 function RetryLine({ text, onRetry }: { text: string; onRetry: () => void }) {

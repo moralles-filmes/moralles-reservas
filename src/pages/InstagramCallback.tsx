@@ -3,6 +3,7 @@ import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useConnectInstagramCallback } from "@/hooks/useInstagram";
 import { takeOauthState } from "@/features/instagram/oauth";
+import { actionError } from "@/features/instagram/errors";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 
@@ -35,7 +36,7 @@ export default function InstagramCallback() {
     const sp = new URLSearchParams(window.location.search);
     params.current = { code: sp.get("code"), state: sp.get("state"), error: sp.get("error") };
     if (["code", "state", "error", "error_reason", "error_description"].some((k) => sp.has(k))) {
-      window.history.replaceState(null, "", window.location.pathname);
+      window.history.replaceState(window.history.state, "", window.location.pathname);
     }
   }, []);
 
@@ -61,7 +62,7 @@ export default function InstagramCallback() {
       .mutateAsync({ code: p.code, state: p.state })
       .then((result) => navigate(`/g/${result.unit_slug}/instagram`, { replace: true }))
       .catch((e: unknown) => {
-        setError(e instanceof Error && e.message ? e.message : MSG_GENERIC);
+        setError(actionError(e, MSG_GENERIC));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, user]);
