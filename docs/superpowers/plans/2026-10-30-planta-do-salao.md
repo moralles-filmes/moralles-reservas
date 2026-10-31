@@ -153,7 +153,7 @@ Cinco fases. A B1 vai para a `main` sozinha (passo "expand"): as migrations prec
     6. UPDATE do salão (sempre, para mudar a revisão) e das mesas via `jsonb_to_recordset`. Contar as linhas afetadas; divergência dá `42501`.
   - **ACL:** `revoke all ... from public, anon, authenticated` e `grant execute ... to authenticated`. Entrada na allowlist com `"security_definer": false`.
 
-- [ ] **Step 1: Escrever `81a` e os casos L-* do `81`, falhando sem a migration**
+- [x] **Step 1: Escrever `81a` e os casos L-* do `81`, falhando sem a migration**
 
   `81a` projeta `units`, `unit_members`, `platform_admins`, `halls`, `tables` (FKs, `UNIQUE(unit_id, number)` e trigger `halls_updated_at`), os helpers `app_private.is_unit_member`/`is_platform_admin` e as policies atuais `unit_member_all_tables|halls` e `platform_admin_all_tables|halls`, como estão em `013`/`030`. Molde: `70a-force-rls-bootstrap.sql` e `75a-settings-write-acl-bootstrap.sql`.
 
@@ -183,29 +183,29 @@ Cinco fases. A B1 vai para a `main` sozinha (passo "expand"): as migrations prec
   - L-16: `anon` executa `save_hall_plan` → `42501` (permission denied).
   - L-CP: controle positivo. Dentro da transação, `alter table public.tables disable trigger tables_plan_write_guard`; L-3 passa a gravar e o caso registra `controle_ok`; depois `rollback to savepoint`.
 
-- [ ] **Step 2: Rodar contra o contêiner sem a migration e ver os L-* de layout falharem**
+- [x] **Step 2: Rodar contra o contêiner sem a migration e ver os L-* de layout falharem**
 
   Contêiner exclusivo `public.ecr.aws/supabase/postgres:17.11.0.004` com `--network none`, como no README §70. Aplicar `81a`, depois `81`.
   Expected: `select caso, veredito from t_res order by ord` mostra L-1…L-16 diferentes do esperado (colunas e função ausentes).
 
-- [ ] **Step 3: Escrever a migration `<ts1>_planta_do_salao_layout.sql` conforme Interfaces**
+- [x] **Step 3: Escrever a migration `<ts1>_planta_do_salao_layout.sql` conforme Interfaces**
 
   Arquivo com `begin;` … `commit;` próprios. Na mesma migration:
   - `revoke all on function app_private.guard_plan_write() from public, anon, authenticated, service_role`;
   - os revoke/grant de `is_unit_manager` e `save_hall_plan` com a assinatura completa;
   - `comment on function` em PT-BR dizendo a regra.
 
-- [ ] **Step 4: Aplicar `81a`, a migration crua 3 vezes e o `81` depois de cada aplicação**
+- [x] **Step 4: Aplicar `81a`, a migration crua 3 vezes e o `81` depois de cada aplicação**
 
   Expected: os vereditos de L-1…L-16 batem com o esperado, `L-CP = controle_ok` e as três passagens são idênticas (idempotência).
 
-- [ ] **Step 5: Entrada da allowlist e testes estáticos**
+- [x] **Step 5: Entrada da allowlist e testes estáticos**
 
   Acrescentar `save_hall_plan` com `"args": "p_hall_id uuid, p_expected_updated_at timestamptz, p_hall jsonb, p_tables jsonb"`, `"roles": ["authenticated"]` e o `why`: "Owner/gerente/admin salva a planta do salão da própria unidade; INVOKER sobre RLS; ids validados contra o salão."
   Run: `npx vitest run scripts/function-acl-allowlist.test.ts scripts/migration-static-guard.test.ts`
   Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add supabase/migrations/<ts1>_planta_do_salao_layout.sql supabase/tests/local-preflight/81a-planta-do-salao-bootstrap.sql supabase/tests/local-preflight/81-planta-do-salao.sql scripts/function-acl-allowlist.json
@@ -254,11 +254,11 @@ git commit -m "feat(planta): layout de mesas e salões com guarda de papel e sav
       - `released_at = coalesce(released_at, now()) where id = … and status = 'seated'`;
       - zero linhas: visível dá `23514 not_seated`; invisível dá `42501 presence_forbidden`.
 
-- [ ] **Step 1: Estender `81a`**
+- [x] **Step 1: Estender `81a`**
   - Projetar `reservations` (com `FORCE RLS` e dono sem `BYPASSRLS`, como no `70a`), `waitlist` (com o trigger real de transição de status e `seated_at`), `walk_ins` e `customers`.
   - Incluir policies iguais às atuais (`013`, `014`, `054`, `023b`) e o trigger `enforce_operador_no_cancel` da `057`.
 
-- [ ] **Step 2: Escrever os casos P-* no `81`**
+- [x] **Step 2: Escrever os casos P-* no `81`**
   - P-1: operador `arrive` numa reserva `confirmed` de hoje → `arrived_at` igual ao `now()` da transação. UPDATE direto enviando `arrived_at = '2000-01-01'` também grava `now()`.
   - P-2: `arrive` repetido → sem erro, `arrived_at` inalterado.
   - P-3: `arrive` em `cancelled`, `no_show` e reserva de amanhã → `23514 arrival_not_allowed`; reserva de ontem → `ok`.
@@ -285,18 +285,18 @@ git commit -m "feat(planta): layout de mesas e salões com guarda de papel e sav
   - P-14: `anon` executa as 4 RPCs → permission denied.
   - P-CP: controle positivo. Desabilitar `reservations_presence_guard` dentro de um savepoint: o UPDATE direto de P-1 grava `2000-01-01` e o caso registra `controle_ok`.
 
-- [ ] **Step 3: Rodar e ver os P-* falharem sem a migration** (mesmo contêiner e ordem da Task 1, mais `<ts1>`).
+- [x] **Step 3: Rodar e ver os P-* falharem sem a migration** (mesmo contêiner e ordem da Task 1, mais `<ts1>`).
 
-- [ ] **Step 4: Escrever `<ts2>_planta_do_salao_presenca.sql` conforme Interfaces**, com `begin;`/`commit;`, revokes com a assinatura completa e `comment on function`.
+- [x] **Step 4: Escrever `<ts2>_planta_do_salao_presenca.sql` conforme Interfaces**, com `begin;`/`commit;`, revokes com a assinatura completa e `comment on function`.
 
-- [ ] **Step 5: Aplicar `81a`, `<ts1>` e `<ts2>` cruas 3 vezes, com o `81` inteiro depois de cada aplicação**
+- [x] **Step 5: Aplicar `81a`, `<ts1>` e `<ts2>` cruas 3 vezes, com o `81` inteiro depois de cada aplicação**
   Expected: L-* e P-* conforme o esperado; `L-CP` e `P-CP` = `controle_ok`.
 
-- [ ] **Step 6: Allowlist e testes estáticos**
+- [x] **Step 6: Allowlist e testes estáticos**
   - Quatro entradas novas, `"security_definer": false`, cada uma com `why` dizendo "não muda status nem cria linha; carimbo de presença".
   - Run: `npx vitest run scripts/function-acl-allowlist.test.ts scripts/migration-static-guard.test.ts` → PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add supabase/migrations/<ts2>_planta_do_salao_presenca.sql supabase/tests/local-preflight/81a-planta-do-salao-bootstrap.sql supabase/tests/local-preflight/81-planta-do-salao.sql scripts/function-acl-allowlist.json
@@ -322,14 +322,14 @@ git commit -m "feat(planta): chegada e liberação como carimbos, fila e passant
   - `WalkIn` ganha `released_at: string | null`.
   - Os `select` fixos de `useHallTables.ts` (`:12`, `:30`, `:79`) passam a incluir as colunas `plan_*`.
 
-- [ ] **Step 1: Atualizar os tipos e os `select` fixos.** Run `npm run typecheck` → 0 erros.
-- [ ] **Step 2: README §81** — seção "### 81 — Planta do salão" com a ordem exata de aplicação, o contêiner usado, a lista L-*/P-* e o que cada controle positivo prova.
-- [ ] **Step 3: Gates**
+- [x] **Step 1: Atualizar os tipos e os `select` fixos.** Run `npm run typecheck` → 0 erros. *(feito só nos tipos; o `select` de `useHallTables` foi para a Task 5, depois do `db push`: o merge publica a Vercel antes da migration e o select de coluna inexistente daria 400.)*
+- [x] **Step 2: README §81** — seção "### 81 — Planta do salão" com a ordem exata de aplicação, o contêiner usado, a lista L-*/P-* e o que cada controle positivo prova.
+- [x] **Step 3: Gates**
   - typecheck, lint, test, build, check-padrao, check-portabilidade e os dois vitest de scripts verdes;
   - `saas-shield-br:migration-validator` nas duas migrations;
   - `saas-shield-br:identity-access-auditor` na fronteira de papel (trigger, `is_unit_manager`, RPCs);
   - sem bloqueante.
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/types/reserva.ts src/hooks/useHallTables.ts supabase/tests/local-preflight/README.md
@@ -403,6 +403,10 @@ export function toSavePayload(plan: HallPlan, boxes: TableBox[]): { p_hall: { wi
 
 **Files:**
 - Create: `src/hooks/useHallPlan.ts`, `src/hooks/useHallPlan.test.tsx`
+- Modify: `src/hooks/useHallTables.ts` — os `select` fixos (`:12`, `:30`, `:79`) passam a incluir `plan_*` (vindo da Task 3: só depois do `db push` da B1).
+- Regras vindas dos gates da B1:
+  - `p_expected_updated_at` vai como a string que o PostgREST devolveu, nunca por `new Date(...)` (perde µs e todo salvamento daria `40001`);
+  - update de reserva/fila/passante só com lista explícita de colunas: reenviar a linha lida com `arrived_at: null` velho desfaz a chegada.
 
 **Interfaces:**
 - Consumes: `toSavePayload` (Task 4); RPC `save_hall_plan` (Task 1).
