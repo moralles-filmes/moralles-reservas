@@ -2714,3 +2714,91 @@ O que NÃO prova: PostgREST/JWT real, nem o atributo `BYPASSRLS` do dono em
 produção. A paridade SQL↔TS (seed, placeholders, limites, enum) é do
 `src/lib/global-prompt-sql-twin.test.ts`; a das chaves da Gestão, do
 `scripts/settings-write-acl.test.ts`.
+
+### 81 — Planta do salão
+
+Pré-voo das migrations `20261030120000_planta_do_salao_layout.sql` (layout de
+mesas e salões, trigger `guard_plan_write`, RPC `save_hall_plan`) e
+`20261030120100_planta_do_salao_presenca.sql` (carimbos `arrived_at`/`released_at`,
+mesa na fila, triggers `guard_presence_stamps`/`guard_same_unit_table`, policy de
+super-admin em `walk_ins`, 4 RPCs de presença). Roda num contêiner descartável
+da imagem do Supabase, **sem rede**, porque o `81a` substitui `auth.uid()`/`auth.role()`
+e precisa de `supabase_admin`.
+
+O `81a-planta-do-salao-bootstrap.sql` projeta a produção: orgs/units com
+`is_public`, `unit_members`, `platform_admins`, `app_private` com a ACL de
+produção (USAGE só para `postgres` e `service_role`), helpers na forma de
+produção, `halls`/`tables`/`customers`/`reservations`/`waitlist`/`walk_ins` com
+as constraints, os triggers (`enforce_operador_no_cancel`, `stamp_cancelled_at`,
+`updated_at`), `FORCE RLS` em reservations e waitlist, policies e grants reais.
+Fixture: unidades A e B; OWN/GER/OPE em A, GERB em B, outsider e platform_admin
+sem membership; salões S1/S2 em A e SB em B; reservas R1–R7 e RB, fila W1–W4 e
+WB, passantes P1/P2 e PB (UUIDs `a0d81000-…`). O 81a roda como `supabase_admin`
+e termina com `set role postgres`; o resto roda como `postgres`. As migrations
+rodam **cruas**, sem `psql -1`. Roda **da raiz do repo**.
+
+```bash
+docker run -d --name planta81-pg --network none -e POSTGRES_PASSWORD=x \
+  public.ecr.aws/supabase/postgres:17.11.0.004
+P()  { docker exec -i planta81-pg psql -U postgres       -d postgres -X -q -v ON_ERROR_STOP=1; }
+PA() { docker exec -i planta81-pg psql -U supabase_admin -d postgres -X -q -v ON_ERROR_STOP=1; }
+PA < supabase/tests/local-preflight/81a-planta-do-salao-bootstrap.sql
+P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # RED
+P  < supabase/migrations/20261030120000_planta_do_salao_layout.sql
+P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # L verde, P vermelho
+P  < supabase/migrations/20261030120100_planta_do_salao_presenca.sql
+P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # GREEN
+P  < supabase/migrations/20261030120000_planta_do_salao_layout.sql    # reaplicar as duas
+P  < supabase/migrations/20261030120100_planta_do_salao_presenca.sql
+P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # GREEN de novo
+docker rm -f planta81-pg
+```
+
+Cada caso roda num subbloco sempre desfeito (errcode sentinela `P8181`), troca
+papel e claims por `set_config` e confere SQLSTATE, mensagem, DETAIL e o
+efeito. O arquivo termina com a tabela de resultados, a contagem e um `DO` que
+aborta se algum caso divergir; tudo em `rollback`, então pode ser repetido.
+
+- **L-1…L-20 (8101–8130), layout:** owner, gerente, platform_admin e
+  `service_role` gravam `plan_*`; operador recebe `42501 plan_write_forbidden`
+  direto ou pela RPC, inclusive salvando a planta idêntica (L-10b), mas segue
+  mudando `max_capacity` e criando mesa sem `plan_*`; salão de outra unidade e
+  inexistente caem no mesmo `42501 hall_plan_forbidden`; payload com mesa de
+  outro salão, de outra unidade, inexistente ou repetida → `42501`; revisão
+  velha → `40001 hall_plan_stale`; mesa parcial, `round` com w≠h, parede
+  inválida, chave faltando, medida não inteira ou em texto, mais de 500 mesas →
+  `22023 hall_plan_invalid` ou CHECK; anon sem EXECUTE; `authenticated` sem
+  claims recusado pelo trigger.
+- **L-21…L-22 (8133–8137):** salão com só a largura, entrada sem a distância e
+  `save_hall_plan` com profundidade nula → `23514` (`num_nulls` nos CHECKs de
+  `halls`; o L-CP3 recria o CHECK na forma antiga e mostra que ele aceitava meia
+  planta, porque `between 200 and null` dá NULL); platform_admin salvando S1 com
+  uma mesa de B pendurada nele (`tables.hall_id` não tem FK composta) →
+  `42501 hall_plan_forbidden`, pelo filtro `t.unit_id` da RPC.
+- **L-CP / L-CP2 (8131–8132), controles:** sem o trigger o operador grava
+  `plan_*`; com o trigger mas sem o modo estrito (GUC
+  `planta.strict_plan_write`) o L-10b passa. Prova que o GUC é o que barra a
+  planta idêntica do operador: a RPC é INVOKER e não alcança `app_private`
+  (sem USAGE para `authenticated`), então a checagem de papel fica no trigger.
+- **P-1…P-14 (8201–8244), presença:** chegada grava `now()` mesmo com valor
+  forjado e repetir não muda o horário; só `pending`/`confirmed` de hoje ou
+  ontem (BRT); liberar exige chegada; carimbo gravado é final; desfazer só antes
+  de liberar; `status` intacto e operador continua sem cancelar; outra unidade e
+  inexistente no mesmo `42501 presence_forbidden`; sentar da fila só de
+  `waiting`/`notified` e numa mesa da mesma unidade (`table_unit_mismatch`);
+  liberar passante mantém `seated` e "Foi embora" continua valendo; P-12 confere
+  que contagens por status e número de linhas não mudam (invariante de
+  métricas); ninguém nasce com carimbo; anon sem EXECUTE nas 4 RPCs.
+- **P-CP / P-CP2 (8245–8246), controles:** sem o trigger o UPDATE forjado do
+  P-1b grava `2000-01-01`; sem a policy `platform_admin_all_walk_ins` o P-11a
+  recusa.
+
+**Resultados observados em 31/10/2026** (imagem `supabase/postgres:17.11.0.004`,
+sem rede, contêiner recriado do zero): 2/83 antes das migrations, 37/83 só com a
+de layout, **83/83** com as duas e 83/83 de novo depois de reaplicá-las. Os
+casos 8133–8135 e 8137 deram FAIL contra a versão anterior das migrations (sem
+`num_nulls` e sem o filtro de unidade) e PASS depois da correção.
+
+O que NÃO prova: PostgREST/JWT real nem o `BYPASSRLS` do `postgres` de
+produção. As RPCs são INVOKER e não dependem dele; os triggers são DEFINER e só
+leem `unit_members`, `platform_admins` e `tables`.

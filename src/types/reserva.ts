@@ -171,6 +171,8 @@ export interface WalkIn {
   notes: string | null;
   arrived_at: string;
   seated_at: string | null;
+  /** Mesa liberada na planta. O status fica `seated` para as métricas. */
+  released_at?: string | null;
   created_at: string;
   updated_at: string;
   table?: { number: number } | null;
@@ -190,6 +192,10 @@ export interface WaitlistEntry {
   status: WaitlistStatus;
   notes: string | null;
   notified_at: string | null;
+  /** Mesa em que a entrada da fila foi sentada pela planta. */
+  table_id?: string | null;
+  seated_at?: string | null;
+  released_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -291,7 +297,16 @@ export interface Mesa {
   max_capacity: number;
   location: "internal" | "external";
   active: boolean;
+  /** Planta do salão, em cm: centro, tamanho e giro. Todas nulas = mesa fora da planta. */
+  plan_x?: number | null;
+  plan_y?: number | null;
+  plan_w?: number | null;
+  plan_h?: number | null;
+  plan_rotation?: number | null;
+  plan_shape?: "round" | "square" | "rect" | null;
 }
+
+export type PlanWall = "top" | "right" | "bottom" | "left";
 
 export type CustomFieldType = "text" | "options" | "file";
 
@@ -466,6 +481,12 @@ export interface Hall {
   active: boolean;
   allow_empty_seat: boolean;
   sort_order: number;
+  /** Planta do salão, em cm. Nulas = tamanho padrão. */
+  plan_width_cm?: number | null;
+  plan_depth_cm?: number | null;
+  plan_entrance_wall?: PlanWall | null;
+  plan_entrance_offset_cm?: number | null;
+  plan_window_walls?: PlanWall[];
   created_at: string;
   updated_at: string;
 }
@@ -502,6 +523,9 @@ export interface Reserva {
   payment_amount_cents?: number | null;
   stripe_checkout_session_id?: string | null;
   stripe_payment_intent_id?: string | null;
+  /** Carimbos de presença da planta: chegada e mesa liberada. Não mudam o status. */
+  arrived_at?: string | null;
+  released_at?: string | null;
   created_at: string;
   updated_at: string;
   customer?: Customer;
