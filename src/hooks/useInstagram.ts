@@ -4,6 +4,7 @@ import {
   connectStart,
   disconnectInstagram,
   readInstagramAccount,
+  readInstagramConnection,
   readInstagramDiagnostics,
   readInstagramSettings,
   readUnitModules,
@@ -25,6 +26,16 @@ export function useInstagramAccount(unitId: string | undefined, enabled = true) 
   return useQuery({
     queryKey: instagramKeys.account(unitId ?? ""),
     queryFn: () => readInstagramAccount(unitId!),
+    enabled: !!unitId && enabled,
+    retry: false,
+  });
+}
+
+/** Leitura da conta para o painel de Conversas (RPC, vale para operador). */
+export function useInstagramConnection(unitId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: instagramKeys.connection(unitId ?? ""),
+    queryFn: () => readInstagramConnection(unitId!),
     enabled: !!unitId && enabled,
     retry: false,
   });

@@ -62,4 +62,5 @@ export const instagramKeys = {
   account: (unitId: string) => ["instagram-account", unitId] as const,
   settings: (unitId: string) => ["instagram-settings", unitId] as const,
   diagnostics: (unitId: string) => ["instagram-diagnostics", unitId] as const,
+  connection: (unitId: string) => ["instagram-connection", unitId] as const,
 };

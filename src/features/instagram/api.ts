@@ -101,3 +101,14 @@ export async function readInstagramDiagnostics(unitId: string): Promise<Instagra
   if (error) throw error;
   return data as InstagramDiagnostics;
 }
+
+/**
+ * Projeção da conta para qualquer membro da unidade (inclui operador, que a EF
+ * `status` recusa). Sem conta ativa devolve `null`; nunca traz token. Erro propaga.
+ */
+export async function readInstagramConnection(unitId: string): Promise<InstagramAccount | null> {
+  const { data, error } = await supabase.rpc("get_instagram_account_status", { p_unit_id: unitId });
+  if (error) throw error;
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as InstagramAccount[];
+  return rows[0] ?? null;
+}

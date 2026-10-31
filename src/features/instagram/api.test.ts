@@ -16,6 +16,7 @@ import {
   connectStart,
   disconnectInstagram,
   readInstagramAccount,
+  readInstagramConnection,
   readInstagramDiagnostics,
   readInstagramSettings,
   readUnitModules,
@@ -59,6 +60,7 @@ describe("chaves TanStack", () => {
     expect(instagramKeys.account(UNIT)).toEqual(["instagram-account", UNIT]);
     expect(instagramKeys.settings(UNIT)).toEqual(["instagram-settings", UNIT]);
     expect(instagramKeys.diagnostics(UNIT)).toEqual(["instagram-diagnostics", UNIT]);
+    expect(instagramKeys.connection(UNIT)).toEqual(["instagram-connection", UNIT]);
   });
 });
 
@@ -212,5 +214,26 @@ describe("diagnóstico", () => {
     const d = await readInstagramDiagnostics(UNIT);
     expect(mocks.rpc).toHaveBeenCalledWith("get_instagram_diagnostics", { p_unit_id: UNIT });
     expect(d.queue.done_24h).toBe(2);
+  });
+});
+
+describe("readInstagramConnection", () => {
+  it("chama a RPC filtrando pela unidade e devolve a primeira linha", async () => {
+    const row = { username: "loja", status: "connected", token_expires_at: null, connected_at: null, subscribed: true, last_error_code: null };
+    mocks.rpc.mockResolvedValue({ data: [row], error: null });
+    await expect(readInstagramConnection(UNIT)).resolves.toEqual(row);
+    expect(mocks.rpc).toHaveBeenCalledWith("get_instagram_account_status", { p_unit_id: UNIT });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("zero linhas significa sem conta (null)", async () => {
+    mocks.rpc.mockResolvedValue({ data: [], error: null });
+    await expect(readInstagramConnection(UNIT)).resolves.toBeNull();
+  });
+
+  it("erro da RPC propaga", async () => {
+    const err = new Error("boom");
+    mocks.rpc.mockResolvedValue({ data: null, error: err });
+    await expect(readInstagramConnection(UNIT)).rejects.toBe(err);
   });
 });
