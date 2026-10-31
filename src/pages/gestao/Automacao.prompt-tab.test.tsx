@@ -40,6 +40,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@/lib/supabase", () => ({ supabase: { from: mocks.from, functions: { invoke: mocks.invoke } } }));
 vi.mock("@/hooks/useAllUnits", () => ({ useUnitBySlug: () => ({ isLoading: false, data: mocks.unit }) }));
+vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ isPlatformAdmin: false }) }));
 vi.mock("@/components/billing/WhatsappServiceBanner", () => ({ WhatsappServiceBanner: () => null }));
 vi.mock("@/components/whatsapp/DatafyAdminCard", () => ({ DatafyAdminCard: () => null }));
 vi.mock("sonner", () => ({ toast: mocks.toast }));

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/supabase", () => ({ supabase: { functions: { invoke: mocks.invoke } } }));
 vi.mock("@/hooks/useAllUnits", () => ({ useUnitBySlug: () => ({ isLoading: false, data: mocks.unit }) }));
+vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ isPlatformAdmin: false }) }));
 vi.mock("@/components/billing/WhatsappServiceBanner", () => ({ WhatsappServiceBanner: () => null }));
 vi.mock("@/components/whatsapp/DatafyAdminCard", () => ({ DatafyAdminCard: () => null }));
 vi.mock("@/components/whatsapp/TemplateCatalogAdminCard", () => ({ TemplateCatalogAdminCard: ({ unitId }: { unitId: string }) => <div data-testid="catalog" data-unit-id={unitId}>Catálogo</div> }));
