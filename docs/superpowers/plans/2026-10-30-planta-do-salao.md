@@ -89,7 +89,7 @@ Cinco fases. A B1 vai para a `main` sozinha (passo "expand"): as migrations prec
 4. Merge `--no-ff` na base da tabela. A B1 e a B5 vão por PR, com autorização.
 5. Marcar os checkboxes deste plano e commitar o plano.
 6. Atualizar o STATE e a memória do projeto.
-7. Push da integração com autorização: preview da Vercel, que usa o Supabase de produção. Testar escrita só na MORALLES.
+7. Sem push entre as fases. Em 2026-10-31 o dono decidiu economizar build na Vercel: a integração fica local até a Task 17, e o preview dela está desligado no `vercel.json`. A conferência do dono é pelo `npm run dev`, que usa o mesmo Supabase de produção. Testar escrita só na MORALLES.
 8. Sugerir chat novo.
 
 ## Mapa de arquivos
@@ -868,13 +868,14 @@ As listas mostram a pílula gravada e, quando não é `null`, a derivada ao lado
   - corrigir bloqueante em nova task.
 - [ ] **Step 3: Revisão da branch inteira** com `superpowers:requesting-code-review` (modelo mais capaz).
 - [ ] **Step 4: Segredos:** `git diff main...feat/planta-do-salao | grep -nE "sk-|sk-ant-|xai-|AIza|eyJ|Bearer |service_role|whsec_"` sem resultado.
-- [ ] **Step 5: Preview para o dono, com autorização:**
-  - push de `feat/planta-do-salao`;
-  - o dono confere na MORALLES o editor, o Salão ao vivo no tablet e as listas.
+- [ ] **Step 5: Conferência do dono, local:**
+  - pelo `npm run dev`, o dono confere na MORALLES o editor, o Salão ao vivo no tablet e as listas;
+  - não existe preview da Vercel: está desligado para `feat/planta-do-salao` em `vercel.json` (`git.deploymentEnabled`).
 - [ ] **Step 6: PR e merge, com autorização:**
-  - `gh pr create --base main --head feat/planta-do-salao`, com o resumo das fases, as medições da Task 10, os achados fora do escopo e o rodapé de atribuição;
+  - primeiro e único push de `feat/planta-do-salao`, e `gh pr create --base main --head feat/planta-do-salao`, com o resumo das fases, as medições da Task 10, os achados fora do escopo e o rodapé de atribuição;
   - merge depois dos checks;
-  - conferir a produção na Vercel em READY.
+  - conferir a produção na Vercel em READY. O único build da B2 até a B5 é este;
+  - a entrada `feat/planta-do-salao` do `vercel.json` sai num commit de limpeza que pega carona no próximo PR, para não gastar um build só com ela.
 - [ ] **Step 7: Fechar a mudança:**
   - STATE em "concluído";
   - memória do projeto atualizada;
