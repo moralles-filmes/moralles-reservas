@@ -1,10 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { Mesa } from "@/types/reserva";
-
-/** Colunas de `Mesa`, com a planta (`plan_*`). */
-export const TABLE_COLUMNS =
-  "id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active, plan_x, plan_y, plan_w, plan_h, plan_rotation, plan_shape";
+import { TABLE_COLUMNS } from "@/features/planta/api";
 
 /** Lista todas as mesas da unit (opcionalmente filtradas por hall). */
 export function useUnitTables(unitId: string, { activeOnly = true } = {}) {
