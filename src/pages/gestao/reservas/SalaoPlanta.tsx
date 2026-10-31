@@ -8,6 +8,7 @@ import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { hallPlanErrorMessage, useHallPlanData, useSaveHallPlan } from "@/hooks/useHallPlan";
 import {
   GRID_CM,
+  applyTablePatch,
   clampBox,
   hallPlanFrom,
   resolveTableBoxes,
@@ -55,19 +56,27 @@ export default function SalaoPlanta() {
   const [plan, setPlan] = useState<HallPlan | null>(null);
   const [boxes, setBoxes] = useState<TableBox[]>([]);
   const [initialJson, setInitialJson] = useState("");
-  const [initKey, setInitKey] = useState("");
+  const [seenKey, setSeenKey] = useState("");
+  const [revision, setRevision] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Reinicia o estado local quando chega o salão (ou uma nova revisão depois de salvar).
-  const dataKey = data ? `${data.hall.id}|${data.hall.updated_at}` : "";
-  if (data && dataKey !== initKey) {
-    const p = hallPlanFrom(data.hall);
-    const b = resolveTableBoxes(p, data.tables);
-    setPlan(p);
-    setBoxes(b);
-    setInitialJson(JSON.stringify(toSavePayload(p, b)));
-    setInitKey(dataKey);
-    setSelectedId(null);
+  // Reinicia o estado local quando chegam dados novos (salão, revisão ou lista de mesas) que
+  // não são a revisão que esta tela acabou de salvar. Assim nem o cache antigo logo depois de
+  // salvar nem o refetch da revisão salva apagam o que foi editado nesse meio-tempo.
+  const tablesKey = (data?.tables ?? []).map((t) => `${t.id}:${t.number}`).join(",");
+  const keyFor = (rev: string) => `${hallId}|${rev}|${tablesKey}`;
+  const dataKey = data ? keyFor(data.hall.updated_at) : "";
+  if (data && dataKey !== seenKey) {
+    setSeenKey(dataKey);
+    if (dataKey !== keyFor(revision)) {
+      const p = hallPlanFrom(data.hall);
+      const b = resolveTableBoxes(p, data.tables);
+      setPlan(p);
+      setBoxes(b);
+      setInitialJson(JSON.stringify(toSavePayload(p, b)));
+      setRevision(data.hall.updated_at);
+      setSelectedId(null);
+    }
   }
 
   const dirty = useMemo(
@@ -116,8 +125,9 @@ export default function SalaoPlanta() {
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (readOnly || !selectedId) return;
-    const tag = (e.target as HTMLElement).tagName;
-    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    // Só com o foco na lona ou numa mesa; atalhos do navegador (Ctrl+R etc.) passam.
+    if (!(e.target as HTMLElement).closest?.("[data-planta-canvas]")) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const step = (e.shiftKey ? 5 : 1) * GRID_CM;
     switch (e.key) {
       case "ArrowLeft":
@@ -141,7 +151,6 @@ export default function SalaoPlanta() {
         editBoxes(selectedId, (b) => ({ ...b, rotation: (b.rotation + 15) % 360, positioned: true }));
         break;
       case "Delete":
-      case "Backspace":
         e.preventDefault();
         sendToTray(selectedId);
         break;
@@ -151,10 +160,16 @@ export default function SalaoPlanta() {
 
   const handleSave = () => {
     if (readOnly || !data || !plan) return;
+    const payload = toSavePayload(plan, boxes);
     save.mutate(
-      { expectedUpdatedAt: data.hall.updated_at, payload: toSavePayload(plan, boxes) },
+      { expectedUpdatedAt: revision, payload },
       {
-        onSuccess: () => toast.success("Planta salva."),
+        onSuccess: (newRevision) => {
+          // A revisão nova vale já: o próximo salvamento não espera o refetch.
+          setRevision(newRevision);
+          setInitialJson(JSON.stringify(payload));
+          toast.success("Planta salva.");
+        },
         onError: (e) => toast.error(hallPlanErrorMessage(e)),
       },
     );
@@ -208,7 +223,7 @@ export default function SalaoPlanta() {
     );
   }
 
-  if (isError || !data) {
+  if (!data) {
     return (
       <div className="space-y-5">
         {header}
@@ -239,6 +254,11 @@ export default function SalaoPlanta() {
   return (
     <div className="space-y-5" onKeyDown={onKeyDown}>
       {header}
+      {isError && (
+        <p role="status" className="text-sm text-destructive">
+          Não foi possível atualizar a planta agora. O que você editou continua aqui.
+        </p>
+      )}
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
         <div className="w-full flex-1">
           {plan && (
@@ -256,7 +276,9 @@ export default function SalaoPlanta() {
           <MesaPropriedades
             box={selected}
             readOnly={readOnly}
-            onChange={(patch) => selected && editBoxes(selected.tableId, (b) => ({ ...b, ...patch, positioned: true }))}
+            onChange={(patch) =>
+              selected && editBoxes(selected.tableId, (b) => ({ ...applyTablePatch(b, patch), positioned: true }))
+            }
             onRemove={() => selected && sendToTray(selected.tableId)}
           />
           <BandejaSemPosicao

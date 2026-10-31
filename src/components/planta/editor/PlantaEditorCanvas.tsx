@@ -22,6 +22,8 @@ interface DragState {
 }
 
 const WALL_THICKNESS = 4;
+/** Deslocamento mínimo para um toque virar arrasto: o tremor do dedo não move a mesa. */
+const DRAG_THRESHOLD_PX = 5;
 
 function wallStyle(wall: PlanWall): React.CSSProperties {
   switch (wall) {
@@ -74,6 +76,7 @@ export function PlantaEditorCanvas({ plan, boxes, selectedId, onSelect, onMove, 
   const onPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
     const d = dragRef.current;
     if (!d || d.pointerId !== e.pointerId) return;
+    if (!d.moved && Math.hypot(e.clientX - d.startClientX, e.clientY - d.startClientY) < DRAG_THRESHOLD_PX) return;
     d.moved = true;
     setDrag({ id: d.id, dx: e.clientX - d.startClientX, dy: e.clientY - d.startClientY });
   };
@@ -113,6 +116,7 @@ export function PlantaEditorCanvas({ plan, boxes, selectedId, onSelect, onMove, 
     <div
       ref={containerRef}
       data-testid="planta-canvas"
+      data-planta-canvas=""
       className="surface relative w-full overflow-hidden rounded-lg border border-border bg-background"
       style={{
         aspectRatio: `${plan.widthCm} / ${plan.depthCm}`,
@@ -136,7 +140,7 @@ export function PlantaEditorCanvas({ plan, boxes, selectedId, onSelect, onMove, 
       {entranceStyle && (
         <div
           aria-hidden="true"
-          className="absolute bg-[hsl(var(--status-free))]"
+          className="absolute bg-muted-foreground"
           style={entranceStyle}
           title="Entrada"
         />
@@ -153,7 +157,7 @@ export function PlantaEditorCanvas({ plan, boxes, selectedId, onSelect, onMove, 
             data-x={box.x}
             data-y={box.y}
             data-positioned={box.positioned ? "true" : "false"}
-            aria-label={`Mesa ${box.number}, ${box.capacity} lugares`}
+            aria-label={`Mesa ${box.number}, ${box.capacity} lugares${box.positioned ? "" : ", sem posição"}`}
             aria-pressed={selected}
             onPointerDown={(e) => onPointerDown(e, box)}
             onPointerMove={onPointerMove}
@@ -162,7 +166,10 @@ export function PlantaEditorCanvas({ plan, boxes, selectedId, onSelect, onMove, 
             onClick={() => onSelect(box.tableId)}
             className={cn(
               "absolute flex items-center justify-center border-2 bg-[hsl(var(--status-free)/0.15)] border-[hsl(var(--status-free))] text-xs font-semibold text-foreground",
-              "min-h-5 min-w-5 select-none",
+              "select-none",
+              // Alvo de toque de 44 px em ponteiro grosso sem mudar o desenho nem o centro.
+              "after:absolute after:left-1/2 after:top-1/2 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
+              "coarse:after:h-11 coarse:after:w-11",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               box.shape === "round" ? "rounded-full" : "rounded-md",
               !box.positioned && "border-dashed",

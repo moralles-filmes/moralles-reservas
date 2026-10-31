@@ -4,6 +4,18 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { hallPlanFrom, resolveTableBoxes, toSavePayload } from "@/lib/hall-plan-core";
 import type { Hall, Mesa } from "@/types/reserva";
 
+// O jsdom não tem PointerEvent: sem isto, clientX/pointerId chegam undefined ao componente.
+if (typeof window.PointerEvent === "undefined") {
+  class PointerEventPolyfill extends MouseEvent {
+    pointerId: number;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  window.PointerEvent = PointerEventPolyfill as unknown as typeof PointerEvent;
+}
+
 const mutate = vi.fn();
 const refetch = vi.fn();
 const state: { isGerente: boolean; isError: boolean; tables: ReturnType<typeof mesa>[] } = {
@@ -108,6 +120,64 @@ describe("SalaoPlanta", () => {
     fireEvent.change(largura, { target: { value: "9000" } });
     fireEvent.keyDown(largura, { key: "Enter" });
     expect(largura.value).toBe("5000");
+  });
+
+  it("depois de salvar, a tela fica limpa e o próximo salvamento usa a revisão nova", () => {
+    mutate.mockImplementation((_vars, opts) => opts?.onSuccess?.("2026-10-31T12:05:00.999999+00:00"));
+    renderPage();
+    const mesa3 = () => screen.getByRole("button", { name: "Mesa 3, 4 lugares" });
+    fireEvent.click(mesa3());
+    fireEvent.keyDown(mesa3(), { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+    expect((screen.getByRole("button", { name: "Salvar" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(mesa3(), { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+    expect(mutate.mock.calls[1][0].expectedUpdatedAt).toBe("2026-10-31T12:05:00.999999+00:00");
+  });
+
+  it("trocar retangular para quadrada iguala as medidas (CHECK do banco)", () => {
+    state.tables = [{ ...mesa("t3", 3, 600), plan_w: 140, plan_shape: "rect" }];
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Mesa 3, 4 lugares" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Quadrada" }));
+    fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+    const [t] = mutate.mock.calls[0][0].payload.p_tables;
+    expect(t).toMatchObject({ shape: "square", w: 140, h: 140 });
+  });
+
+  it("tocar numa mesa sem posição só seleciona: não posiciona nem suja a planta", () => {
+    state.tables = [mesa("t1", 1, 200), mesa("t5", 5, null)];
+    renderPage();
+    const m5 = screen.getByRole("button", { name: "Mesa 5, 4 lugares, sem posição" });
+    fireEvent.pointerDown(m5, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(m5, { pointerId: 1, clientX: 102, clientY: 101 });
+    fireEvent.pointerUp(m5, { pointerId: 1, clientX: 102, clientY: 101 });
+    fireEvent.click(m5);
+    expect(m5.getAttribute("data-positioned")).toBe("false");
+    expect((screen.getByRole("button", { name: "Salvar" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("R gira 15° e Delete manda a mesa para a bandeja", () => {
+    renderPage();
+    const mesa3 = () => screen.getByRole("button", { name: /^Mesa 3, 4 lugares/ });
+    fireEvent.click(mesa3());
+    fireEvent.keyDown(mesa3(), { key: "r" });
+    expect((screen.getByLabelText("Rotação (graus)") as HTMLInputElement).value).toBe("15");
+    fireEvent.keyDown(mesa3(), { key: "Delete" });
+    expect(mesa3().getAttribute("data-positioned")).toBe("false");
+    expect(screen.getByRole("button", { name: "Mesa 3 · 4 lugares" })).toBeTruthy();
+  });
+
+  it("teclas fora da lona e com Ctrl não mexem na mesa", () => {
+    renderPage();
+    const mesa3 = () => screen.getByRole("button", { name: "Mesa 3, 4 lugares" });
+    fireEvent.click(mesa3());
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Quadrada" }), { key: "ArrowRight" });
+    fireEvent.keyDown(mesa3(), { key: "r", ctrlKey: true });
+    fireEvent.keyDown(mesa3(), { key: "Backspace" });
+    expect(mesa3().getAttribute("data-x")).toBe("600");
+    expect(mesa3().getAttribute("data-positioned")).toBe("true");
+    expect((screen.getByRole("button", { name: "Salvar" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("Salvar chama mutate com a revisão intacta e o payload", () => {

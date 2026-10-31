@@ -11,6 +11,7 @@ import {
   toSavePayload,
   type HallPlan,
   type TableBox,
+  applyTablePatch,
 } from "./hall-plan-core";
 
 function hall(overrides: Partial<Hall> = {}): Hall {
@@ -65,19 +66,30 @@ function box(overrides: Partial<TableBox> = {}): TableBox {
 }
 
 /** Separação entre duas caixas axis-aligned: >= 2*GRID_CM significa folga de 2 grades. */
+// Meia-largura e meia-altura do retângulo envolvente da rotação (o que ocupa espaço no salão).
+function half(b: TableBox): { hx: number; hy: number } {
+  const r = (b.rotation * Math.PI) / 180;
+  const c = Math.abs(Math.cos(r));
+  const s = Math.abs(Math.sin(r));
+  return { hx: (b.w * c + b.h * s) / 2, hy: (b.w * s + b.h * c) / 2 };
+}
+
 function separation(a: TableBox, b: TableBox): number {
-  const dx = Math.abs(a.x - b.x) - (a.w + b.w) / 2;
-  const dy = Math.abs(a.y - b.y) - (a.h + b.h) / 2;
+  const ea = half(a);
+  const eb = half(b);
+  const dx = Math.abs(a.x - b.x) - (ea.hx + eb.hx);
+  const dy = Math.abs(a.y - b.y) - (ea.hy + eb.hy);
   return Math.max(dx, dy);
 }
 
 function insidePlan(b: TableBox, plan: HallPlan): boolean {
   const eps = 1e-9;
+  const { hx, hy } = half(b);
   return (
-    b.x - b.w / 2 >= -eps &&
-    b.y - b.h / 2 >= -eps &&
-    b.x + b.w / 2 <= plan.widthCm + eps &&
-    b.y + b.h / 2 <= plan.depthCm + eps
+    b.x - hx >= -eps &&
+    b.y - hy >= -eps &&
+    b.x + hx <= plan.widthCm + eps &&
+    b.y + hy <= plan.depthCm + eps
   );
 }
 
@@ -308,5 +320,35 @@ describe("toSavePayload", () => {
     const payload = toSavePayload(DEFAULT_HALL_PLAN, []);
     expect(payload.p_hall.entrance_wall).toBeNull();
     expect(payload.p_hall.entrance_offset_cm).toBeNull();
+  });
+});
+
+describe("applyTablePatch (CHECK tables_plan_values: só rect tem w ≠ h)", () => {
+  const base: TableBox = {
+    tableId: "t", number: 1, capacity: 4, x: 300, y: 300, w: 80, h: 80, rotation: 0, shape: "square", positioned: true,
+  };
+
+  it("mudar a largura de uma quadrada leva a profundidade junto", () => {
+    expect(applyTablePatch(base, { w: 120 })).toMatchObject({ w: 120, h: 120, shape: "square" });
+  });
+
+  it("mudar a profundidade de uma redonda leva a largura junto", () => {
+    expect(applyTablePatch({ ...base, shape: "round" }, { h: 90 })).toMatchObject({ w: 90, h: 90 });
+  });
+
+  it("retangular para redonda iguala pela largura", () => {
+    expect(applyTablePatch({ ...base, w: 140, h: 80, shape: "rect" }, { shape: "round" })).toMatchObject({
+      w: 140, h: 140, shape: "round",
+    });
+  });
+
+  it("retangular mantém medidas diferentes", () => {
+    expect(applyTablePatch({ ...base, shape: "rect" }, { w: 200 })).toMatchObject({ w: 200, h: 80 });
+  });
+
+  it("o payload nunca sai com forma não retangular e medidas diferentes", () => {
+    const b = applyTablePatch({ ...base, w: 140, h: 80, shape: "rect" }, { shape: "square" });
+    const [t] = toSavePayload(DEFAULT_HALL_PLAN, [b]).p_tables;
+    expect(t.shape === "rect" || t.w === t.h).toBe(true);
   });
 });

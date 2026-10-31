@@ -227,3 +227,21 @@ export function toSavePayload(
     }),
   };
 }
+
+/**
+ * Aplica forma ou medidas a uma mesa. Só `rect` pode ter largura ≠ profundidade
+ * (CHECK `tables_plan_values`): nas outras formas a medida editada vale para as duas,
+ * e ao trocar para redonda ou quadrada vale a largura.
+ */
+export function applyTablePatch(
+  box: TableBox,
+  patch: Partial<Pick<TableBox, "shape" | "w" | "h" | "rotation">>,
+): TableBox {
+  const next = { ...box, ...patch };
+  if (next.shape !== "rect") {
+    const side = patch.h != null && patch.w == null ? next.h : next.w;
+    next.w = side;
+    next.h = side;
+  }
+  return next;
+}
