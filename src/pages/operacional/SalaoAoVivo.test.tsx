@@ -36,6 +36,20 @@ const hookData = {
 let current: typeof hookData = hookData;
 
 vi.mock("@/hooks/useSalaoAoVivo", () => ({ useSalaoAoVivo: () => current }));
+const presenceMutate = vi.fn();
+vi.mock("@/hooks/useMesaAcoes", () => ({
+  useReservationPresence: () => ({ mutate: presenceMutate, isPending: false, variables: undefined }),
+  useSeatWaitlistEntry: () => ({ mutate: vi.fn(), isPending: false, variables: undefined }),
+  useReleaseWaitlistEntry: () => ({ mutate: vi.fn(), isPending: false, variables: undefined }),
+  useReleaseWalkIn: () => ({ mutate: vi.fn(), isPending: false, variables: undefined }),
+}));
+vi.mock("@/hooks/useWalkIns", () => ({
+  useWalkIns: () => ({ data: [] }),
+  useCreateWalkIn: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateWalkInStatus: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+vi.mock("@/hooks/useWaitlist", () => ({ useNotifyWaitlist: () => ({ mutate: vi.fn(), isPending: false }) }));
+vi.mock("@/hooks/useWaitlistTemplates", () => ({ useWaitlistTemplates: () => ({ data: [] }) }));
 let currentUnitId = "u1";
 vi.mock("@/hooks/useCurrentUnit", () => ({
   useCurrentUnit: () => ({ unit_id: currentUnitId, unit_slug: "moralles", isGerente: true }),
@@ -90,6 +104,13 @@ describe("SalaoAoVivo", () => {
     const painel = screen.getByTestId("painel-mesa");
     expect(painel).toHaveTextContent("Mesa 3");
     expect(painel).toHaveTextContent("Cliente r3");
+  });
+
+  it("a mesa selecionada mostra as ações da sua situação", () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 4,/ })); // chegando
+    fireEvent.click(within(screen.getByTestId("painel-mesa")).getByRole("button", { name: "Marcar chegada" }));
+    expect(presenceMutate).toHaveBeenCalledWith({ reservationId: "r4", action: "arrive" });
   });
 
   it("tocar numa linha de próximas chegadas seleciona a mesa", () => {

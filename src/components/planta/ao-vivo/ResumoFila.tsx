@@ -1,15 +1,20 @@
+import { Button } from "@/components/ui/button";
 import type { WaitlistEntry } from "@/types/reserva";
 import { brtNow } from "@/lib/table-situation-core";
 
 interface Props {
   entries: WaitlistEntry[];
   now: Date;
+  /** "Chamar no WhatsApp" para o próximo da fila; sem ela, o botão não aparece. */
+  onCall?: (entry: WaitlistEntry) => void;
+  /** Aviso em andamento para esta entrada. */
+  callingId?: string | null;
 }
 
 const minutesSince = (iso: string, now: Date) =>
   Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 60_000));
 
-export function ResumoFila({ entries, now }: Props) {
+export function ResumoFila({ entries, now, onCall, callingId }: Props) {
   // Só entradas criadas hoje (BRT): fila esquecida de dias atrás não infla a espera média.
   const today = brtNow(now).date;
   const sorted = entries
@@ -32,6 +37,18 @@ export function ResumoFila({ entries, now }: Props) {
             {`Próximo: ${next.customer_name}, ${next.party_size} ${next.party_size === 1 ? "pessoa" : "pessoas"}, há ${minutesSince(next.created_at, now)} min`}
           </p>
           <p className="text-muted-foreground">{`Espera média: ${avg} min`}</p>
+          {onCall && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="coarse:min-h-[44px]"
+              disabled={!next.customer_phone || callingId === next.id}
+              onClick={() => onCall(next)}
+            >
+              {next.customer_phone ? "Chamar no WhatsApp" : "Sem WhatsApp cadastrado"}
+            </Button>
+          )}
         </div>
       )}
     </section>

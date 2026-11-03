@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import type { WaitlistEntry } from "@/types/reserva";
 import { ResumoFila } from "./ResumoFila";
 
@@ -30,5 +30,17 @@ describe("ResumoFila", () => {
   it("só entradas antigas → Ninguém aguardando", () => {
     render(<ResumoFila now={NOW} entries={[entry("velha", "2026-10-20T15:00:00Z", "Esquecida")]} />);
     expect(screen.getByTestId("resumo-fila")).toHaveTextContent("Ninguém aguardando");
+  });
+
+  it("Chamar no WhatsApp chama onCall com o próximo; sem telefone fica desabilitado", () => {
+    const onCall = vi.fn();
+    const a = { ...entry("a", "2026-11-03T17:00:00Z", "Ana"), customer_phone: "11999999999" } as WaitlistEntry;
+    const { unmount } = render(<ResumoFila now={NOW} entries={[a]} onCall={onCall} />);
+    fireEvent.click(screen.getByRole("button", { name: "Chamar no WhatsApp" }));
+    expect(onCall).toHaveBeenCalledWith(a);
+    unmount();
+    const b = { ...a, customer_phone: null } as WaitlistEntry;
+    render(<ResumoFila now={NOW} entries={[b]} onCall={onCall} />);
+    expect(screen.getByRole("button", { name: "Sem WhatsApp cadastrado" })).toBeDisabled();
   });
 });
