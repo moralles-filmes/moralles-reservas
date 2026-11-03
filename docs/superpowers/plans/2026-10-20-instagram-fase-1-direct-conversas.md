@@ -1062,10 +1062,11 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 - [ ] Antes do `db push`, rode `saas-shield-br:schema-diff` contra o remoto e duas leituras só de consulta (Bloco 1): `select rolname, rolbypassrls from pg_roles where rolname in ('postgres','service_role')` (o dono das funções DEFINER precisa de BYPASSRLS sobre as tabelas FORCE RLS) e `select has_schema_privilege('authenticated','auth','USAGE')` (as policies chamam `auth.uid()`).
 - [ ] `npx -y supabase@2.121.0 db push --project-ref gbabxcrntkwgblgqsiit` (autorização própria). Confira `schema_migrations` e o `cron.job` dos três jobs.
 
-### Task 6.3: segredos, EFs e frontend (ordem obrigatória: banco → segredos → EF → frontend)
+### Task 6.3: segredos, EFs e frontend (ordem obrigatória: banco → `manage-platform-secrets` → segredos → demais EFs → frontend)
 
+- [ ] Deploy de `manage-platform-secrets` primeiro (autorização própria): a versão em produção não conhece as chaves do Instagram e recusa a gravação pelo painel (constatado em 2026-11-03; nenhuma migration toca `platform_secrets`).
 - [ ] O responsável grava em `/platform/integracoes` `instagram_app_secret` e `instagram_verify_token` (gerado localmente, ≥32 caracteres, nunca commitado). `meta_app_secret` fica para depois, só se o piloto mostrar assinatura que não casa. **Não criar env de mesmo nome (S5).**
-- [ ] `npx -y supabase@2.121.0 secrets set INSTAGRAM_APP_ID=… INSTAGRAM_OAUTH_STATE_SECRET=… --project-ref gbabxcrntkwgblgqsiit` (autorização própria).
+- [ ] `npx -y supabase@2.121.0 secrets set INSTAGRAM_APP_ID=1435590504737997 INSTAGRAM_OAUTH_STATE_SECRET=… --project-ref gbabxcrntkwgblgqsiit` (autorização própria).
 - [ ] Deploy da matriz (autorização própria), conferindo `verify_jwt` de cada uma depois:
   1. novas: `webhook-instagram`, `instagram-connect`, `process-instagram-inbound`, `process-instagram-token-refresh`;
   2. alteradas: `webhook-whatsapp`, `create-reservation`, `update-reservation`, `create-manual-reservation`, `send-manual-message`, `manage-platform-secrets`.
