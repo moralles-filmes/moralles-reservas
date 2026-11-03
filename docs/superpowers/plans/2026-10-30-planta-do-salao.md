@@ -704,17 +704,17 @@ export function conversationHref(basePath: string, customerId: string): string; 
   - outro → "Não foi possível atualizar a mesa. Recarregue a tela.".
 - **`useCreateWalkIn` com `seated: true`:** grava `status: "seated"`, `seated_at` agora e o `table_id`, numa linha só.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - cada mutation chama `supabase.rpc` com o nome e os parâmetros exatos;
   - as invalidações certas;
   - o mapa de mensagens com `{ code: "23514", details: "release_requires_arrival" }`;
   - `buildWaitlistMessage` produz o mesmo texto que o `Fila.tsx` atual para template customizado e padrão (fixture);
   - `useCreateWalkIn` com `seated` faz um único `insert` com `status: "seated"`;
   - `conversationHref("/o/moralles-centro", "a b")` → `"/o/moralles-centro/conversas?cliente=a%20b"`.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar** e trocar o `Fila.tsx` pela lib.
-- [ ] **Step 4:** PASS; os testes existentes de Fila/Passantes continuam verdes.
-- [ ] **Step 5: Commit** `feat(planta): mutations de presença e mensagem da fila compartilhada`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar** e trocar o `Fila.tsx` pela lib.
+- [x] **Step 4:** PASS; os testes existentes de Fila/Passantes continuam verdes.
+- [x] **Step 5: Commit** `feat(planta): mutations de presença e mensagem da fila compartilhada`.
 
 ### Task 12: Ações no painel da mesa
 
@@ -739,16 +739,16 @@ Ações por situação (todas as pessoas da unidade):
 - `ResumoFila`: "Chamar no WhatsApp" chama `useNotifyWaitlist` com `buildWaitlistMessage(entry, "table_ready", …)` para o próximo da fila, no padrão `{ externalOk, dbOk }`. Sem telefone, o botão fica desabilitado com o texto "Sem WhatsApp cadastrado".
 - Botões desabilitados por `mutation.isPending && mutation.variables?.… === id`.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - para cada linha da tabela, as ações visíveis são exatamente as listadas;
   - "Marcar chegada" chama `mutate({ reservationId, action: "arrive" })`;
   - "Sentar da fila" chama `useSeatWaitlistEntry` com a mesa selecionada;
   - o passante novo chama `useCreateWalkIn` com `seated: true` e `table_id`;
   - a mesa bloqueada não tem nenhum botão de ação.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): ações essenciais por mesa no Salão ao vivo`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): ações essenciais por mesa no Salão ao vivo`.
 
 ### Task 13: Presença em Reservas do dia e passante liberado
 
@@ -767,13 +767,13 @@ Ações por situação (todas as pessoas da unidade):
 - A lista "Na mesa" esconde quem tem `released_at`.
 - **Decisão do dono (aprovada em 2026-10-30):** "Foi embora" de quem está na mesa passa a chamar `useReleaseWalkIn`. O status fica `seated`, e as métricas de sentados e receita deixam de subcontar daqui em diante; os dias passados não mudam. "Não apareceu" continua igual.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - `ReservaCard`: confirmada de hoje sem chegada mostra "Chegou" e não mostra "Liberar mesa"; com `arrived_at` mostra "Liberar mesa" e "Desfazer chegada"; reserva de amanhã não mostra "Chegou"; o operador também vê os três.
   - Passantes: passante `seated` com `released_at` não aparece em "Na mesa"; "Foi embora" chama `useReleaseWalkIn` e não faz UPDATE de `status`.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): chegada e liberação em Reservas do dia; passante liberado sai da mesa`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): chegada e liberação em Reservas do dia; passante liberado sai da mesa`.
 
 ### Task 14: Link direto para a conversa do cliente
 
@@ -790,12 +790,12 @@ Ações por situação (todas as pessoas da unidade):
 - sem conversa, mostra `toast.info("Ainda não há conversa com este cliente.")`;
 - depois remove o parâmetro (`setSearchParams(..., { replace: true })`), para não reabrir ao trocar de filtro.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - com `?cliente=c1` e uma lista que contém a conversa de `c1`, o painel de detalhe abre nela;
   - sem conversa, o toast é chamado e o parâmetro some.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
 - [ ] **Step 5: Teste manual da B4 na MORALLES:**
   - marcar chegada, desfazer e liberar;
   - sentar um passante novo;
@@ -804,7 +804,7 @@ Ações por situação (todas as pessoas da unidade):
   - abrir conversa.
 
   Depois, conferir na Gestão › Fluxo de clientes do dia que as contagens não mudaram além do que a tela Passantes/Fila já registraria.
-- [ ] **Step 6: Commit** `feat(planta): abrir conversa do cliente a partir da mesa`.
+- [x] **Step 6: Commit** `feat(planta): abrir conversa do cliente a partir da mesa`.
 
 ---
 
