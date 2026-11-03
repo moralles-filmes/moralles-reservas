@@ -645,14 +645,14 @@ O que a tela faz (mockup `Salao.dc.html`):
 
 ### Task 10: Desempenho e revisão visual da B3
 
-- [ ] **Step 1: Preparar 40 mesas num salão da MORALLES** pelo cadastro em lote atual (`HallScheduleSheet`) e posicioná-las no editor (B2).
-- [ ] **Step 2: Medir** no Chrome com DevTools Performance, 1194×834, CPU 4×, abrindo `/o/moralles-centro/salao`.
+- [x] **Step 1: Preparar 40 mesas num salão da MORALLES** pelo cadastro em lote atual (`HallScheduleSheet`) e posicioná-las no editor (B2).
+- [x] **Step 2: Medir** no Chrome com DevTools Performance, 1194×834, CPU 4×, abrindo `/o/moralles-centro/salao`.
   - Expected:
     - nenhuma long task acima de 200 ms depois da primeira pintura;
     - toque numa mesa até a atualização do painel abaixo de 100 ms;
     - com o halo ativo em 5 mesas, rolagem do aside sem queda de quadros visível no FPS meter.
   - Anotar os números no STATE.
-- [ ] **Step 3: Se falhar,** reduzir as camadas `translateZ` das mesas (de 4 para 2) e o halo para só `opacity`, e medir de novo. Não trocar a técnica sem o dono.
+- [x] **Step 3: Se falhar,** reduzir as camadas `translateZ` das mesas (de 4 para 2) e o halo para só `opacity`, e medir de novo. Não trocar a técnica sem o dono.
 - [ ] **Step 4: Revisão visual:** 1440×900, 1194×834 e 390×844, nos dois temas, com movimento reduzido ligado; teclado (Tab percorre as mesas por número; Enter seleciona).
 - [x] **Step 5: Commit** dos ajustes, se houver: `perf(planta): ...`.
 
