@@ -245,3 +245,39 @@ export function applyTablePatch(
   }
   return next;
 }
+
+/** Largura da entrada desenhada na parede, em cm. */
+export const ENTRANCE_CM = 90;
+const SIZE_STEP_CM = 5;
+const MIN_SIZE_CM = 30;
+const MAX_SIZE_CM = 600;
+
+/** Tamanho depois de arrastar a alça do canto: o centro fica parado, então cada lado cresce o dobro. */
+export function resizedSize(box: TableBox, dxPx: number, dyPx: number, scale: number): { w: number; h: number } {
+  const rad = (box.rotation * Math.PI) / 180;
+  // Deslocamento no referencial da mesa girada.
+  const lx = (dxPx * Math.cos(rad) + dyPx * Math.sin(rad)) / scale;
+  const ly = (-dxPx * Math.sin(rad) + dyPx * Math.cos(rad)) / scale;
+  const fit = (v: number) => Math.min(MAX_SIZE_CM, Math.max(MIN_SIZE_CM, snap(v, SIZE_STEP_CM)));
+  if (box.shape !== "rect") {
+    const side = fit(box.w + lx + ly);
+    return { w: side, h: side };
+  }
+  return { w: fit(box.w + 2 * lx), h: fit(box.h + 2 * ly) };
+}
+
+/** Entrada na parede mais próxima do ponto (em cm), centrada nele e inteira dentro da parede. */
+export function entranceAt(xCm: number, yCm: number, plan: HallPlan): NonNullable<HallPlan["entrance"]> {
+  const dists: Array<[PlanWall, number]> = [
+    ["top", yCm],
+    ["bottom", plan.depthCm - yCm],
+    ["left", xCm],
+    ["right", plan.widthCm - xCm],
+  ];
+  const wall = dists.reduce((a, b) => (b[1] < a[1] ? b : a))[0];
+  const horizontal = wall === "top" || wall === "bottom";
+  const along = horizontal ? xCm : yCm;
+  const len = horizontal ? plan.widthCm : plan.depthCm;
+  const offsetCm = Math.min(Math.max(0, len - ENTRANCE_CM), Math.max(0, snap(along - ENTRANCE_CM / 2, SIZE_STEP_CM)));
+  return { wall, offsetCm };
+}

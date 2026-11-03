@@ -28,7 +28,10 @@ export function MesaPropriedades({ box, onChange, onRemove, readOnly = false }: 
 
   return (
     <section className="surface space-y-3 rounded-lg border border-border p-4">
-      <h3 className="text-sm font-semibold">{`Mesa ${box.number}`}</h3>
+      <h3 className="text-sm font-semibold">
+        {`Mesa ${box.number}`}
+        <span className="font-normal text-muted-foreground">{` · ${box.capacity} ${box.capacity === 1 ? "lugar" : "lugares"}`}</span>
+      </h3>
 
       <div className="space-y-1">
         <span id="mesa-forma" className="text-sm font-medium">Forma</span>

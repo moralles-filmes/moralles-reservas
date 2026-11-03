@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { GRID_CM, clampBox, snap } from "@/lib/hall-plan-core";
+import { ENTRANCE_CM, GRID_CM, clampBox, entranceAt, resizedSize, snap } from "@/lib/hall-plan-core";
 import type { HallPlan, PlanWall, TableBox } from "@/lib/hall-plan-core";
 
 interface Props {
@@ -10,7 +10,17 @@ interface Props {
   onSelect: (id: string | null) => void;
   /** Recebe a posição final em cm, já com snap e clamp aplicados aqui. */
   onMove: (id: string, xCm: number, yCm: number) => void;
+  /** Recebe o tamanho final em cm (30–600, de 5 em 5); em mesa não retangular, w = h. */
+  onResize: (id: string, wCm: number, hCm: number) => void;
+  onEntranceChange: (entrance: NonNullable<HallPlan["entrance"]>) => void;
   readOnly?: boolean;
+}
+
+interface ResizeState {
+  id: string;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
 }
 
 interface DragState {
@@ -38,11 +48,24 @@ function wallStyle(wall: PlanWall): React.CSSProperties {
   }
 }
 
-export function PlantaEditorCanvas({ plan, boxes, selectedId, onSelect, onMove, readOnly = false }: Props) {
+export function PlantaEditorCanvas({
+  plan,
+  boxes,
+  selectedId,
+  onSelect,
+  onMove,
+  onResize,
+  onEntranceChange,
+  readOnly = false,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   const [drag, setDrag] = useState<{ id: string; dx: number; dy: number } | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  const [resize, setResize] = useState<{ id: string; w: number; h: number } | null>(null);
+  const resizeRef = useRef<ResizeState | null>(null);
+  const [entranceDraft, setEntranceDraft] = useState<HallPlan["entrance"]>(null);
+  const entrancePointerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -95,20 +118,75 @@ export function PlantaEditorCanvas({ plan, boxes, selectedId, onSelect, onMove, 
     onMove(box.tableId, next.x, next.y);
   };
 
-  const entrance = plan.entrance;
+  const onResizeDown = (e: React.PointerEvent<HTMLSpanElement>, box: TableBox) => {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    resizeRef.current = { id: box.tableId, pointerId: e.pointerId, startClientX: e.clientX, startClientY: e.clientY };
+  };
+
+  const resizeFor = (e: React.PointerEvent<HTMLSpanElement>) => {
+    const r = resizeRef.current;
+    if (!r || r.pointerId !== e.pointerId) return null;
+    const box = boxes.find((b) => b.tableId === r.id);
+    if (!box) return null;
+    return { box, ...resizedSize(box, e.clientX - r.startClientX, e.clientY - r.startClientY, scale) };
+  };
+
+  const onResizeMove = (e: React.PointerEvent<HTMLSpanElement>) => {
+    const next = resizeFor(e);
+    if (next) setResize({ id: next.box.tableId, w: next.w, h: next.h });
+  };
+
+  const endResize = (e: React.PointerEvent<HTMLSpanElement>, commit: boolean) => {
+    const next = resizeFor(e);
+    resizeRef.current = null;
+    setResize(null);
+    if (commit && next && (next.w !== next.box.w || next.h !== next.box.h)) onResize(next.box.tableId, next.w, next.h);
+  };
+
+  const entranceFromPointer = (e: React.PointerEvent<HTMLElement>) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect || scale <= 0) return null;
+    return entranceAt((e.clientX - rect.left) / scale, (e.clientY - rect.top) / scale, plan);
+  };
+
+  const onEntranceDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (readOnly) return;
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    entrancePointerRef.current = e.pointerId;
+  };
+
+  const onEntranceMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (entrancePointerRef.current !== e.pointerId) return;
+    const next = entranceFromPointer(e);
+    if (next) setEntranceDraft(next);
+  };
+
+  const endEntrance = (e: React.PointerEvent<HTMLDivElement>, commit: boolean) => {
+    if (entrancePointerRef.current !== e.pointerId) return;
+    entrancePointerRef.current = null;
+    const next = entranceDraft;
+    setEntranceDraft(null);
+    if (commit && next && (next.wall !== plan.entrance?.wall || next.offsetCm !== plan.entrance?.offsetCm)) {
+      onEntranceChange(next);
+    }
+  };
+
+  const entrance = entranceDraft ?? plan.entrance;
   const entranceStyle: React.CSSProperties | null = entrance
     ? entrance.wall === "top" || entrance.wall === "bottom"
       ? {
           [entrance.wall]: 0,
           left: entrance.offsetCm * scale,
-          width: 90 * scale,
-          height: WALL_THICKNESS + 2,
+          width: ENTRANCE_CM * scale,
+          height: WALL_THICKNESS + 4,
         }
       : {
           [entrance.wall]: 0,
           top: entrance.offsetCm * scale,
-          height: 90 * scale,
-          width: WALL_THICKNESS + 2,
+          height: ENTRANCE_CM * scale,
+          width: WALL_THICKNESS + 4,
         }
     : null;
 
@@ -138,11 +216,22 @@ export function PlantaEditorCanvas({ plan, boxes, selectedId, onSelect, onMove, 
         />
       ))}
       {entranceStyle && (
+        // Arrastável; o seletor e o campo de deslocamento no painel são a alternativa por teclado.
         <div
           aria-hidden="true"
-          className="absolute bg-muted-foreground"
-          style={entranceStyle}
-          title="Entrada"
+          data-testid="planta-entrada"
+          className={cn(
+            "absolute z-10 rounded-sm bg-muted-foreground",
+            // Área de pega maior que o traço, sem mudar o desenho.
+            "after:absolute after:-inset-2 after:content-[''] coarse:after:-inset-5",
+            !readOnly && "cursor-move",
+          )}
+          style={{ ...entranceStyle, touchAction: "none" }}
+          title={readOnly ? "Entrada" : "Entrada (arraste para mudar de lugar)"}
+          onPointerDown={onEntranceDown}
+          onPointerMove={onEntranceMove}
+          onPointerUp={(e) => endEntrance(e, true)}
+          onPointerCancel={(e) => endEntrance(e, false)}
         />
       )}
       {boxes.map((box) => {
@@ -150,44 +239,74 @@ export function PlantaEditorCanvas({ plan, boxes, selectedId, onSelect, onMove, 
         const dragging = drag?.id === box.tableId;
         const dx = dragging ? drag.dx : 0;
         const dy = dragging ? drag.dy : 0;
+        const size = resize?.id === box.tableId ? resize : box;
+        const wPx = size.w * scale;
+        const hPx = size.h * scale;
+        // A lotação só cabe abaixo do número quando a mesa desenhada tem altura para duas linhas.
+        const showCapacity = Math.min(wPx, hPx) >= 34;
         return (
-          <button
+          <div
             key={box.tableId}
-            type="button"
-            data-x={box.x}
-            data-y={box.y}
-            data-positioned={box.positioned ? "true" : "false"}
-            aria-label={`Mesa ${box.number}, ${box.capacity} lugares${box.positioned ? "" : ", sem posição"}`}
-            aria-pressed={selected}
-            onPointerDown={(e) => onPointerDown(e, box)}
-            onPointerMove={onPointerMove}
-            onPointerUp={(e) => endDrag(e, true)}
-            onPointerCancel={(e) => endDrag(e, false)}
-            onClick={() => onSelect(box.tableId)}
-            className={cn(
-              "absolute flex items-center justify-center border-2 bg-[hsl(var(--status-free)/0.15)] border-[hsl(var(--status-free))] text-xs font-semibold text-foreground",
-              "select-none",
-              // Alvo de toque de 44 px em ponteiro grosso sem mudar o desenho nem o centro.
-              "after:absolute after:left-1/2 after:top-1/2 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
-              "coarse:after:h-11 coarse:after:w-11",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              box.shape === "round" ? "rounded-full" : "rounded-md",
-              !box.positioned && "border-dashed",
-              selected && "ring-2 ring-ring",
-              !readOnly && "cursor-grab",
-              dragging && "cursor-grabbing",
-            )}
+            className="absolute"
             style={{
-              left: (box.x - box.w / 2) * scale,
-              top: (box.y - box.h / 2) * scale,
-              width: box.w * scale,
-              height: box.h * scale,
+              left: (box.x - size.w / 2) * scale,
+              top: (box.y - size.h / 2) * scale,
+              width: wPx,
+              height: hPx,
               transform: `translate(${dx}px, ${dy}px) rotate(${box.rotation}deg)`,
-              touchAction: "none",
             }}
           >
-            {box.number}
-          </button>
+            <button
+              type="button"
+              data-x={box.x}
+              data-y={box.y}
+              data-positioned={box.positioned ? "true" : "false"}
+              aria-label={`Mesa ${box.number}, ${box.capacity} lugares${box.positioned ? "" : ", sem posição"}`}
+              aria-pressed={selected}
+              onPointerDown={(e) => onPointerDown(e, box)}
+              onPointerMove={onPointerMove}
+              onPointerUp={(e) => endDrag(e, true)}
+              onPointerCancel={(e) => endDrag(e, false)}
+              onClick={() => onSelect(box.tableId)}
+              className={cn(
+                "absolute inset-0 flex flex-col items-center justify-center border-2 bg-[hsl(var(--status-free)/0.15)] border-[hsl(var(--status-free))] text-xs font-semibold leading-none text-foreground",
+                "select-none",
+                // Alvo de toque de 44 px em ponteiro grosso sem mudar o desenho nem o centro.
+                "after:absolute after:left-1/2 after:top-1/2 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
+                "coarse:after:h-11 coarse:after:w-11",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                box.shape === "round" ? "rounded-full" : "rounded-md",
+                !box.positioned && "border-dashed",
+                selected && "ring-2 ring-ring",
+                !readOnly && "cursor-grab",
+                dragging && "cursor-grabbing",
+              )}
+              style={{ touchAction: "none" }}
+            >
+              <span>{box.number}</span>
+              {showCapacity && (
+                <span aria-hidden="true" className="mt-0.5 text-[10px] font-normal text-muted-foreground">
+                  {`${box.capacity} lug.`}
+                </span>
+              )}
+            </button>
+            {selected && !readOnly && (
+              // Alça de tamanho; largura e profundidade no painel são a alternativa por teclado.
+              <span
+                aria-hidden="true"
+                data-testid="planta-alca-tamanho"
+                className={cn(
+                  "absolute -bottom-1.5 -right-1.5 z-10 h-3 w-3 cursor-nwse-resize rounded-sm border border-background bg-primary",
+                  "after:absolute after:-inset-1.5 after:content-[''] coarse:after:-inset-4",
+                )}
+                style={{ touchAction: "none" }}
+                onPointerDown={(e) => onResizeDown(e, box)}
+                onPointerMove={onResizeMove}
+                onPointerUp={(e) => endResize(e, true)}
+                onPointerCancel={(e) => endResize(e, false)}
+              />
+            )}
+          </div>
         );
       })}
     </div>

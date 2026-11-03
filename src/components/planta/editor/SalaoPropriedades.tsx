@@ -1,4 +1,5 @@
 import { Label } from "@/components/ui/label";
+import { ENTRANCE_CM } from "@/lib/hall-plan-core";
 import type { HallPlan, PlanWall } from "@/lib/hall-plan-core";
 import { CampoNumero } from "./CampoNumero";
 
@@ -16,9 +17,8 @@ const WALLS: Array<{ value: PlanWall; label: string }> = [
 ];
 
 const MIN_CM = 200;
-// Faixa do CHECK halls_plan_dims; a entrada tem 90 cm (a mesma da lona).
+// Faixa do CHECK halls_plan_dims.
 const MAX_CM = 5000;
-const ENTRANCE_CM = 90;
 
 export function SalaoPropriedades({ plan, onChange, readOnly = false }: Props) {
   const wallLength = (wall: PlanWall, p: HallPlan) => (wall === "top" || wall === "bottom" ? p.widthCm : p.depthCm);

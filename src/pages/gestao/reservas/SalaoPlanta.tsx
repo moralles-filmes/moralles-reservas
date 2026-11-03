@@ -268,6 +268,8 @@ export default function SalaoPlanta() {
               selectedId={selectedId}
               onSelect={setSelectedId}
               onMove={moveBox}
+              onResize={(id, w, h) => editBoxes(id, (b) => ({ ...applyTablePatch(b, { w, h }), positioned: true }))}
+              onEntranceChange={(entrance) => changePlan({ ...plan, entrance })}
               readOnly={readOnly}
             />
           )}
