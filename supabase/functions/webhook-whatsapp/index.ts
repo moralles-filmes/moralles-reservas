@@ -2588,9 +2588,12 @@ async function handleWebhookRequest(
       .select("*")
       .eq("id", unitId)
       .maybeSingle();
-    // Falha de leitura é retentável: lançar devolve a mensagem à fila. Seguir
-    // com organização vazia cairia na guarda `invalid_channel_context` do
-    // núcleo, que é terminal e perderia a mensagem do cliente sem histórico.
+    // Falha de leitura é retentável: lançar devolve o claim à fila. Sem isto o
+    // fluxo seguia com organização vazia, consultava billing com
+    // organization_id="" e só falhava adiante em `customer_resolve_failed`
+    // (também retentável): aqui falha mais cedo, sem consultas com tenant vazio.
+    // O núcleo nunca deve receber organização vazia (`invalid_channel_context`
+    // é terminal).
     if (unitRowError || !unitRow?.organization_id) throw new Error("agent_unit_lookup_failed");
     const organizationId: string = unitRow.organization_id;
     // Montagem da unidade do prompt: a mesma do Direct (`_shared/agent/unit-context.ts`).

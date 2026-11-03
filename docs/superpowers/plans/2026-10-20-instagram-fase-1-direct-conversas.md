@@ -1045,9 +1045,9 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 
 ### Task 6.1: branch inteira
 
-- [ ] Faça rebase sobre `origin/main`. Rode `npm run typecheck`, `npm run lint`, `npm run build` e `npm run test`. As falhas aceitas são só as preexistentes que falham igual num checkout limpo de `origin/main`: `whatsapp-template-surfaces`, `template-catalog-v2`, `waitlist-voucher-routing`, `receipts-request`, `reservation-automation-routing`, `migration-twin` e `TemplateCatalogAdminCard`, mais `OfficialConnectionCard` por falta de `.env.local`. Registre as contagens.
-- [ ] Rode o `deno check` de todas as EFs da matriz, `node scripts/check-padrao.mjs` e `node scripts/check-portabilidade.mjs`.
-- [ ] Faça o pré-voo completo: `79a`, `79`, `08`, `38` e `67d`.
+- [x] Faça rebase sobre `origin/main`. Rode `npm run typecheck`, `npm run lint`, `npm run build` e `npm run test`. As falhas aceitas são só as preexistentes que falham igual num checkout limpo de `origin/main`: `whatsapp-template-surfaces`, `template-catalog-v2`, `waitlist-voucher-routing`, `receipts-request`, `reservation-automation-routing`, `migration-twin` e `TemplateCatalogAdminCard`, mais `OfficialConnectionCard` por falta de `.env.local`. Registre as contagens.
+- [x] Rode o `deno check` de todas as EFs da matriz, `node scripts/check-padrao.mjs` e `node scripts/check-portabilidade.mjs`.
+- [x] Faça o pré-voo completo: `79a`, `79`, `08`, `38` e `67d`.
 - [ ] Faça a review da branch inteira com a skill `superpowers:requesting-code-review` no Opus. Rode `saas-shield-br:pre-deploy` e `saas-shield-br:secret-scan`.
 - [ ] Faça `git status`, `git diff --cached` integral, a varredura de segredos das linhas staged (AGENTS §5) e `git add` explícito.
 
@@ -1059,7 +1059,7 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
   - as mudanças deliberadas de comportamento do WhatsApp: CAS no handoff, filtro de canal nas RPCs e no dead-letter, guarda `invalid_channel_context`;
   - o diff do snapshot (3.1).
 - [ ] Confira o `acl-estatico` na aba Checks.
-- [ ] Antes do `db push`, rode `saas-shield-br:schema-diff` contra o remoto e duas leituras só de consulta (Bloco 1): `select rolname, rolbypassrls from pg_roles where rolname in ('postgres','service_role')` (o dono das funções DEFINER precisa de BYPASSRLS sobre as tabelas FORCE RLS) e `select has_schema_privilege('authenticated','auth','USAGE')` (as policies chamam `auth.uid()`).
+- [ ] Antes do `db push`, confira a lista de migrations do remoto (nenhuma posterior a `20261103120000`, senão novo renome), rode `saas-shield-br:schema-diff` contra o remoto e duas leituras só de consulta (Bloco 1): `select rolname, rolbypassrls from pg_roles where rolname in ('postgres','service_role')` (o dono das funções DEFINER precisa de BYPASSRLS sobre as tabelas FORCE RLS) e `select has_schema_privilege('authenticated','auth','USAGE')` (as policies chamam `auth.uid()`).
 - [ ] `npx -y supabase@2.121.0 db push --project-ref gbabxcrntkwgblgqsiit` (autorização própria). Confira `schema_migrations` e o `cron.job` dos três jobs.
 
 ### Task 6.3: segredos, EFs e frontend (ordem obrigatória: banco → `manage-platform-secrets` → segredos → demais EFs → frontend)
@@ -1069,9 +1069,9 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 - [ ] `npx -y supabase@2.121.0 secrets set INSTAGRAM_APP_ID=1435590504737997 INSTAGRAM_OAUTH_STATE_SECRET=… --project-ref gbabxcrntkwgblgqsiit` (autorização própria).
 - [ ] Deploy da matriz (autorização própria), conferindo `verify_jwt` de cada uma depois:
   1. novas: `webhook-instagram`, `instagram-connect`, `process-instagram-inbound`, `process-instagram-token-refresh`;
-  2. alteradas: `webhook-whatsapp`, `create-reservation`, `update-reservation`, `create-manual-reservation`, `send-manual-message`, `manage-platform-secrets`.
+  2. alteradas: `webhook-whatsapp`, `create-reservation`, `update-reservation`, `create-manual-reservation`, `send-manual-message`, `send-scheduled-whatsapp` (junto da 120700, Task 4.5) e `manage-platform-secrets` (já feita no primeiro passo).
   - Reconfirme com `node scripts/ef-import-graph.mjs --all` no momento do deploy.
-- [ ] Confira o WhatsApp depois do deploy: turnos `success`, nenhum `invalid_channel_context`, nenhum `tool_error` novo (rollback: versões anteriores a partir do merge-base).
+- [ ] Confira o WhatsApp depois do deploy: turnos `success`, nenhum `invalid_channel_context`, nenhum `tool_error` novo (rollback: versões anteriores a partir do merge-base). Inclua um handoff com auto-resolve (CAS), um envio manual WhatsApp (o select de `send-manual-message` mudou), uma confirmação gerenciada de reserva `web` e um turno com ferramenta em cada provider de IA ativo por BYOK (o schema de `notes` ganhou `maxLength`).
 - [ ] Merge do PR (autorização própria) → Vercel `READY`.
 
 ### Task 6.4: operação Meta (responsável) e piloto Moralles
@@ -1363,7 +1363,7 @@ Execução por tarefa: implementador (Opus em 4.0b, 4.1, 4.2 e 4.5; Sonnet em 4.
 **Desvios do texto do plano (rulings):**
 - **R4-a, ledger atômico:** a porta cria a reserva. `reserveSlot` ganhou o hook genérico `insertReservation` (só troca o INSERT; disponibilidade, mesa, retry 23505 e código ficam em TS uma vez). `ClaimedIdentityPort.recordReservation` saiu; entrou `insertReservation`, que o adapter liga à RPC nova `create_instagram_contact_reservation` (reserva + ledger numa transação, sob lock do cliente e do contato). Sem porta, caminho idêntico (paridade byte a byte).
 - **R4-b, tetos:** 3 reservas ativas por contato (na RPC de criação) e 3 trocas de telefone em 30 dias (na RPC de link, com contador em `instagram_contacts`). Estouro de reserva volta ao LLM com mensagem própria (R4-h); estouro de troca vira `unavailable`, com pré-checagem no adapter antes de tocar `customers` (R4-l).
-- **R4-c, migrations novas:** `20261103120600` (ledger atômico, tetos, `record_` recusa reserva de outro contato e ficou sem EXECUTE para todos), `200700` (rota gerenciada aceita `instagram`), `200800` (CAS por `connected_at`, retorno booleano, versões de 3 argumentos dropadas), `200900` (`release_instagram_message_claim` cercada). As migrations 200000–200500 não mudaram.
+- **R4-c, migrations novas:** `20261103120600` (ledger atômico, tetos, `record_` recusa reserva de outro contato e ficou sem EXECUTE para todos), `120700` (rota gerenciada aceita `instagram`), `120800` (CAS por `connected_at`, retorno booleano, versões de 3 argumentos dropadas), `120900` (`release_instagram_message_claim` cercada). As migrations 200000–200500 não mudaram.
 - **R4-d, texto exato em `INSTAGRAM_CHANNEL_RULES`:** "Se o cliente informar outro número de WhatsApp, as reservas feitas com o número anterior deixam de aparecer nesta conversa." e "Vouchers e créditos não são consultados por aqui: oriente o cliente a consultá-los pelo WhatsApp do cadastro."
 - **R4-f, portabilidade:** a leitura de `customers` no núcleo subiria a linha de base para 490. Com porta, `createReservation` não faz I/O de cliente; a RPC é a única barreira (cliente vivo, da organização, igual ao ligado ao contato). Linha de base ficou em 489.
 - **R4-g, gate de ACL:** o teste estático passou a exigir `revoke` de `public, anon, authenticated` depois do último `create` de toda função de `public` em migration a partir de `20261018000000` (91 criações legadas antes do corte), com assinatura lida por parênteses balanceados.
@@ -1384,7 +1384,7 @@ Execução por tarefa: implementador (Opus em 4.0b, 4.1, 4.2 e 4.5; Sonnet em 4.
 
 **Gates (Opus), todos PASS_WITH_WARNINGS, 0 bloqueante:** `integration-reliability-auditor`, `tenant-isolation-auditor` e `identity-access-auditor`.
 
-**Ordem de deploy (obrigatória):** `db push` de 200000–200900 → `webhook-whatsapp` só depois da 200300 → `send-manual-message` só depois da 200100 e da 200300 (o select novo dá 403 também no WhatsApp sem elas) → `process-instagram-token-refresh`, `process-instagram-inbound` e `send-manual-message` logo depois da 200800 (as versões antigas das RPCs foram dropadas; a falha é fechada) → `send-scheduled-whatsapp` junto da 200700. **Antes do push:** rodar o harness Docker 73/78 (o pré-voo IG-8.1 prova a decisão do snapshot da rota gerenciada, não o `allowed:true` final).
+**Ordem de deploy (obrigatória):** `db push` de 120000–120900 → `webhook-whatsapp` só depois da 120300 → `send-manual-message` só depois da 120100 e da 120300 (o select novo dá 403 também no WhatsApp sem elas) → `process-instagram-token-refresh`, `process-instagram-inbound` e `send-manual-message` logo depois da 120800 (as versões antigas das RPCs foram dropadas; a falha é fechada) → `send-scheduled-whatsapp` junto da 120700. **Antes do push:** rodar o harness Docker 73/78 (o pré-voo IG-8.1 prova a decisão do snapshot da rota gerenciada, não o `allowed:true` final).
 
 **Atenções estacionadas (follow-up, P3):**
 - Corrida no `linkPhone`: dois turnos simultâneos podem criar um cadastro a mais; a RPC continua barrando o link. Fecha com uma RPC única que cria e liga sob lock (também resolve o telefone de cadastro apagado, que hoje sempre dá `unavailable`).

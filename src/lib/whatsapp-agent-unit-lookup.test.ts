@@ -5,10 +5,11 @@ import { chatSdkMessage, createAutomationFixture } from '../test/fixtures/whatsa
 /**
  * Leitura de `units` que falha no turno do agente do `webhook-whatsapp` real.
  *
- * Seguir com organização vazia cairia na guarda `invalid_channel_context` do
- * núcleo (`_shared/agent/turn.ts`), que é TERMINAL: a mensagem do cliente seria
- * marcada processada sem histórico, sem resposta e sem nova tentativa. A falha
- * de leitura tem de ser retentável: claim devolvido, nada processado.
+ * Tem de ser retentável e falhar cedo: claim devolvido, nada processado, sem
+ * consultar billing nem resolver cliente com organização vazia. (Sem a correção
+ * a mensagem também era retentada, via `customer_resolve_failed`; a mudança é
+ * endurecimento, e o núcleo nunca recebe organização vazia, porque a guarda
+ * `invalid_channel_context` de `_shared/agent/turn.ts` é terminal.)
  */
 
 type Fixture = ReturnType<typeof createAutomationFixture>;
@@ -31,6 +32,9 @@ describe('webhook-whatsapp: leitura de units no turno do agente', () => {
     const ops = c.trace.map((t) => t.operation);
     expect(ops).toContain('rpc:release_processed_whatsapp_message_claim');
     expect(ops).not.toContain('rpc:complete_processed_whatsapp_message');
+    // Falha cedo: nada com organização vazia depois da leitura que falhou.
+    expect(ops).not.toContain('select:organizations');
+    expect(ops).not.toContain('select:customers');
     expect(c.tables.webhook_executions.map((row) => row.outcome)).toEqual(['webhook_error']);
   });
 

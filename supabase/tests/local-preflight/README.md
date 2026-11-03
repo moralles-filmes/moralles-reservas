@@ -2680,9 +2680,9 @@ P -f supabase/migrations/20261103120100_instagram_accounts_contacts.sql
 P -f supabase/migrations/20261103120200_instagram_inbound_queue.sql
 P -f supabase/migrations/20261103120300_conversations_instagram_channel.sql
 P -f supabase/migrations/20261103120400_reservations_source_instagram.sql
-P -f supabase/migrations/20261103120600_instagram_contact_reservation_atomic.sql  # depois da 200100/200300: recria record/link
+P -f supabase/migrations/20261103120600_instagram_contact_reservation_atomic.sql  # depois da 120100/120300: recria record/link
 P -f supabase/migrations/20261103120700_whatsapp_automation_source_instagram.sql
-P -f supabase/migrations/20261103120800_instagram_account_cas_connected_at.sql   # depois da 200100: dropa as versões de 3 argumentos que ela recria
+P -f supabase/migrations/20261103120800_instagram_account_cas_connected_at.sql   # depois da 120100: dropa as versões de 3 argumentos que ela recria
 P -f supabase/migrations/20261103120900_instagram_message_claim_release.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN de novo (idempotência)
 # 20261103120500_instagram_cron.sql NÃO roda aqui (sem pg_cron): é lida como
