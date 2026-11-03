@@ -379,7 +379,7 @@ export function clampBox(box: TableBox, plan: HallPlan): TableBox;
 export function toSavePayload(plan: HallPlan, boxes: TableBox[]): { p_hall: { width_cm: number; depth_cm: number; entrance_wall: PlanWall | null; entrance_offset_cm: number | null; window_walls: PlanWall[] }; p_tables: Array<{ id: string; x: number | null; y: number | null; w: number | null; h: number | null; rotation: number | null; shape: PlanShape | null }> };
 ```
 
-- [ ] **Step 1: Testes que falham** (`hall-plan-core.test.ts`):
+- [x] **Step 1: Testes que falham** (`hall-plan-core.test.ts`):
   - `hallPlanFrom` devolve `DEFAULT_HALL_PLAN` quando `plan_width_cm` é nulo e copia as colunas quando preenchidas.
   - `defaultSizeFor(2)` dá `{70,70,"round"}`; `defaultSizeFor(4)` dá `{80,80,"square"}`; `defaultSizeFor(6)` dá `{140,80,"rect"}`; `defaultSizeFor(10)` dá `{260,80,"rect"}` (regra: 5 ou mais → `w = 80 + 60 * ceil((cap - 4) / 2)`, limitado a 600).
   - **`grade automática`:** 12 mesas sem posição num salão padrão.
@@ -394,10 +394,10 @@ export function toSavePayload(plan: HallPlan, boxes: TableBox[]): { p_hall: { wi
     - mesa `positioned=false` sai com todos os campos `null`;
     - `rotation` é normalizada para 0–359;
     - `x`/`y`/`w`/`h` são inteiros.
-- [ ] **Step 2:** `npx vitest run src/lib/hall-plan-core.test.ts` → FAIL (módulo ausente).
-- [ ] **Step 3: Implementar.** Na grade automática, a posição sem colisão pode ser encontrada por varredura em passos de `GRID_CM`.
-- [ ] **Step 4:** mesmo comando → PASS.
-- [ ] **Step 5: Commit** `feat(planta): geometria pura da planta com grade automática`.
+- [x] **Step 2:** `npx vitest run src/lib/hall-plan-core.test.ts` → FAIL (módulo ausente).
+- [x] **Step 3: Implementar.** Na grade automática, a posição sem colisão pode ser encontrada por varredura em passos de `GRID_CM`.
+- [x] **Step 4:** mesmo comando → PASS.
+- [x] **Step 5: Commit** `feat(planta): geometria pura da planta com grade automática`.
 
 ### Task 5: Dados e salvamento da planta
 
@@ -423,15 +423,15 @@ export function toSavePayload(plan: HallPlan, boxes: TableBox[]): { p_hall: { wi
     - `42501` → "Você não tem permissão para editar esta planta.";
     - outro → "Não foi possível salvar a planta. Tente de novo.".
 
-- [ ] **Step 1: Testes que falham**, no molde de `useAiStoreSettings.test.tsx` com `vi.mock("@/lib/supabase")`:
+- [x] **Step 1: Testes que falham**, no molde de `useAiStoreSettings.test.tsx` com `vi.mock("@/lib/supabase")`:
   - a leitura filtra `unit_id` e `hall_id`;
   - salvar chama `rpc("save_hall_plan", { p_hall_id, p_expected_updated_at, p_hall, p_tables })` com o payload intacto;
   - erro `{ code: "40001" }` vira a mensagem de conflito;
   - sucesso invalida as quatro chaves.
-- [ ] **Step 2:** `npx vitest run src/hooks/useHallPlan.test.tsx` → FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): leitura e salvamento da planta por RPC`.
+- [x] **Step 2:** `npx vitest run src/hooks/useHallPlan.test.tsx` → FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): leitura e salvamento da planta por RPC`.
 
 ### Task 6: Tela do editor
 
@@ -466,20 +466,20 @@ O que a tela faz:
 - **Permissão:** quem não é `isGerente` vê a planta só para leitura, sem salvar. Hoje só o platform_admin com pseudo-owner e o owner/gerente chegam à Gestão.
 - **Visual:** `surface` nos painéis, sem `glass`; mesas com o token `--status-free`; 2D, sem 3D.
 
-- [ ] **Step 1: Testes que falham** (`SalaoPlanta.test.tsx`, hooks mockados):
+- [x] **Step 1: Testes que falham** (`SalaoPlanta.test.tsx`, hooks mockados):
   - renderiza as mesas como `button` com `aria-label` `"Mesa 3, 4 lugares"`;
   - `ArrowRight` com a mesa 3 selecionada desloca 25 cm no estado e habilita "Salvar";
   - "Salvar" chama `useSaveHallPlan().mutate` com `expectedUpdatedAt` igual a `hall.updated_at`;
   - com `isGerente=false` não existe botão "Salvar";
   - erro de leitura mostra "Tentar de novo".
-- [ ] **Step 2:** `npx vitest run src/pages/gestao/reservas/SalaoPlanta.test.tsx` → FAIL.
-- [ ] **Step 3: Implementar** a página, os componentes, a rota e o link.
-- [ ] **Step 4:** PASS; `npm run typecheck` 0.
-- [ ] **Step 5: Revisão visual na MORALLES:**
+- [x] **Step 2:** `npx vitest run src/pages/gestao/reservas/SalaoPlanta.test.tsx` → FAIL.
+- [x] **Step 3: Implementar** a página, os componentes, a rota e o link.
+- [x] **Step 4:** PASS; `npm run typecheck` 0.
+- [x] **Step 5: Revisão visual na MORALLES:**
   - posicionar as mesas de um salão, salvar e recarregar: a planta é a mesma;
   - arrastar por toque no DevTools com emulação de toque;
   - 1440×900, 1194×834 e 390×844, nos dois temas.
-- [ ] **Step 6: Commit** `feat(planta): editor 2D da planta na Gestão`.
+- [x] **Step 6: Commit** `feat(planta): editor 2D da planta na Gestão`.
 
 ---
 
