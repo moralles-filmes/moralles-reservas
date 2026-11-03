@@ -19,7 +19,12 @@ export function ResumoFila({ entries, now, onCall, callingId }: Props) {
   const today = brtNow(now).date;
   const sorted = entries
     .filter((e) => brtNow(new Date(e.created_at)).date === today)
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    // Mesma ordem da tela Fila e do "Sentar da fila": prioridade, depois chegada.
+    .sort(
+      (a, b) =>
+        (a.priority ?? 0) - (b.priority ?? 0) ||
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    );
   const next = sorted[0];
   const avg = sorted.length
     ? Math.round(sorted.reduce((sum, e) => sum + minutesSince(e.created_at, now), 0) / sorted.length)
@@ -46,7 +51,11 @@ export function ResumoFila({ entries, now, onCall, callingId }: Props) {
               disabled={!next.customer_phone || callingId === next.id}
               onClick={() => onCall(next)}
             >
-              {next.customer_phone ? "Chamar no WhatsApp" : "Sem WhatsApp cadastrado"}
+              {!next.customer_phone
+                ? "Sem WhatsApp cadastrado"
+                : next.status === "notified"
+                  ? "Chamar de novo"
+                  : "Chamar no WhatsApp"}
             </Button>
           )}
         </div>

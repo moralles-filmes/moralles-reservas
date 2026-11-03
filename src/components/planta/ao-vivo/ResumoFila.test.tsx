@@ -32,6 +32,27 @@ describe("ResumoFila", () => {
     expect(screen.getByTestId("resumo-fila")).toHaveTextContent("Ninguém aguardando");
   });
 
+  it("o próximo é o de maior prioridade, mesmo que chegou depois, e recebe onCall", () => {
+    const onCall = vi.fn();
+    const velho = { ...entry("velho", "2026-11-03T16:00:00Z", "Velho"), priority: 5, customer_phone: "11999999999" };
+    const vip = { ...entry("vip", "2026-11-03T17:30:00Z", "Vip"), priority: 1, customer_phone: "11888888888" };
+    render(<ResumoFila now={NOW} entries={[velho, vip] as WaitlistEntry[]} onCall={onCall} />);
+    expect(screen.getByTestId("resumo-fila")).toHaveTextContent("Próximo: Vip");
+    fireEvent.click(screen.getByRole("button", { name: "Chamar no WhatsApp" }));
+    expect(onCall).toHaveBeenCalledWith(vip);
+  });
+
+  it("próximo já avisado mostra Chamar de novo", () => {
+    const n = {
+      ...entry("n", "2026-11-03T17:00:00Z", "Nina"),
+      priority: 1,
+      status: "notified",
+      customer_phone: "11999999999",
+    } as unknown as WaitlistEntry;
+    render(<ResumoFila now={NOW} entries={[n]} onCall={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Chamar de novo" })).toBeEnabled();
+  });
+
   it("Chamar no WhatsApp chama onCall com o próximo; sem telefone fica desabilitado", () => {
     const onCall = vi.fn();
     const a = { ...entry("a", "2026-11-03T17:00:00Z", "Ana"), customer_phone: "11999999999" } as WaitlistEntry;
