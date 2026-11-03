@@ -35,7 +35,7 @@ function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSele
         {/* A entrada anima este invólucro: a animação sobrescreve `transform`, então a rotação fica no filho. */}
         <div
           data-testid="planta-3d-entrada"
-          className="absolute left-1/2 top-1/2 motion-safe:animate-settle"
+          className="pointer-events-none absolute left-1/2 top-1/2 motion-safe:animate-settle"
           style={{
             width: wPx,
             height: dPx,
@@ -46,18 +46,18 @@ function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSele
         >
           <div
             data-testid="planta-3d-plano"
-            className="absolute inset-0"
+            className="pointer-events-none absolute inset-0"
             style={{
               transform: `rotateX(${SCENE_ROT_X}deg) rotateZ(-${SCENE_ROT_Z}deg)`,
               transformStyle: "preserve-3d",
             }}
           >
-            <div aria-hidden="true" className="surface absolute inset-0 rounded-md" />
+            <div aria-hidden="true" className="surface pointer-events-none absolute inset-0 rounded-md" />
             {RAISED.map((wall) => (
-              <div key={wall} aria-hidden="true" className="absolute inset-0" style={{ transformStyle: "preserve-3d" }}>
-                <div className="absolute bg-muted-foreground/30" style={wallRect(wall, WALL_PX)} />
+              <div key={wall} aria-hidden="true" className="pointer-events-none absolute inset-0" style={{ transformStyle: "preserve-3d" }}>
+                <div className="pointer-events-none absolute bg-muted-foreground/30" style={wallRect(wall, WALL_PX)} />
                 <div
-                  className="absolute bg-muted-foreground/60"
+                  className="pointer-events-none absolute bg-muted-foreground/60"
                   style={{ ...wallRect(wall, WALL_PX), transform: `translateZ(${WALL_RISE_PX}px)` }}
                 />
               </div>
@@ -66,7 +66,7 @@ function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSele
               <div
                 key={wall}
                 aria-hidden="true"
-                className="absolute"
+                className="pointer-events-none absolute"
                 style={{
                   ...wallRect(wall, WALL_PX),
                   backgroundImage: WINDOW_STRIPES,
@@ -77,7 +77,7 @@ function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSele
             {entrance && (
               <div
                 aria-hidden="true"
-                className="absolute rounded-sm bg-foreground"
+                className="pointer-events-none absolute rounded-sm bg-foreground"
                 style={{ ...entrance, transform: "translateZ(2px)" }}
               />
             )}

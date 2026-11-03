@@ -121,4 +121,17 @@ describe("SalaoAoVivo", () => {
     expect(linha).toHaveTextContent("em mesa fora da planta");
     expect(linha).not.toHaveTextContent("sem mesa");
   });
+
+  it("no 3D só o botão da mesa recebe ponteiro; o resto da cena não rouba o toque", () => {
+    renderPage();
+    expect(screen.getByTestId("planta-3d-entrada").className).toContain("pointer-events-none");
+    expect(screen.getByTestId("planta-3d-plano").className).toContain("pointer-events-none");
+    const botao = screen.getByRole("button", { name: /^Mesa 3,/ });
+    expect(botao.className).toContain("pointer-events-auto");
+    let el: HTMLElement | null = botao.parentElement;
+    while (el && el !== screen.getByTestId("planta-3d")) {
+      expect(el.className, "ancestral do botão").toContain("pointer-events-none");
+      el = el.parentElement;
+    }
+  });
 });

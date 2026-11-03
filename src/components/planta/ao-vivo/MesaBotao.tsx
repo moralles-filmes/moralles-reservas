@@ -28,7 +28,7 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
 
   return (
     <div
-      className="absolute"
+      className={cn("absolute", is3d && "pointer-events-none")}
       style={{
         left: (box.x - box.w / 2) * scale,
         top: (box.y - box.h / 2) * scale,
@@ -40,8 +40,8 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
     >
       {is3d && (
         <>
-          <span aria-hidden="true" className={cn("absolute inset-0 bg-foreground/25", shape)} />
-          <div aria-hidden="true" className="absolute inset-0" style={lift(8)}>
+          <span aria-hidden="true" className={cn("pointer-events-none absolute inset-0 bg-foreground/25", shape)} />
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0" style={lift(8)}>
             <span className={cn("absolute inset-0 bg-foreground/40", shape)} />
           </div>
         </>
@@ -51,14 +51,14 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
           <span className={cn("absolute inset-0 opacity-0 motion-safe:animate-halo", cls.halo, shape)} />
         </div>
       )}
-      <div className="absolute inset-0" style={lift(16)}>
+      <div className={cn("absolute inset-0", is3d && "pointer-events-none")} style={lift(16)}>
         <button
           type="button"
           aria-label={mesaAriaLabel(box, state, now)}
           aria-pressed={selected}
           onClick={() => onSelect(box.tableId)}
           className={cn(
-            "absolute inset-0 flex select-none items-center justify-center border-2 text-foreground",
+            "pointer-events-auto absolute inset-0 flex select-none items-center justify-center border-2 text-foreground",
             "transition-transform duration-200 ease-out-expo motion-safe:active:scale-95",
             "after:absolute after:left-1/2 after:top-1/2 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
             "coarse:after:h-11 coarse:after:w-11",

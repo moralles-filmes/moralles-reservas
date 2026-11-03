@@ -57,7 +57,7 @@ export function projectedSpanCm(widthCm: number, depthCm: number): { w: number; 
  */
 export function fitSceneScale(widthCm: number, depthCm: number, availW: number, availH: number): number {
   const span = projectedSpanCm(widthCm, depthCm);
-  const base = Math.min(availW / span.w, availH / span.h) * 0.94;
+  const base = Math.min(availW / span.w, availH / span.h) * 0.88;
   const z = (SCENE_ROT_Z * Math.PI) / 180;
   const x = (SCENE_ROT_X * Math.PI) / 180;
   const nearCm = ((widthCm * Math.sin(z) + depthCm * Math.cos(z)) / 2) * Math.sin(x);
