@@ -84,8 +84,8 @@ export function useSalaoAoVivo(unitId: string) {
     blocks: blocks.data ?? [],
     durationMinutes: parseDurationMinutes(duration.data),
     isLoading: all.some((q) => q.isLoading),
-    /** Há dados da planta em cache: um erro de refetch não deve derrubar a cena. */
-    hasData: plan.data !== undefined,
+    /** Todas as consultas têm dados (a duração ausente vem como null, não undefined): um erro de refetch não deve derrubar a cena. */
+    hasData: all.every((q) => q.data !== undefined),
     isError: all.some((q) => q.isError),
     refetch: () => {
       all.forEach((q) => void q.refetch());

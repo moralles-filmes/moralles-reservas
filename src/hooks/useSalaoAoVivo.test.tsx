@@ -132,6 +132,20 @@ describe("useSalaoAoVivo", () => {
     expect(result.current.durationMinutes).toBe(90);
   });
 
+  it("primeira carga com erro em consulta secundária → hasData false", async () => {
+    mocks.results.settings = { data: null, error: { message: "boom" } };
+    const { result } = renderHook(() => useSalaoAoVivo("unit-a"), { wrapper });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.hasData).toBe(false);
+  });
+
+  it("duração sem linha (null) conta como dado → hasData true", async () => {
+    mocks.results.settings = { data: null, error: null };
+    const { result } = renderHook(() => useSalaoAoVivo("unit-a"), { wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.hasData).toBe(true);
+  });
+
   it("erro numa consulta → isError", async () => {
     mocks.results.table_blocks = { data: null, error: { message: "boom" } };
     const { result } = renderHook(() => useSalaoAoVivo("unit-a"), { wrapper });

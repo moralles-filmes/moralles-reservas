@@ -115,6 +115,14 @@ describe("SalaoAoVivo", () => {
     expect(container.querySelector(".animate-pulse")).not.toBeNull();
   });
 
+  it("erro na primeira carga (sem dados completos) mostra a tela de erro, não a cena", () => {
+    current = { ...hookData, isError: true, hasData: false } as typeof hookData;
+    renderPage();
+    expect(screen.queryByTestId("planta-3d")).toBeNull();
+    expect(screen.getByText("Não foi possível carregar o salão.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tentar de novo" })).toBeInTheDocument();
+  });
+
   it("erro de refetch com dados em cache mantém a cena e avisa Dados desatualizados", () => {
     current = { ...hookData, isError: true, hasData: true } as typeof hookData;
     renderPage();
