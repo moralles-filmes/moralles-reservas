@@ -30,7 +30,7 @@ do $$
 begin
   if to_regclass('public.unit_module_grants') is not null
      or to_regclass('public.instagram_settings') is not null then
-    raise exception '79a exige rodar ANTES da migration 20261029200000_instagram_module_grants: as tabelas ja existem e nasceram sem os default privileges, o que cega o IG-1.5. Recrie o banco (dropdb ig79 / createdb ig79) e siga o README, secao 79.';
+    raise exception '79a exige rodar ANTES da migration 20261103120000_instagram_module_grants: as tabelas ja existem e nasceram sem os default privileges, o que cega o IG-1.5. Recrie o banco (dropdb ig79 / createdb ig79) e siga o README, secao 79.';
   end if;
   if to_regprocedure('app_private.is_unit_member(uuid,uuid)') is null
      or to_regprocedure('app_private.is_platform_admin(uuid)') is null
@@ -267,7 +267,7 @@ create trigger notification_outbox_insert_scope before insert on public.notifica
 for each row execute function public.guard_notification_outbox_insert_scope();
 
 -- ─── 3d. Colunas de reserva que o `reserveSlot` grava (Task 4.0b) ──────────
--- A RPC `create_instagram_contact_reservation` (20261029200600) insere a linha
+-- A RPC `create_instagram_contact_reservation` (20261103120600) insere a linha
 -- que `_shared/availability.ts` monta, e o 09a só tem o núcleo de
 -- `reservations`. Entram na forma de produção:
 --   * `table_id`: tipo e nulidade da 001 (20260427190619), SEM a FK para
@@ -312,7 +312,7 @@ create table if not exists public.tables (
 
 -- ─── 3e. O que o POST final das automações lê (Task 4.5, D9) ──────────────
 -- O IG-8.1 chama o corpo REAL de `app_private.whatsapp_automation_post_inner`
--- (20261019193132, recriado pela 20261029200700) no caminho `p_confirm_only`
+-- (20261019193132, recriado pela 20261103120700) no caminho `p_confirm_only`
 -- com snapshot de reserva. O `%rowtype` do corpo exige TODAS as tabelas que ele
 -- declara no `create or replace` da migration; em execução, plpgsql resolve cada
 -- coluna só quando o comando roda. Por isso entram:

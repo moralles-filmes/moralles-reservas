@@ -21,7 +21,7 @@ export type AgentChannel = "whatsapp" | "instagram";
 /**
  * Valor de `reservations.source` que o agente grava. Load-bearing: o trigger
  * `enqueue_confirmation_notification` pula `whatsapp` para não duplicar a
- * confirmação. `instagram` (CHECK liberado na migration 20261029200400) NÃO é
+ * confirmação. `instagram` (CHECK liberado na migration 20261103120400) NÃO é
  * pulado: a reserva feita pelo Direct é confirmada pelo WhatsApp (D6).
  */
 export type AgentReservationSource = "whatsapp" | "instagram";

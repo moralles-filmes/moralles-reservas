@@ -5,7 +5,7 @@
 -- Pré-voo: supabase/tests/local-preflight/79-instagram-module.sql (IG-8.1 e
 --          C-IG-8.1; README, seção 79).
 --
--- A reserva nascida no Direct (20261029200400) recebe a confirmação, o
+-- A reserva nascida no Direct (20261103120400) recebe a confirmação, o
 -- lembrete, a pesquisa e o cancelamento pelo WhatsApp (D6/D9). Sem esta
 -- migration, o snapshot autoritativo do POST final recusaria a reserva como
 -- `snapshot_invalid` e a automação nunca sairia.

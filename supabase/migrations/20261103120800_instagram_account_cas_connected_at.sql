@@ -166,4 +166,4 @@ commit;
 --
 -- ROLLBACK (só junto com o rollback das três EFs chamadoras): dropar as duas
 -- assinaturas de 4 argumentos e reaplicar o trecho das duas funções e dos
--- quatro revoke/grant da 20261029200100.
+-- quatro revoke/grant da 20261103120100.

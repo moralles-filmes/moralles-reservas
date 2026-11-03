@@ -39,7 +39,7 @@
  * `webhook_error` e não se repete.
  *
  * Erro 190 marca `reauth_required` com o `connected_at` lido nos gates (CAS,
- * 20261029200800): reconexão no meio do turno não é derrubada.
+ * 20261103120800): reconexão no meio do turno não é derrubada.
  *
  * Logs: ids internos, classes e códigos; nunca texto do cliente, IGSID, token
  * ou texto da Meta. Adapter de I/O: as decisões moram em

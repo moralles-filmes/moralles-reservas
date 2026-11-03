@@ -230,7 +230,7 @@ $$;
 -- ============================================================================
 -- 3. Ledger de reserva já existente: recusa reserva de outro contato
 -- ============================================================================
--- Corpo de 20261029200100 §7 com UMA mudança: depois do `on conflict do
+-- Corpo de 20261103120100 §7 com UMA mudança: depois do `on conflict do
 -- nothing`, a reserva tem de estar no ledger DESTE contato; se está no de
 -- outro, o mesmo 42501. O mesmo contato continua no-op.
 create or replace function public.record_instagram_contact_reservation(p_contact_id uuid, p_reservation_id uuid)
@@ -276,7 +276,7 @@ $$;
 -- ============================================================================
 -- 4. Link com teto de trocas (R4-b)
 -- ============================================================================
--- Corpo de 20261029200300 §6 (mesma ordem de locks, mesmas conferências e o
+-- Corpo de 20261103120300 §6 (mesma ordem de locks, mesmas conferências e o
 -- mesmo 42501) mais o teto, conferido sob o `for update` do contato e DEPOIS
 -- da recusa de identidade (quem não pode ligar recebe o 42501, nunca o teto).
 -- Troca = cliente atual não nulo e diferente de `p_customer_id`. O primeiro
@@ -407,7 +407,7 @@ commit;
 --      and attname in ('link_changes_count', 'link_changes_window_started_at');
 --
 -- ROLLBACK (só enquanto o adapter do Instagram não chamar a RPC nova; reponha
--- os corpos de 20261029200100 §7 e 20261029200300 §6 com os mesmos
+-- os corpos de 20261103120100 §7 e 20261103120300 §6 com os mesmos
 -- revoke/grant):
 --   begin; set local lock_timeout = '5s';
 --   drop function if exists public.create_instagram_contact_reservation(uuid, jsonb);

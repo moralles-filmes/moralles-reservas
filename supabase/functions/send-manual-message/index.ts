@@ -167,7 +167,7 @@ async function sendInstagramManual(
   // `true` quando o CAS recusou o 190: a conta foi reconectada durante o envio.
   let accountReconnected = false;
   if (stop?.kind === "failed" && stop.errorClass === "reauth_required") {
-    // CAS por `connected_at` (20261029200800): se o dono reconectou depois da
+    // CAS por `connected_at` (20261103120800): se o dono reconectou depois da
     // leitura da conta, a RPC devolve `false` e a conexão nova fica intacta.
     const { data: marked, error: markErr } = await supabase.rpc("set_instagram_account_status", {
       p_account_id: account.id,

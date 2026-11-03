@@ -107,7 +107,7 @@ describe('ferramentas do agente', () => {
     const create = dispatch.slice(dispatch.indexOf('await createReservation(supabase, {'));
     expect(create.slice(0, create.indexOf('});'))).toContain('source: ctx.reservationSource,');
     expect(webhook).toContain('reservationSource: "whatsapp",');
-    // `instagram` entra com a migration 20261029200400 (CHECK) e o trigger
+    // `instagram` entra com a migration 20261103120400 (CHECK) e o trigger
     // continua pulando só `whatsapp` (D6): a reserva do Direct é confirmada
     // pelo WhatsApp.
     expect(context).toMatch(/export type AgentReservationSource = "whatsapp" \| "instagram";/);

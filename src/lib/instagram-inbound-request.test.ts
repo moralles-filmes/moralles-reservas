@@ -216,7 +216,7 @@ function world() {
         case "get_instagram_account_token":
           return { data: args.p_account_id === ACC_A ? TOKEN_A : "synthetic-ig-token-b", error: null };
         case "set_instagram_account_status": {
-          // CAS fiel à 20261029200800: geração ausente 22023; divergente `false` sem efeito.
+          // CAS fiel à 20261103120800: geração ausente 22023; divergente `false` sem efeito.
           const a = T.instagram_accounts.find((r) => r.id === args.p_account_id)!;
           if (typeof args.p_expected_connected_at !== "string") return { data: null, error: { code: "22023" } };
           if (args.p_expected_connected_at !== a.connected_at) return { data: false, error: null };
@@ -258,7 +258,7 @@ function world() {
           return { data: claim, error: null };
         }
         case "release_instagram_message_claim": {
-          // Cerca da 20261029200900: conta, mid, claim vigente e `processing`.
+          // Cerca da 20261103120900: conta, mid, claim vigente e `processing`.
           const m = T.instagram_processed_messages.find((r) => r.instagram_account_id === args.p_account_id && r.mid === args.p_mid
             && r.claim_id === args.p_claim_id && r.status === "processing");
           if (!m) return { data: false, error: null };

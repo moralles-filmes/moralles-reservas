@@ -299,7 +299,7 @@ export function safeErrorLabel(err: unknown): string {
 /**
  * Teto de trocas de cliente por contato (gêmeos de `c_max_link_changes` e
  * `c_link_window` de `link_instagram_contact_customer`, migration
- * 20261029200600; teste amarra ao SQL). A RPC é a barreira autoritativa; o
+ * 20261103120600; teste amarra ao SQL). A RPC é a barreira autoritativa; o
  * adapter usa a mesma regra ANTES de criar cadastro, para o teto também
  * limitar a criação de clientes na organização (R4-l).
  */

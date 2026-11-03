@@ -1,26 +1,26 @@
 -- 79: pré-voo do módulo Instagram (Fase 1), ordinais 7901–7999.
 --
--- Task 1.1 (migration 20261029200000_instagram_module_grants.sql):
+-- Task 1.1 (migration 20261103120000_instagram_module_grants.sql):
 --   casos IG-1.1..IG-1.6 (7901–7906) e um controle positivo por caso,
 --   C-IG-1.1..C-IG-1.6 (7908–7913). 7907 fica livre (7914–7917 são da 1.6).
--- Task 1.2 (migration 20261029200100_instagram_accounts_contacts.sql):
+-- Task 1.2 (migration 20261103120100_instagram_accounts_contacts.sql):
 --   casos IG-2.1..IG-2.6 (7920–7925) e IG-2.7..IG-2.10 (7926–7929, fix
 --   round 1: auditoria, ponteiro do Vault preso ao nome, soft delete direto
 --   e normalização), com um controle positivo por caso, C-IG-2.1..C-IG-2.6
 --   (7930–7935) e C-IG-2.7..C-IG-2.10 (7936–7939).
--- Task 1.3 (migration 20261029200200_instagram_inbound_queue.sql):
+-- Task 1.3 (migration 20261103120200_instagram_inbound_queue.sql):
 --   casos IG-3.1..IG-3.8 (7940–7947) e um controle positivo por caso,
 --   C-IG-3.1..C-IG-3.8 (7950–7957). Fix round 1: os fixes 1–4 estendem
 --   IG-3.1/3.3/3.5/3.6 e os controles deles; o fix 5 é o IG-3.8.
 --   7948–7949 e 7958–7959 ficam livres.
--- Task 1.4 (migration 20261029200300_conversations_instagram_channel.sql):
+-- Task 1.4 (migration 20261103120300_conversations_instagram_channel.sql):
 --   casos IG-4.1..IG-4.7 (7960–7966) e um controle positivo por caso,
 --   C-IG-4.1..C-IG-4.7 (7970–7976). Fix round 1: IG-4.8 (7967) e
 --   C-IG-4.8 (7978); o IG-4.4 e o C-IG-4.4 crescem no lugar (unidade
 --   imutável e cliente da conversa IG = cliente do contato). 7968–7969,
 --   7977 e 7979 ficam livres.
--- Task 1.5 (migrations 20261029200400_reservations_source_instagram.sql e
---   20261029200500_instagram_cron.sql; a de cron não roda aqui, sem pg_cron,
+-- Task 1.5 (migrations 20261103120400_reservations_source_instagram.sql e
+--   20261103120500_instagram_cron.sql; a de cron não roda aqui, sem pg_cron,
 --   e é lida como texto pelo gêmeo): casos IG-5.1..IG-5.2 (7980–7981) e um
 --   controle positivo por caso, C-IG-5.1..C-IG-5.2 (7990–7991). Fix round 1:
 --   IG-5.3 (7982), a guarda de drift da migration (reaplicada via \ir),
@@ -33,7 +33,7 @@
 --   store/disconnect, contatos só por RPC/trigger DEFINER e anonimização
 --   irreversível, conversa IG sem wa_chat_lid. O IG-2.1 passa a conferir
 --   service_role só com SELECT em contatos.
--- Task 4.0b (migration 20261029200600_instagram_contact_reservation_atomic.sql,
+-- Task 4.0b (migration 20261103120600_instagram_contact_reservation_atomic.sql,
 --   Rulings R4-a/R4-b; base: 79a seção 3d): casos IG-7.1..IG-7.6 (7983–7988)
 --   e controles C-IG-7.1 (7989), C-IG-7.2..C-IG-7.5 (7996–7999) e C-IG-7.6
 --   (7918): reserva + ledger numa transação com a identidade conferida pela
@@ -41,7 +41,7 @@
 --   recusa reserva de outro contato, teto de 3 trocas de cliente em 30 dias,
 --   ACL. Livres: 7907, 7919, 7948–7949, 7958–7959, 7968–7969, 7977, 7979
 --   (a 4.0d usou 7919 e 7958–7959).
--- Task 4.5 (migrations 20261029200700, 20261029200800 e 20261029200900; base:
+-- Task 4.5 (migrations 20261103120700, 20261103120800 e 20261103120900; base:
 --   79a seção 3e): casos IG-8.1 (7907, rota gerenciada aceita reserva
 --   instagram no post_inner real), IG-8.2 (7948, CAS por connected_at em
 --   set_status/record_refresh) e IG-8.3 (7949, liberação cercada do claim de
@@ -77,7 +77,7 @@ begin
      or to_regprocedure('public.get_unit_modules(uuid)') is null
      or to_regprocedure('public.unit_module_tenant_guard()') is null
      or to_regprocedure('public.instagram_settings_touch()') is null then
-    raise exception '79: objetos do modulo Instagram ausentes (unit_module_grants, instagram_settings, set_unit_module_grant, get_unit_modules). Aplique a migration 20261029200000_instagram_module_grants antes (sem ela, este abort e o RED esperado).';
+    raise exception '79: objetos do modulo Instagram ausentes (unit_module_grants, instagram_settings, set_unit_module_grant, get_unit_modules). Aplique a migration 20261103120000_instagram_module_grants antes (sem ela, este abort e o RED esperado).';
   end if;
   if to_regclass('public.instagram_accounts') is null
      or to_regclass('public.instagram_contacts') is null
@@ -92,7 +92,7 @@ begin
      or to_regprocedure('public.instagram_contact_tenant_guard()') is null
      or to_regprocedure('public.instagram_contacts_anonymize_on_customer()') is null
      or to_regprocedure('public.anonymize_customer(uuid)') is null then
-    raise exception '79: objetos da conta/contato do Instagram ausentes (instagram_accounts, instagram_contacts, instagram_contact_reservations e as RPCs). Aplique a migration 20261029200100_instagram_accounts_contacts antes (sem ela, este abort e o RED esperado).';
+    raise exception '79: objetos da conta/contato do Instagram ausentes (instagram_accounts, instagram_contacts, instagram_contact_reservations e as RPCs). Aplique a migration 20261103120100_instagram_accounts_contacts antes (sem ela, este abort e o RED esperado).';
   end if;
   if to_regclass('public.instagram_inbound_events') is null
      or to_regclass('public.instagram_processed_messages') is null
@@ -108,7 +108,7 @@ begin
      or to_regprocedure('public.instagram_queue_tenant_guard()') is null
      or to_regprocedure('public.trigger_instagram_inbound_sweep()') is null
      or to_regprocedure('public.trigger_instagram_token_refresh()') is null then
-    raise exception '79: objetos da fila de inbound do Instagram ausentes (instagram_inbound_events, instagram_processed_messages, RPCs de claim/finalize/purga, diagnostico e wrappers). Aplique a migration 20261029200200_instagram_inbound_queue antes (sem ela, este abort e o RED esperado).';
+    raise exception '79: objetos da fila de inbound do Instagram ausentes (instagram_inbound_events, instagram_processed_messages, RPCs de claim/finalize/purga, diagnostico e wrappers). Aplique a migration 20261103120200_instagram_inbound_queue antes (sem ela, este abort e o RED esperado).';
   end if;
   if to_regclass('public.conversations') is null
      or to_regclass('public.whatsapp_automation_jobs') is null
@@ -122,7 +122,7 @@ begin
      or to_regprocedure('public.conversations_channel_guard()') is null
      or to_regprocedure('public.conversations_clear_instagram_contact_name()') is null
      or to_regprocedure('app_private.reconcile_whatsapp_automation_acceptance_inner(uuid)') is null then
-    raise exception '79: objetos de conversa do Instagram ausentes (conversations.channel, conversations.instagram_contact_id, get_or_create_instagram_conversation, link_instagram_contact_customer, conversations_channel_guard, reconcile inner). Aplique a migration 20261029200300_conversations_instagram_channel antes (sem ela, este abort e o RED esperado).';
+    raise exception '79: objetos de conversa do Instagram ausentes (conversations.channel, conversations.instagram_contact_id, get_or_create_instagram_conversation, link_instagram_contact_customer, conversations_channel_guard, reconcile inner). Aplique a migration 20261103120300_conversations_instagram_channel antes (sem ela, este abort e o RED esperado).';
   end if;
   if to_regclass('public.notification_outbox') is null
      or to_regprocedure('public.enqueue_confirmation_notification()') is null
@@ -132,7 +132,7 @@ begin
   if not exists (select 1 from pg_constraint
                   where conrelid = 'public.reservations'::regclass and conname = 'reservations_source_check'
                     and pg_get_constraintdef(oid) like '%''instagram''%') then
-    raise exception '79: reservations_source_check sem a origem instagram. Aplique a migration 20261029200400_reservations_source_instagram antes (sem ela, este abort e o RED esperado).';
+    raise exception '79: reservations_source_check sem a origem instagram. Aplique a migration 20261103120400_reservations_source_instagram antes (sem ela, este abort e o RED esperado).';
   end if;
   if not exists (select 1 from pg_attribute where attrelid = 'public.reservations'::regclass and attname = 'payment_status' and not attisdropped)
      or not exists (select 1 from pg_attribute where attrelid = 'public.reservations'::regclass and attname = 'table_id' and not attisdropped)
@@ -142,7 +142,7 @@ begin
   if to_regprocedure('public.create_instagram_contact_reservation(uuid,jsonb)') is null
      or not exists (select 1 from pg_attribute where attrelid = 'public.instagram_contacts'::regclass and attname = 'link_changes_count' and not attisdropped)
      or not exists (select 1 from pg_attribute where attrelid = 'public.instagram_contacts'::regclass and attname = 'link_changes_window_started_at' and not attisdropped) then
-    raise exception '79: reserva atomica do contato do Instagram ausente (create_instagram_contact_reservation, instagram_contacts.link_changes_count/link_changes_window_started_at). Aplique a migration 20261029200600_instagram_contact_reservation_atomic antes (sem ela, este abort e o RED esperado).';
+    raise exception '79: reserva atomica do contato do Instagram ausente (create_instagram_contact_reservation, instagram_contacts.link_changes_count/link_changes_window_started_at). Aplique a migration 20261103120600_instagram_contact_reservation_atomic antes (sem ela, este abort e o RED esperado).';
   end if;
   if to_regclass('public.whatsapp_template_bindings') is null
      or to_regclass('public.whatsapp_message_consent_events') is null
@@ -153,7 +153,7 @@ begin
      or to_regprocedure('public.record_instagram_token_refresh(uuid,text,timestamptz,timestamptz)') is null
      or to_regprocedure('public.set_instagram_account_status(uuid,text,text,timestamptz)') is null
      or to_regprocedure('public.release_instagram_message_claim(uuid,text,uuid)') is null then
-    raise exception '79: objetos da Task 4.5 ausentes (whatsapp_automation_post_inner, set_instagram_account_status/record_instagram_token_refresh com CAS de connected_at, release_instagram_message_claim). Aplique as migrations 20261029200700, 20261029200800 e 20261029200900 antes (sem elas, este abort e o RED esperado).';
+    raise exception '79: objetos da Task 4.5 ausentes (whatsapp_automation_post_inner, set_instagram_account_status/record_instagram_token_refresh com CAS de connected_at, release_instagram_message_claim). Aplique as migrations 20261103120700, 20261103120800 e 20261103120900 antes (sem elas, este abort e o RED esperado).';
   end if;
   if not exists (select 1 from public.units where id = 'a0d79000-0000-4000-8000-0000000000aa')
      or not exists (select 1 from public.platform_admins where user_id = 'a0d79000-0000-4000-8000-0000000000c1') then
@@ -4745,7 +4745,7 @@ begin
 end $$;
 
 -- ═══ Task 4.0b: reserva + ledger numa transação e tetos por contato ═════════
--- Migration 20261029200600_instagram_contact_reservation_atomic.sql. Base: 79a
+-- Migration 20261103120600_instagram_contact_reservation_atomic.sql. Base: 79a
 -- seção 3d (colunas de reserva que o `reserveSlot` grava e o índice único da
 -- mesa da 056). Casos IG-7.1..IG-7.6 (7983–7988) e controles C-IG-7.1..C-IG-7.6
 -- (7989, 7996–7999, 7918), mais IG-7.7 (7919) e C-IG-7.7/7.8 (7958, 7959) da Task 4.0d.
@@ -5530,8 +5530,8 @@ begin
 end $$;
 
 -- ─── Task 4.5: rota gerenciada (D9), CAS por connected_at e liberação do claim ─
--- Migrations 20261029200700 (post_inner aceita `instagram`), 20261029200800
--- (CAS em set_status/record_refresh) e 20261029200900 (release do claim).
+-- Migrations 20261103120700 (post_inner aceita `instagram`), 20261103120800
+-- (CAS em set_status/record_refresh) e 20261103120900 (release do claim).
 -- Base: 79a seção 3e (stubs que o corpo do POST final lê).
 
 -- IG-8.1 (7907): o corpo REAL de `app_private.whatsapp_automation_post_inner`
@@ -5947,7 +5947,7 @@ begin
 end $$;
 
 -- ─── IG-5.3 (Task 1.5, fix round 1): guarda de drift da migration ───────────
--- A migration 20261029200400 exige, antes do COMMIT, exatamente UM CHECK de
+-- A migration 20261103120400 exige, antes do COMMIT, exatamente UM CHECK de
 -- `source` (o `reservations_source_check`, validado). Este caso REAPLICA o
 -- arquivo da migration (via `\ir`) sobre um banco com drift: o CHECK antigo
 -- (web/whatsapp) mais um CHECK de origem com outro nome. Esperado: a migration
@@ -5978,7 +5978,7 @@ select 'antes', string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '/
 \set LAST_ERROR_SQLSTATE 00000
 \set LAST_ERROR_MESSAGE ''
 \set ON_ERROR_STOP off
-\ir ../../migrations/20261029200400_reservations_source_instagram.sql
+\ir ../../migrations/20261103120400_reservations_source_instagram.sql
 \set ON_ERROR_STOP on
 insert into t_ig53 values ('erro', :'LAST_ERROR_SQLSTATE' || ':' || :'LAST_ERROR_MESSAGE');
 insert into t_ig53
@@ -5987,7 +5987,7 @@ select 'depois', string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '
 
 -- Restauração: tira o drift e reaplica a migration (agora tem de passar).
 alter table public.reservations drop constraint if exists reservations_source_drift79;
-\ir ../../migrations/20261029200400_reservations_source_instagram.sql
+\ir ../../migrations/20261103120400_reservations_source_instagram.sql
 insert into t_ig53
 select 'restaurado', string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '/' || c.convalidated, ',' order by c.conname)
   from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.contype = 'c';

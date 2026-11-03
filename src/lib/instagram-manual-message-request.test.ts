@@ -75,7 +75,7 @@ function setup(options: {
         return args.p_account_id === ACCOUNT ? { data: TOKEN, error: null } : { data: null, error: { code: "P0002" } };
       }
       if (name === "set_instagram_account_status") {
-        // CAS fiel à 20261029200800.
+        // CAS fiel à 20261103120800.
         if (typeof args.p_expected_connected_at !== "string") return { data: null, error: { code: "22023" } };
         return { data: !options.reconnected && args.p_expected_connected_at === CONNECTED_AT, error: null };
       }

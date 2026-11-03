@@ -306,7 +306,7 @@ describe("teto de trocas de cliente do contato (R4-l)", () => {
   });
 
   it("gêmeos do SQL: c_max_link_changes e c_link_window de link_instagram_contact_customer (200600)", () => {
-    const sql = readFileSync(resolve(__dirname, "../../supabase/migrations/20261029200600_instagram_contact_reservation_atomic.sql"), "utf8")
+    const sql = readFileSync(resolve(__dirname, "../../supabase/migrations/20261103120600_instagram_contact_reservation_atomic.sql"), "utf8")
       .replace(/--[^\n]*/g, "");
     const ini = sql.indexOf("create or replace function public.link_instagram_contact_customer(");
     expect(ini).toBeGreaterThan(-1);

@@ -85,7 +85,7 @@ function fixture(
         if (opts.graphDelayMs) await harness.advanceTime(opts.graphDelayMs);
         return acc ? { data: tokenOf(acc.id as string), error: null } : err("P0002");
       }
-      // CAS fiel à 20261029200800: geração ausente é 22023; divergente devolve
+      // CAS fiel à 20261103120800: geração ausente é 22023; divergente devolve
       // `false` sem efeito; igual aplica e devolve `true`.
       if (name === "record_instagram_token_refresh" || name === "set_instagram_account_status") {
         if (!acc) return err("P0002");

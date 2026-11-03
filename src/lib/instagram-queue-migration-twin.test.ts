@@ -63,9 +63,9 @@ function diasDoLedger(body: string): number {
 }
 
 describe("migration da fila do Instagram ⇔ núcleo da fila de inbound", () => {
-  it("o arquivo existe e vem depois da 20261029200100 (conta e contato)", () => {
+  it("o arquivo existe e vem depois da 20261103120100 (conta e contato)", () => {
     expect(ARQUIVO).toBeDefined();
-    expect(Number(ARQUIVO!.slice(0, 14))).toBeGreaterThan(20261029200100);
+    expect(Number(ARQUIVO!.slice(0, 14))).toBeGreaterThan(20261103120100);
   });
 
   it("o lease do claim do evento é INBOUND_LEASE_TTL_MS/1000", () => {
@@ -132,7 +132,7 @@ describe("migration da fila do Instagram ⇔ núcleo da fila de inbound", () => 
   });
 });
 
-// ─── Task 1.5: agendamento (20261029200500_instagram_cron.sql) ──────────────
+// ─── Task 1.5: agendamento (20261103120500_instagram_cron.sql) ──────────────
 // O harness não tem pg_cron: o arquivo de cron não roda no pré-voo 79 e é
 // conferido aqui, como texto. Escopo: as chamadas `cron.schedule(...)` do SQL
 // SEM comentários (o cabeçalho e o bloco de validação repetem as expressões).
@@ -196,9 +196,9 @@ function conferir(sql: string): string[] {
 }
 
 describe("migration de cron do Instagram ⇔ núcleo da fila de inbound", () => {
-  it("o arquivo existe e vem depois da 20261029200400 (origem da reserva)", () => {
+  it("o arquivo existe e vem depois da 20261103120400 (origem da reserva)", () => {
     expect(ARQUIVO_CRON).toBeDefined();
-    expect(Number(ARQUIVO_CRON!.slice(0, 14))).toBeGreaterThan(20261029200400);
+    expect(Number(ARQUIVO_CRON!.slice(0, 14))).toBeGreaterThan(20261103120400);
   });
 
   it("a varredura roda a cada INBOUND_SWEEP_INTERVAL_MS (60_000 → a cada minuto)", () => {

@@ -11,7 +11,7 @@
 -- mensagem "em voo" e reagendava de novo. `release_instagram_message_claim`
 -- devolve a mensagem à fila na hora.
 --
--- Cerca: a MESMA de `complete_instagram_message` (20261029200200) — conta,
+-- Cerca: a MESMA de `complete_instagram_message` (20261103120200) — conta,
 -- `mid`, `claim_id` gravado por `claim_instagram_message` e `status =
 -- 'processing'`. Claim antigo (outro worker já assumiu depois do lease), linha
 -- `done` ou inexistente devolvem `false` sem tocar nada. Ao liberar, `claim_id`

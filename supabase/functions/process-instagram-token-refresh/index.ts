@@ -9,7 +9,7 @@
  * - `refresh` → token do cofre → `graph.refresh` → `record_instagram_token_refresh`.
  *   Graph `reauth_required` muda o status; `transient`/`rate_limited`/outros só
  *   logam (o cron tenta de novo amanhã).
- * As duas escritas levam o `connected_at` lido na varredura (CAS, 20261029200800):
+ * As duas escritas levam o `connected_at` lido na varredura (CAS, 20261103120800):
  * se o dono reconectou no meio, a RPC devolve `false` sem efeito e a conta conta
  * como `skipped_stale` (a conexão nova não cai para `reauth_required` nem tem o
  * token sobrescrito pelo renovado do antigo).
