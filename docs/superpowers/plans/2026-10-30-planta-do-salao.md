@@ -535,7 +535,7 @@ Regras (spec §5.4; a ordem é a prioridade; a primeira que casa vence):
 - **free:** nenhuma das anteriores.
 - Reserva com `released_at` ou `status` `cancelled|no_show` é ignorada. Reserva sem `table_id` não acende mesa nenhuma.
 
-- [ ] **Step 1: Testes que falham** (um `it` por linha):
+- [x] **Step 1: Testes que falham** (um `it` por linha):
   - `brtNow` às `2026-10-31T02:30:00Z` → `{ date: "2026-10-30", minutes: 1410, yesterday: "2026-10-29" }`.
   - Cada situação isolada com uma mesa.
   - **Prioridade:** bloqueio vence ocupada; ocupada vence atrasada na mesma mesa.
@@ -546,10 +546,10 @@ Regras (spec §5.4; a ordem é a prioridade; a primeira que casa vence):
   - **Passante e fila sentados** sem `released_at` → `occupied`; com `released_at` → `free`.
   - **Reserva `pending` daqui a 10 min** → `reserved`, não `arriving`.
   - **`time` com segundos** (`"19:00:00"`) → mesmo resultado que `"19:00"`.
-- [ ] **Step 2:** `npx vitest run src/lib/table-situation-core.test.ts` → FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): situação derivada de cada mesa em BRT`.
+- [x] **Step 2:** `npx vitest run src/lib/table-situation-core.test.ts` → FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): situação derivada de cada mesa em BRT`.
 
 ### Task 8: Relógio de tela e dados ao vivo
 
@@ -570,15 +570,15 @@ Regras (spec §5.4; a ordem é a prioridade; a primeira que casa vence):
     - `["settings", unitId, "reservation_duration_minutes"]`, `.maybeSingle()`: aceita número, string ou `{minutes}`; padrão 90 (mesma regra de `availability.ts:98-112`).
   - As consultas ao vivo usam `refetchInterval` ciente da aba, 30 s. `isError` é verdadeiro se qualquer consulta falhar.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - toda consulta leva `.eq("unit_id", unitId)`;
   - o filtro de reservas contém hoje e ontem em BRT;
   - duração `"120"` → 120, `{ minutes: 75 }` → 75, ausente → 90;
   - erro numa consulta → `isError`.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): dados ao vivo do salão com polling ciente da aba`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): dados ao vivo do salão com polling ciente da aba`.
 
 ### Task 9: Página Salão ao vivo (cena 3D/2D, legenda, painel de leitura, chegadas e fila)
 
@@ -631,30 +631,30 @@ O que a tela faz (mockup `Salao.dc.html`):
   - **`ResumoFila`:** número de grupos aguardando, o próximo ("família X, N pessoas, há N min") e a espera média em minutos (`created_at` até agora, entradas ativas).
 - **Estados:** skeleton; erro com "Tentar de novo" (`refetch`); unidade sem salões ou mesas ("Cadastre salões e mesas na Gestão"); salão sem planta usa a grade automática e mostra o aviso "Planta ainda não desenhada" com link para o editor quando `isGerente`.
 
-- [ ] **Step 1: Testes que falham** (`SalaoAoVivo.test.tsx`, `useSalaoAoVivo` mockado, `matchMedia` controlado):
+- [x] **Step 1: Testes que falham** (`SalaoAoVivo.test.tsx`, `useSalaoAoVivo` mockado, `matchMedia` controlado):
   - legenda com as contagens certas para um conjunto de 5 mesas, uma de cada situação;
   - `matchMedia("(prefers-reduced-motion: reduce)")` verdadeiro renderiza `PlantaCena2D` (`data-testid="planta-2d"`);
   - largura 390 renderiza 2D;
   - tocar na "Mesa 3" mostra no painel o nome do ocupante;
   - tocar numa linha de próximas chegadas seleciona a mesa;
   - `isError` mostra "Tentar de novo".
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar** a página, os componentes, a rota, o menu e a entrada no guard de blur.
-- [ ] **Step 4:** PASS; `npx vitest run src/lib/glass-usage-guard.test.ts` PASS.
-- [ ] **Step 5: Commit** `feat(planta): Salão ao vivo em 3D com legenda, chegadas e fila`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar** a página, os componentes, a rota, o menu e a entrada no guard de blur.
+- [x] **Step 4:** PASS; `npx vitest run src/lib/glass-usage-guard.test.ts` PASS.
+- [x] **Step 5: Commit** `feat(planta): Salão ao vivo em 3D com legenda, chegadas e fila`.
 
 ### Task 10: Desempenho e revisão visual da B3
 
-- [ ] **Step 1: Preparar 40 mesas num salão da MORALLES** pelo cadastro em lote atual (`HallScheduleSheet`) e posicioná-las no editor (B2).
-- [ ] **Step 2: Medir** no Chrome com DevTools Performance, 1194×834, CPU 4×, abrindo `/o/moralles-centro/salao`.
+- [x] **Step 1: Preparar 40 mesas num salão da MORALLES** pelo cadastro em lote atual (`HallScheduleSheet`) e posicioná-las no editor (B2).
+- [x] **Step 2: Medir** no Chrome com DevTools Performance, 1194×834, CPU 4×, abrindo `/o/moralles-centro/salao`.
   - Expected:
     - nenhuma long task acima de 200 ms depois da primeira pintura;
     - toque numa mesa até a atualização do painel abaixo de 100 ms;
     - com o halo ativo em 5 mesas, rolagem do aside sem queda de quadros visível no FPS meter.
   - Anotar os números no STATE.
-- [ ] **Step 3: Se falhar,** reduzir as camadas `translateZ` das mesas (de 4 para 2) e o halo para só `opacity`, e medir de novo. Não trocar a técnica sem o dono.
+- [x] **Step 3: Se falhar,** reduzir as camadas `translateZ` das mesas (de 4 para 2) e o halo para só `opacity`, e medir de novo. Não trocar a técnica sem o dono.
 - [ ] **Step 4: Revisão visual:** 1440×900, 1194×834 e 390×844, nos dois temas, com movimento reduzido ligado; teclado (Tab percorre as mesas por número; Enter seleciona).
-- [ ] **Step 5: Commit** dos ajustes, se houver: `perf(planta): ...`.
+- [x] **Step 5: Commit** dos ajustes, se houver: `perf(planta): ...`.
 
 ---
 

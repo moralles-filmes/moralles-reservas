@@ -81,6 +81,7 @@ const OPassantes   = lazy(() => import("./pages/operacional/Passantes"));
 const OConversas   = lazy(() => import("./pages/operacional/Conversas"));
 const OGiftback    = lazy(() => import("./pages/operacional/Giftback"));
 const OEntregas    = lazy(() => import("./pages/operacional/Entregas"));
+const OSalaoAoVivo = lazy(() => import("./pages/operacional/SalaoAoVivo"));
 
 // ── Platform ──────────────────────────────────────────────────────────────────
 const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
@@ -276,6 +277,7 @@ export default function App() {
               {/* ── Operacional /o/:unitSlug ────────────────────────────── */}
               <Route path="/o/:unitSlug" element={<OperacionalGuard><OReservasDia /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/reservas" element={<OperacionalGuard><OReservasDia /></OperacionalGuard>} />
+              <Route path="/o/:unitSlug/salao" element={<OperacionalGuard><OSalaoAoVivo /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/agenda" element={<OperacionalGuard><OAgenda /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/fila" element={<OperacionalGuard><OFila /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/passantes" element={<OperacionalGuard><OPassantes /></OperacionalGuard>} />
