@@ -544,6 +544,10 @@ export default function Conversas() {
       if (name.includes(term)) return true;
       const contactName = c.contact_name?.toLowerCase() ?? "";
       if (contactName.includes(term)) return true;
+      // "@maria_ig" acha o @username do Instagram, mesmo com outro nome no perfil;
+      // o handle passa pelo mesmo saneamento do termo (que remove o "_").
+      const username = c.instagram_contact?.username?.trim() ?? "";
+      if (username && sanitizeSearchTerm(`@${username.replace(/^@/, "")}`).toLowerCase().includes(term)) return true;
       if (digits.length >= 3) {
         const phone = c.customer?.phone ?? "";
         if (phone.includes(digits)) return true;

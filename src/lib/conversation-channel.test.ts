@@ -51,25 +51,35 @@ describe("persistência do filtro", () => {
   });
 });
 
-describe("getConversationDisplayName: 6 ordens", () => {
+describe("getConversationDisplayName", () => {
   const igContact = { username: "maria_ig", name: "Maria IG" };
-  it("1. nome do cliente (diferente do telefone)", () => {
-    expect(getConversationDisplayName({ channel: "instagram", contact_name: "Perfil", instagram_contact: igContact, customer: { name: "Maria Cliente", phone: "11999999999" } })).toBe("Maria Cliente");
+  // O cliente da conversa do IG vem de telefone DECLARADO (D4): o nome do cadastro nunca aparece.
+  const declarado = { name: "Joana Dona do Número", phone: "11999999999" };
+  it("IG 1. nome do perfil do Instagram, nunca o nome do cadastro ligado pelo telefone", () => {
+    expect(getConversationDisplayName({ channel: "instagram", contact_name: "Perfil", instagram_contact: igContact, customer: declarado })).toBe("Maria IG");
   });
-  it("2. contact_name quando o cliente só tem o telefone como nome", () => {
-    expect(getConversationDisplayName({ channel: "instagram", contact_name: "Perfil", instagram_contact: igContact, customer: { name: "11999999999", phone: "11999999999" } })).toBe("Perfil");
+  it("IG 2. contact_name quando o perfil não tem nome", () => {
+    expect(getConversationDisplayName({ channel: "instagram", contact_name: "Perfil", instagram_contact: { username: "maria_ig", name: null }, customer: declarado })).toBe("Perfil");
   });
-  it("3. @username do contato do Instagram", () => {
-    expect(getConversationDisplayName({ channel: "instagram", contact_name: null, instagram_contact: { username: "maria_ig", name: null }, customer: null })).toBe("@maria_ig");
+  it("IG 3. @username do contato", () => {
+    expect(getConversationDisplayName({ channel: "instagram", contact_name: null, instagram_contact: { username: "maria_ig", name: "  " }, customer: declarado })).toBe("@maria_ig");
   });
-  it("4. telefone formatado", () => {
+  it("IG 4. fallback do Instagram, nem com cadastro nem com telefone", () => {
+    expect(getConversationDisplayName({ channel: "instagram", contact_name: null, instagram_contact: { username: null, name: null }, customer: declarado })).toBe("Contato do Instagram");
+    expect(getConversationDisplayName({ channel: "instagram", contact_name: null, instagram_contact: null, customer: null })).toBe("Contato do Instagram");
+  });
+  it("WA 1. nome do cliente (diferente do telefone)", () => {
+    expect(getConversationDisplayName({ channel: "whatsapp", contact_name: "Perfil", customer: { name: "Maria Cliente", phone: "11999999999" } })).toBe("Maria Cliente");
+  });
+  it("WA 2. contact_name quando o cliente só tem o telefone como nome", () => {
+    expect(getConversationDisplayName({ channel: "whatsapp", contact_name: "Perfil", customer: { name: "11999999999", phone: "11999999999" } })).toBe("Perfil");
+  });
+  it("WA 3. telefone formatado", () => {
     expect(getConversationDisplayName({ channel: "whatsapp", contact_name: null, customer: { name: null, phone: "11999999999" } })).toBe("(11) 99999-9999");
   });
-  it("5. fallback do Instagram", () => {
-    expect(getConversationDisplayName({ channel: "instagram", contact_name: null, instagram_contact: { username: null, name: null }, customer: null })).toBe("Contato do Instagram");
-  });
-  it("6. fallback do WhatsApp", () => {
+  it("WA 4. fallback do WhatsApp (canal ausente conta como WhatsApp)", () => {
     expect(getConversationDisplayName({ channel: "whatsapp", contact_name: null, customer: null })).toBe("Cliente sem nome");
+    expect(getConversationDisplayName({ contact_name: "  ", customer: { name: "Ana", phone: "1" } })).toBe("Ana");
     expect(getConversationDisplayName({ contact_name: "  ", customer: null })).toBe("Cliente sem nome");
   });
 });

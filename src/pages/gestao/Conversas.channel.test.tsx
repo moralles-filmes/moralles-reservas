@@ -255,8 +255,9 @@ describe("Conversa do Instagram: envio, copy e identidade", () => {
   });
 
   it("telefone do cliente ligado aparece como declarado e não há link para a ficha", async () => {
-    openIg(inbound(recent()), { customer_id: "cust", customer: { name: "Maria", phone: "11988887777" } }, "Maria");
+    openIg(inbound(recent()), { customer_id: "cust", customer: { name: "Maria", phone: "11988887777" } });
     await screen.findByText("Oi");
+    expect(screen.queryByText("Maria")).toBeNull();
     const phones = screen.getAllByText(/\(11\) 98888-7777/);
     expect(phones.length).toBeGreaterThan(0);
     for (const el of phones) expect(el.textContent).toMatch(/declarado/i);
@@ -269,6 +270,31 @@ describe("Conversa do Instagram: envio, copy e identidade", () => {
     mount();
     expect(screen.getByText("(11) 99999-9999")).toBeTruthy();
     expect(screen.queryByText(/declarado/i)).toBeNull();
+  });
+
+  it("lista mostra o perfil do IG, não o nome do cadastro ligado pelo telefone declarado", () => {
+    io.list = [ig("i9", "human_active", "maria_ig", {
+      customer_id: "cust", customer: { name: "Joana Dona do Número", phone: "11988887777" },
+      instagram_contact: { username: "maria_ig", name: "Maria Perfil" },
+    })];
+    mount();
+    expect(screen.getByText("Maria Perfil")).toBeTruthy();
+    expect(screen.queryByText(/Joana Dona do Número/)).toBeNull();
+  });
+
+  it("busca pelo @username acha a conversa do IG mesmo com outro nome no perfil", async () => {
+    io.list = [
+      wa("w1", "human_active", "Ana WA"),
+      ig("i9", "human_active", "Maria Perfil", { instagram_contact: { username: "maria_ig", name: "Maria Perfil" } }),
+    ];
+    mount();
+    const search = screen.getByPlaceholderText(/Buscar por nome/);
+    fireEvent.change(search, { target: { value: "@maria_ig" } });
+    await waitFor(() => expect(screen.queryByText("Ana WA")).toBeNull());
+    expect(screen.getByText("Maria Perfil")).toBeTruthy();
+    // Controle: termo que não casa nada esconde também a conversa do IG.
+    fireEvent.change(search, { target: { value: "@outra_conta" } });
+    await waitFor(() => expect(screen.queryByText("Maria Perfil")).toBeNull());
   });
 
   it("rótulo de canal no item da lista", () => {
