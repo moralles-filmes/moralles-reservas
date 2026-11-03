@@ -106,12 +106,20 @@ export function deriveTableStates(input: SituationInput): Map<string, TableState
   const occupants = new Map<string, Occupant[]>();
   const pending = new Map<string, Array<{ id: string; minutes: number; confirmed: boolean }>>();
 
+  // Passante/fila legados ficam `seated` sem `released_at` para sempre: só conta
+  // quem sentou hoje ou ontem (BRT), a mesma janela das reservas.
+  const inWindow = (iso: string) => {
+    const d = brtNow(new Date(iso)).date;
+    return d === brt.date || d === brt.yesterday;
+  };
+
   for (const w of input.walkIns) {
-    if (w.status !== "seated" || w.released_at || !w.seated_at) continue;
+    // Sentado sem `seated_at` não tem como datar: ignora.
+    if (w.status !== "seated" || w.released_at || !w.seated_at || !inWindow(w.seated_at)) continue;
     pushTo(occupants, w.table_id, { kind: "walk_in", id: w.id, since: w.seated_at, partySize: w.party_size });
   }
   for (const f of input.waitlistSeated) {
-    if (f.status !== "seated" || f.released_at || !f.seated_at) continue;
+    if (f.status !== "seated" || f.released_at || !f.seated_at || !inWindow(f.seated_at)) continue;
     pushTo(occupants, f.table_id, { kind: "waitlist", id: f.id, since: f.seated_at, partySize: f.party_size });
   }
   for (const r of input.reservations) {

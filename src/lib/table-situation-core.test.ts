@@ -261,6 +261,41 @@ describe("deriveTableStates", () => {
     expect(b).toEqual(a);
   });
 
+  it("passante sentado há 2 dias sem liberação fica livre", () => {
+    const s = st(input({ walkIns: [walk({ seated_at: "2026-10-28T22:00:00Z" })] }));
+    expect(s.situation).toBe("free");
+  });
+
+  it("fila sentada há 2 dias sem liberação fica livre", () => {
+    const s = st(input({ waitlistSeated: [wait({ seated_at: "2026-10-28T22:00:00Z" })] }));
+    expect(s.situation).toBe("free");
+  });
+
+  it("chegando: confirmada em agora+15 chega, agora+16 é reservada", () => {
+    expect(st(input({ reservations: [res({ time: "19:35" })] })).situation).toBe("arriving");
+    expect(st(input({ reservations: [res({ time: "19:36" })] })).situation).toBe("reserved");
+  });
+
+  it("confirmada exatamente na hora de agora fica chegando", () => {
+    const s = st(input({ reservations: [res({ time: "19:20" })] }));
+    expect(s.situation).toBe("arriving");
+    expect(s.minutesUntil).toBe(0);
+  });
+
+  it("reserva com chegada de 2 dias atrás sem liberação não ocupa", () => {
+    const s = st(
+      input({
+        reservations: [res({ date: "2026-10-28", arrived_at: "2026-10-28T22:00:00Z" })],
+      }),
+    );
+    expect(s.situation).toBe("free");
+  });
+
+  it("reserva de ontem sem chegada não fica atrasada", () => {
+    const s = st(input({ reservations: [res({ date: "2026-10-29" })] }));
+    expect(s.situation).toBe("free");
+  });
+
   it("com mais de um ocupante vence o de since mais antigo", () => {
     const s = st(
       input({
