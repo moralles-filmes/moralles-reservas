@@ -2583,12 +2583,16 @@ async function handleWebhookRequest(
     // recebe "Você é o assistente do Restaurante" e papagueia esse nome.
     // SELECT * garante que colunas novas ficam disponíveis sem mexer na query.
     // O prompt builder (buildRestaurantInfoLines) é o gatekeeper do que entra no prompt.
-    const { data: unitRow } = await supabase
+    const { data: unitRow, error: unitRowError } = await supabase
       .from("units")
       .select("*")
       .eq("id", unitId)
       .maybeSingle();
-    const organizationId: string = unitRow?.organization_id ?? "";
+    // Falha de leitura é retentável: lançar devolve a mensagem à fila. Seguir
+    // com organização vazia cairia na guarda `invalid_channel_context` do
+    // núcleo, que é terminal e perderia a mensagem do cliente sem histórico.
+    if (unitRowError || !unitRow?.organization_id) throw new Error("agent_unit_lookup_failed");
+    const organizationId: string = unitRow.organization_id;
     // Montagem da unidade do prompt: a mesma do Direct (`_shared/agent/unit-context.ts`).
     const agentUnit = buildAgentUnit(unitRow);
 

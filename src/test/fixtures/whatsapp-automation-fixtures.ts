@@ -151,7 +151,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
   const trace: { operation: string; value?: unknown }[] = [], queries: ChatQuery[] = [], unexpected: string[] = [];
   const calls = { sendText: 0, sendTemplate: 0, enqueueAutomation: 0, llm: 0 };
   const sdk: { constructors: unknown[]; requests: { input: unknown; options: unknown }[] } = { constructors: [], requests: [] };
-  const controls = { sendStatus: 200, sdkResponses: [chatSdkMessage()] as unknown[], voucherInsertError: null as string | null,
+  const controls = { sendStatus: 200, sdkResponses: [chatSdkMessage()] as unknown[], voucherInsertError: null as string | null, unitSelectError: null as string | null,
     beforeQuery: async (_query: ChatQuery) => {}, beforeSdk: async (_input: unknown, _options: unknown) => {} };
   const processed = new Map<string, string>();
   const fail = (reason: string): never => { unexpected.push(reason); throw new Error(`unexpected_chat_io:${reason}`); };
@@ -191,6 +191,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
       async function execute(single: boolean, required = false): Promise<{ data: unknown; error: { code: string } | null; count?: number }> {
         await controls.beforeQuery(query);
         trace.push({ operation: `${query.operation}:${table}`, value: structuredClone(query) }); queries.push(query);
+        if (table === 'units' && query.operation === 'select' && query.columns === '*' && controls.unitSelectError) return { data: null, error: { code: controls.unitSelectError } };
         if (query.operation === 'insert') {
           if (!['vouchers','notifications_sent','webhook_executions','ai_usage_logs','whatsapp_inbound_events'].includes(table)) return fail(`insert:${table}`);
           for (const key of Object.keys(query.patch!)) assertColumn(table, key);
