@@ -9,6 +9,7 @@ import {
   useUpdateWalkInStatus,
   useDeleteWalkIn,
 } from "@/hooks/useWalkIns";
+import { useReleaseWalkIn } from "@/hooks/useMesaAcoes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -76,6 +77,7 @@ export default function Passantes() {
   const createWalkIn = useCreateWalkIn(unitId);
   const updateStatus = useUpdateWalkInStatus(unitId);
   const deleteWalkIn = useDeleteWalkIn(unitId);
+  const releaseWalkIn = useReleaseWalkIn(unitId);
 
   const { data: mesas } = useQuery({
     queryKey: ["mesas", unitId],
@@ -109,7 +111,7 @@ export default function Passantes() {
   };
 
   const waiting = walkIns?.filter((w) => w.status === "waiting") ?? [];
-  const seated  = walkIns?.filter((w) => w.status === "seated") ?? [];
+  const seated  = walkIns?.filter((w) => w.status === "seated" && !w.released_at) ?? [];
 
   return (
     <div className="space-y-5">
@@ -150,6 +152,7 @@ export default function Passantes() {
                   mesas={mesas ?? []}
                   onSeat={handleSeat}
                   onStatus={(id, status) => updateStatus.mutate({ id, status })}
+                  onRelease={(id) => releaseWalkIn.mutate({ walkInId: id })}
                   onDelete={(id) => deleteWalkIn.mutate(id)}
                   isUpdating={updateStatus.isPending && updateStatus.variables?.id === w.id}
                   isDeleting={deleteWalkIn.isPending && deleteWalkIn.variables === w.id}
@@ -169,8 +172,9 @@ export default function Passantes() {
                   mesas={mesas ?? []}
                   onSeat={handleSeat}
                   onStatus={(id, status) => updateStatus.mutate({ id, status })}
+                  onRelease={(id) => releaseWalkIn.mutate({ walkInId: id })}
                   onDelete={(id) => deleteWalkIn.mutate(id)}
-                  isUpdating={updateStatus.isPending && updateStatus.variables?.id === w.id}
+                  isUpdating={releaseWalkIn.isPending && releaseWalkIn.variables?.walkInId === w.id}
                   isDeleting={deleteWalkIn.isPending && deleteWalkIn.variables === w.id}
                 />
               ))}
@@ -235,6 +239,7 @@ function WalkInCard({
   mesas,
   onSeat,
   onStatus,
+  onRelease,
   onDelete,
   isUpdating,
   isDeleting,
@@ -243,6 +248,7 @@ function WalkInCard({
   mesas: MesaOption[];
   onSeat: (w: WalkIn, tableId?: string) => void;
   onStatus: (id: string, status: WalkInStatus) => void;
+  onRelease: (id: string) => void;
   onDelete: (id: string) => void;
   isUpdating: boolean;
   isDeleting: boolean;
@@ -327,7 +333,7 @@ function WalkInCard({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => onStatus(walkIn.id, "left")}
+              onClick={() => onRelease(walkIn.id)}
               disabled={isUpdating}
             >
               Foi embora

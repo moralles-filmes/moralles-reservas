@@ -2,6 +2,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useUpdateReservaStatus } from "@/hooks/useReservas";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import { useReservationPresence } from "@/hooks/useMesaAcoes";
+import { brtNow } from "@/lib/table-situation-core";
 import { cn, formatDateBR, formatPhone } from "@/lib/utils";
 import type { Reserva } from "@/types/reserva";
 import { STATUS_COLORS, STATUS_LABELS } from "@/types/reserva";
@@ -30,6 +32,14 @@ export function ReservaCard({ reserva, showActions = false, unitId, confirmation
   // (isGerente cobre owner+gerente; platform_admin entra via pseudo-role "owner".)
   const unit = useCurrentUnit();
   const canCancel = unit?.isGerente ?? false;
+  const presence = useReservationPresence(effectiveUnitId);
+  const isToday = reserva.date === brtNow(new Date()).date;
+  const canArrive =
+    showActions &&
+    isToday &&
+    (reserva.status === "pending" || reserva.status === "confirmed") &&
+    !reserva.arrived_at;
+  const canRelease = showActions && !!reserva.arrived_at && !reserva.released_at;
 
   const handleStatus = async (status: "confirmed" | "cancelled" | "no_show") => {
     try {
@@ -173,6 +183,41 @@ export function ReservaCard({ reserva, showActions = false, unitId, confirmation
                 >
                   Cancelar
                 </Button>
+              )}
+            </div>
+          )}
+
+          {(canArrive || canRelease) && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              {canArrive && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => presence.mutate({ reservationId: reserva.id, action: "arrive" })}
+                  disabled={presence.isPending}
+                >
+                  Chegou
+                </Button>
+              )}
+              {canRelease && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => presence.mutate({ reservationId: reserva.id, action: "release" })}
+                    disabled={presence.isPending}
+                  >
+                    Liberar mesa
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => presence.mutate({ reservationId: reserva.id, action: "undo_arrive" })}
+                    disabled={presence.isPending}
+                  >
+                    Desfazer chegada
+                  </Button>
+                </>
               )}
             </div>
           )}
