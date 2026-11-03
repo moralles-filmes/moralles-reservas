@@ -36,3 +36,31 @@ export function mesaAriaLabel(box: TableBox, state: TableState, now: Date): stri
   }
   return `${head}, ${situationText(state)}`;
 }
+
+export const SCENE_ROT_Z = 36;
+export const SCENE_ROT_X = 56;
+export const SCENE_PERSPECTIVE = 1500;
+
+/** Caixa projetada do plano em cm (rotateZ(-36) e depois rotateX(56), aproximação ortogonal). */
+export function projectedSpanCm(widthCm: number, depthCm: number): { w: number; h: number } {
+  const z = (SCENE_ROT_Z * Math.PI) / 180;
+  const x = (SCENE_ROT_X * Math.PI) / 180;
+  return {
+    w: widthCm * Math.cos(z) + depthCm * Math.sin(z),
+    h: (widthCm * Math.sin(z) + depthCm * Math.cos(z)) * Math.cos(x),
+  };
+}
+
+/**
+ * Escala cm→px para o plano girado caber em largura E altura. Descontamos a ampliação da
+ * perspectiva no canto mais próximo da câmera e uma pequena margem.
+ */
+export function fitSceneScale(widthCm: number, depthCm: number, availW: number, availH: number): number {
+  const span = projectedSpanCm(widthCm, depthCm);
+  const base = Math.min(availW / span.w, availH / span.h) * 0.94;
+  const z = (SCENE_ROT_Z * Math.PI) / 180;
+  const x = (SCENE_ROT_X * Math.PI) / 180;
+  const nearCm = ((widthCm * Math.sin(z) + depthCm * Math.cos(z)) / 2) * Math.sin(x);
+  const mag = SCENE_PERSPECTIVE / Math.max(SCENE_PERSPECTIVE - nearCm * base, SCENE_PERSPECTIVE / 2);
+  return base / mag;
+}

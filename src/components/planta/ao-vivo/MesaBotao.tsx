@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import type { TableBox } from "@/lib/hall-plan-core";
 import type { TableState } from "@/lib/table-situation-core";
 import { SITUATION_TONE, TONE_CLASS } from "../situation-labels";
-import { mesaAriaLabel } from "./scene-geometry";
+import { SCENE_ROT_X, SCENE_ROT_Z, mesaAriaLabel } from "./scene-geometry";
 
 interface Props {
   box: TableBox;
@@ -68,19 +68,30 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
             selected && "ring-2 ring-ring",
           )}
         >
-          <span
-            className="pointer-events-none flex flex-col items-center text-[11px] font-semibold leading-tight"
-            style={{
-              transform: is3d
-                ? `rotate(${-box.rotation}deg) rotateZ(36deg) rotateX(-56deg)`
-                : `rotate(${-box.rotation}deg)`,
-            }}
-          >
-            <span>{box.number}</span>
-            {timeLabel && <span className="text-[10px] font-normal">{timeLabel}</span>}
-          </span>
+          {!is3d && (
+              <span className="pointer-events-none flex flex-col items-center text-[11px] font-semibold leading-tight" style={{ transform: `rotate(${-box.rotation}deg)` }}>
+                <span>{box.number}</span>
+                {timeLabel && <span className="text-[10px] font-normal">{timeLabel}</span>}
+              </span>
+          )}
         </button>
       </div>
+      {is3d && (
+        // Etiqueta em pé, de frente para a câmera: irmã do botão (um <button> sem preserve-3d achataria o texto).
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute left-1/2 top-1/2 h-0 w-0"
+          style={{
+            transform: `translateZ(30px) rotate(${-box.rotation}deg) rotateZ(${SCENE_ROT_Z}deg) rotateX(-${SCENE_ROT_X}deg)`,
+            transformStyle: "preserve-3d",
+          }}
+        >
+          <span className="absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center whitespace-nowrap text-sm font-bold leading-none text-foreground [text-shadow:0_0_4px_hsl(var(--background))]">
+            <span>{box.number}</span>
+            {timeLabel && <span className="mt-0.5 text-[11px] font-medium">{timeLabel}</span>}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

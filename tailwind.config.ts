@@ -144,8 +144,9 @@ export default {
           to: { transform: "scaleY(1)" },
         },
         settle: {
-          from: { transform: "translateY(-16px) scale(0.96)", opacity: "0" },
-          to: { transform: "translateY(0) scale(1)", opacity: "1" },
+          // Sem opacity: opacidade < 1 no invólucro preserve-3d achataria a cena 3D.
+          from: { transform: "translateY(-16px) scale(0.96)" },
+          to: { transform: "translateY(0) scale(1)" },
         },
         halo: {
           "0%": { transform: "scale(1)", opacity: "0.55" },

@@ -2,31 +2,36 @@ import { Component, type ReactNode } from "react";
 import type { PlanWall } from "@/lib/hall-plan-core";
 import { MesaBotao } from "./MesaBotao";
 import { PlantaCena2D, type CenaProps } from "./PlantaCena2D";
-import { WINDOW_STRIPES, entranceRect, wallRect } from "./scene-geometry";
+import {
+  SCENE_PERSPECTIVE,
+  SCENE_ROT_X,
+  SCENE_ROT_Z,
+  WINDOW_STRIPES,
+  entranceRect,
+  fitSceneScale,
+  projectedSpanCm,
+  wallRect,
+} from "./scene-geometry";
 import { useContainerWidth } from "./useContainerWidth";
 
-const ROT_Z = 36;
-const ROT_X = 56;
 const WALL_PX = 6;
 const WALL_RISE_PX = 18;
 const RAISED: PlanWall[] = ["top", "right"];
 
 function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSelect, now }: CenaProps) {
   const { ref, width } = useContainerWidth();
-  const z = (ROT_Z * Math.PI) / 180;
-  const x = (ROT_X * Math.PI) / 180;
-  // Pegada do plano girado: largura na tela e altura achatada pela inclinação.
-  const spanW = plan.widthCm * Math.cos(z) + plan.depthCm * Math.sin(z);
-  const spanH = (plan.widthCm * Math.sin(z) + plan.depthCm * Math.cos(z)) * Math.cos(x);
-  const scale = (width * 0.92) / spanW;
-  const height = Math.max(240, spanH * scale + 64);
+  // Altura disponível: no máximo 70% da janela e 640 px; a escala cabe a caixa projetada nos dois eixos.
+  const maxH = Math.min(typeof window === "undefined" ? 640 : window.innerHeight * 0.7, 640);
+  const scale = fitSceneScale(plan.widthCm, plan.depthCm, width, maxH);
+  const span = projectedSpanCm(plan.widthCm, plan.depthCm);
+  const height = Math.min(maxH, Math.max(240, span.h * scale + 64));
   const wPx = plan.widthCm * scale;
   const dPx = plan.depthCm * scale;
   const entrance = entranceRect(plan, scale, WALL_PX + 2);
 
   return (
     <div ref={ref} className="w-full">
-      <div data-testid="planta-3d" className="relative w-full" style={{ height, perspective: 1500 }}>
+      <div data-testid="planta-3d" className="relative w-full" style={{ height, perspective: SCENE_PERSPECTIVE }}>
         {/* A entrada anima este invólucro: a animação sobrescreve `transform`, então a rotação fica no filho. */}
         <div
           data-testid="planta-3d-entrada"
@@ -43,7 +48,7 @@ function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSele
             data-testid="planta-3d-plano"
             className="absolute inset-0"
             style={{
-              transform: `rotateX(${ROT_X}deg) rotateZ(-${ROT_Z}deg)`,
+              transform: `rotateX(${SCENE_ROT_X}deg) rotateZ(-${SCENE_ROT_Z}deg)`,
               transformStyle: "preserve-3d",
             }}
           >
