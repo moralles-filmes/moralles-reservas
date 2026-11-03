@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { ENTRANCE_CM } from "@/lib/hall-plan-core";
-import type { HallPlan, PlanWall, TableBox } from "@/lib/hall-plan-core";
+import type { HallPlan, TableBox } from "@/lib/hall-plan-core";
 import type { TableState } from "@/lib/table-situation-core";
 import { MesaBotao } from "./MesaBotao";
+import { WINDOW_STRIPES, entranceRect, wallRect } from "./scene-geometry";
+import { useContainerWidth } from "./useContainerWidth";
 
 export interface CenaProps {
   plan: HallPlan;
@@ -15,50 +15,6 @@ export interface CenaProps {
 }
 
 const WALL_PX = 4;
-
-export const WINDOW_STRIPES =
-  "repeating-linear-gradient(90deg, hsl(var(--primary)) 0 8px, transparent 8px 14px)";
-
-export function wallRect(wall: PlanWall, thickness: number): React.CSSProperties {
-  switch (wall) {
-    case "top":
-      return { top: 0, left: 0, right: 0, height: thickness };
-    case "bottom":
-      return { bottom: 0, left: 0, right: 0, height: thickness };
-    case "left":
-      return { left: 0, top: 0, bottom: 0, width: thickness };
-    default:
-      return { right: 0, top: 0, bottom: 0, width: thickness };
-  }
-}
-
-export function entranceRect(plan: HallPlan, scale: number, thickness: number): React.CSSProperties | null {
-  const e = plan.entrance;
-  if (!e) return null;
-  const horizontal = e.wall === "top" || e.wall === "bottom";
-  return horizontal
-    ? { [e.wall]: 0, left: e.offsetCm * scale, width: ENTRANCE_CM * scale, height: thickness }
-    : { [e.wall]: 0, top: e.offsetCm * scale, height: ENTRANCE_CM * scale, width: thickness };
-}
-
-/** Largura útil do contêiner; jsdom não tem ResizeObserver, então cai num padrão. */
-export function useContainerWidth(fallback = 600) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(fallback);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => {
-      if (el.clientWidth > 0) setWidth(el.clientWidth);
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return { ref, width };
-}
 
 /** Vista de cima, mesmas caixas da cena 3D. */
 export function PlantaCena2D({ plan, boxes, states, timeLabels, selectedId, onSelect, now }: CenaProps) {

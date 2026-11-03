@@ -1,7 +1,9 @@
 import { Component, type ReactNode } from "react";
 import type { PlanWall } from "@/lib/hall-plan-core";
 import { MesaBotao } from "./MesaBotao";
-import { PlantaCena2D, WINDOW_STRIPES, entranceRect, useContainerWidth, wallRect, type CenaProps } from "./PlantaCena2D";
+import { PlantaCena2D, type CenaProps } from "./PlantaCena2D";
+import { WINDOW_STRIPES, entranceRect, wallRect } from "./scene-geometry";
+import { useContainerWidth } from "./useContainerWidth";
 
 const ROT_Z = 36;
 const ROT_X = 56;
@@ -23,61 +25,71 @@ function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSele
   const entrance = entranceRect(plan, scale, WALL_PX + 2);
 
   return (
-    <div ref={ref} className="w-full" style={{ perspective: 1500 }}>
-      <div data-testid="planta-3d" className="relative w-full" style={{ height }}>
+    <div ref={ref} className="w-full">
+      <div data-testid="planta-3d" className="relative w-full" style={{ height, perspective: 1500 }}>
+        {/* A entrada anima este invólucro: a animação sobrescreve `transform`, então a rotação fica no filho. */}
         <div
+          data-testid="planta-3d-entrada"
           className="absolute left-1/2 top-1/2 motion-safe:animate-settle"
           style={{
             width: wPx,
             height: dPx,
             marginLeft: -wPx / 2,
             marginTop: -dPx / 2,
-            transform: `rotateX(${ROT_X}deg) rotateZ(-${ROT_Z}deg)`,
             transformStyle: "preserve-3d",
           }}
         >
-          <div aria-hidden="true" className="surface absolute inset-0 rounded-md" />
-          {RAISED.map((wall) => (
-            <div key={wall} aria-hidden="true" className="absolute inset-0" style={{ transformStyle: "preserve-3d" }}>
-              <div className="absolute bg-muted-foreground/30" style={wallRect(wall, WALL_PX)} />
+          <div
+            data-testid="planta-3d-plano"
+            className="absolute inset-0"
+            style={{
+              transform: `rotateX(${ROT_X}deg) rotateZ(-${ROT_Z}deg)`,
+              transformStyle: "preserve-3d",
+            }}
+          >
+            <div aria-hidden="true" className="surface absolute inset-0 rounded-md" />
+            {RAISED.map((wall) => (
+              <div key={wall} aria-hidden="true" className="absolute inset-0" style={{ transformStyle: "preserve-3d" }}>
+                <div className="absolute bg-muted-foreground/30" style={wallRect(wall, WALL_PX)} />
+                <div
+                  className="absolute bg-muted-foreground/60"
+                  style={{ ...wallRect(wall, WALL_PX), transform: `translateZ(${WALL_RISE_PX}px)` }}
+                />
+              </div>
+            ))}
+            {plan.windowWalls.map((wall) => (
               <div
-                className="absolute bg-muted-foreground/60"
-                style={{ ...wallRect(wall, WALL_PX), transform: `translateZ(${WALL_RISE_PX}px)` }}
+                key={wall}
+                aria-hidden="true"
+                className="absolute"
+                style={{
+                  ...wallRect(wall, WALL_PX),
+                  backgroundImage: WINDOW_STRIPES,
+                  transform: `translateZ(${RAISED.includes(wall) ? WALL_RISE_PX + 1 : 1}px)`,
+                }}
               />
-            </div>
-          ))}
-          {plan.windowWalls.map((wall) => (
-            <div
-              key={wall}
-              aria-hidden="true"
-              className="absolute"
-              style={{
-                ...wallRect(wall, WALL_PX),
-                backgroundImage: WINDOW_STRIPES,
-                transform: `translateZ(${RAISED.includes(wall) ? WALL_RISE_PX + 1 : 1}px)`,
-              }}
-            />
-          ))}
-          {entrance && (
-            <div
-              aria-hidden="true"
-              className="absolute rounded-sm bg-foreground"
-              style={{ ...entrance, transform: "translateZ(2px)" }}
-            />
-          )}
-          {boxes.map((box) => (
-            <MesaBotao
-              key={box.tableId}
-              variant="3d"
-              box={box}
-              state={states.get(box.tableId)}
-              scale={scale}
-              selected={box.tableId === selectedId}
-              onSelect={onSelect}
-              timeLabel={timeLabels.get(box.tableId)}
-              now={now}
-            />
-          ))}
+            ))}
+            {entrance && (
+              <div
+                aria-hidden="true"
+                className="absolute rounded-sm bg-foreground"
+                style={{ ...entrance, transform: "translateZ(2px)" }}
+              />
+            )}
+            {boxes.map((box) => (
+              <MesaBotao
+                key={box.tableId}
+                variant="3d"
+                box={box}
+                state={states.get(box.tableId)}
+                scale={scale}
+                selected={box.tableId === selectedId}
+                onSelect={onSelect}
+                timeLabel={timeLabels.get(box.tableId)}
+                now={now}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>

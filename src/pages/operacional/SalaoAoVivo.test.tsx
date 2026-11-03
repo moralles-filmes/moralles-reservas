@@ -104,4 +104,21 @@ describe("SalaoAoVivo", () => {
     fireEvent.click(screen.getByRole("button", { name: "Tentar de novo" }));
     expect(hookData.refetch).toHaveBeenCalled();
   });
+
+  it("o plano girado do 3D não carrega a animação de entrada, que sobrescreveria o transform", () => {
+    renderPage();
+    const plano = screen.getByTestId("planta-3d-plano");
+    expect(plano.style.transform).toContain("rotateX(56deg)");
+    expect(plano.style.transform).toContain("rotateZ(-36deg)");
+    expect(plano.className).not.toContain("animate-settle");
+    expect(screen.getByTestId("planta-3d-entrada").className).toContain("animate-settle");
+  });
+
+  it("reserva em mesa fora da planta não aparece como sem mesa", () => {
+    current = { ...hookData, reservations: [...hookData.reservations, res("r9", "t-inativa", "18:00")] };
+    renderPage();
+    const linha = within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r9").closest("button")!;
+    expect(linha).toHaveTextContent("em mesa fora da planta");
+    expect(linha).not.toHaveTextContent("sem mesa");
+  });
 });

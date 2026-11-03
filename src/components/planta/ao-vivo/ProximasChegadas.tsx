@@ -29,9 +29,8 @@ export function ProximasChegadas({ reservations, tables, today, onPick }: Props)
         <ul className="space-y-1">
           {rows.map((r) => {
             const table = tables.find((t) => t.id === r.table_id) ?? null;
-            const detail = `${r.party_size} ${r.party_size === 1 ? "pessoa" : "pessoas"} ${
-              table ? `na mesa ${table.number}` : "sem mesa"
-            }`;
+            const where = r.table_id == null ? "sem mesa" : table ? `na mesa ${table.number}` : "em mesa fora da planta";
+            const detail = `${r.party_size} ${r.party_size === 1 ? "pessoa" : "pessoas"} ${where}`;
             return (
               <li key={r.id}>
                 <button
