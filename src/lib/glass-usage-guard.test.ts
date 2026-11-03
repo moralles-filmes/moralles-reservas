@@ -24,6 +24,7 @@ const ALLOWED_BLUR_FILES = [
   "src/pages/Auth.tsx",
   "src/pages/ResetPassword.tsx",
   "src/pages/gestao/Conta.tsx",
+  "src/pages/operacional/SalaoAoVivo.tsx",
 ];
 
 const readCss = () => fs.readFileSync(path.resolve(process.cwd(), "src/index.css"), "utf8");

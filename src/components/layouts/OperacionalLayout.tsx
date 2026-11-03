@@ -20,6 +20,7 @@ import {
   LogOut,
   MailWarning,
   MessageCircle,
+  LayoutGrid,
   Settings,
   Users,
   UtensilsCrossed,
@@ -46,6 +47,7 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
     badge?: number;
   }> = [
     { to: base,                label: "Reservas do dia", icon: CalendarIcon, end: true },
+    { to: `${base}/salao`,     label: "Salão ao vivo",   icon: LayoutGrid },
     { to: `${base}/agenda`,    label: "Calendário",      icon: CalendarDays },
     { to: `${base}/fila`,      label: "Fila de espera",  icon: Users },
     { to: `${base}/passantes`, label: "Walk-ins",        icon: UtensilsCrossed },
