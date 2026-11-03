@@ -1028,8 +1028,8 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 - Create: `src/pages/public/Privacidade.tsx`, `src/pages/public/PrivacidadeExclusao.tsx`
 - Modify: `src/App.tsx` (rotas públicas)
 
-- [ ] **Step 1: Peça ao responsável os dois textos.** Sem texto, a task fica pendente e **não vai com placeholder**. O Bloco 6 não publica o app Meta sem as duas URLs no ar.
-- [ ] **Step 2: Implemente com o texto fornecido, no tema público, e com um teste de render. Commit** `feat(portal): política de privacidade e exclusão de dados`.
+- [x] **Step 1: Peça ao responsável os dois textos.** Sem texto, a task fica pendente e **não vai com placeholder**. O Bloco 6 não publica o app Meta sem as duas URLs no ar.
+- [x] **Step 2: Implemente com o texto fornecido, no tema público, e com um teste de render. Commit** `feat(portal): política de privacidade e exclusão de dados`.
 
 ### Task 5.6: gates do Bloco 5
 
@@ -1416,7 +1416,7 @@ Execução por tarefa: implementador Sonnet; revisão Opus em 5.1, 5.3 (callback
 - 5.3 (página da loja e callback): `57c69fa`, `88975d5` (uma rodada de endurecimento do callback).
 - 5.4 (Conversas por canal e herança do Bloco 4): `cdcbd65`, `b81ebcf`, `4dbf0fa` (uma rodada).
 - 5.6 (copy, regras e gate de tenant): `0cdd900`, `0a2a9e2`, `9e7bb85`, `f131f24`; revisão final do bloco: `485768e`.
-- 5.5: **pendente**, à espera dos dois textos do responsável (política de privacidade e exclusão de dados). Sem placeholder. O Bloco 6 não publica o app Meta sem as duas URLs no ar.
+- 5.5: **concluída** (2026-11-03). A pedido do responsável, o agente redigiu os textos a partir do que o sistema guarda (revoga D8 nesse ponto); a identificação (razão social, CNPJ, e-mail) veio do responsável e mora só em `src/pages/public/legal-identity.ts`, com teste que reprova campo vazio. Pendências: revisão jurídica recomendada; exclusão de contato IG sem cliente segue só por SQL (prometida na página); no rebase do Bloco 6, incluir `/privacidade*` nas rotas de tema Dia (`theme-routes.ts` + script do `index.html`).
 
 **Desvios do texto do plano (rulings):**
 - **R5-a:** `unit_module_grants` é FORCE RLS sem grant a `authenticated`; liberar/ler o módulo usa as RPCs `set_unit_module_grant`/`get_unit_modules`.

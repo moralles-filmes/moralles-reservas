@@ -22,6 +22,8 @@ const AcompanharReserva = lazy(() => import("./pages/AcompanharReserva"));
 const Auth = lazy(() => import("./pages/Auth"));
 const ResetPassword = lazy(() => import("./pages/ResetPassword"));
 const PreferenciasMensagens = lazy(() => import("./pages/public/PreferenciasMensagens"));
+const Privacidade = lazy(() => import("./pages/public/Privacidade"));
+const PrivacidadeExclusao = lazy(() => import("./pages/public/PrivacidadeExclusao"));
 
 // ── Gestão ────────────────────────────────────────────────────────────────────
 const GDashboard = lazy(() => import("./pages/gestao/Dashboard"));
@@ -220,6 +222,8 @@ export default function App() {
               <Route path="/m/:slug" element={<MenuPortal />} />
               <Route path="/acompanhar/:token" element={<AcompanharReserva />} />
               <Route path="/preferencias/mensagens/:token" caseSensitive element={<PreferenciasMensagens />} />
+              <Route path="/privacidade" element={<Privacidade />} />
+              <Route path="/privacidade/exclusao-de-dados" element={<PrivacidadeExclusao />} />
               <Route path="/admin/login" element={<Auth />} />
               <Route path="/reset-password" element={<ResetPassword />} />
               {/* Retorno do OAuth da Meta: autenticada, fora do GestaoGuard (a unidade vem do state na EF). */}
