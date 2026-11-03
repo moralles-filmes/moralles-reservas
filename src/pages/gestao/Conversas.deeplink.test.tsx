@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Conversas from "./Conversas";
 
@@ -24,16 +24,17 @@ vi.mock("@/hooks/useWhatsappTemplates", () => ({
 }));
 vi.mock("@/components/billing/WhatsappServiceBanner", () => ({ WhatsappServiceBanner: () => null }));
 vi.mock("@/lib/supabase", () => ({ supabase: {
-  from: () => { const q: Record<string, unknown> = {}; q.select = () => q; q.eq = () => q;
-    q.single = async () => ({ data: { ...io.list[0], messages: [] }, error: null }); return q; },
+  from: () => { const q: Record<string, unknown> = {}; let id: unknown; q.select = () => q; q.eq = (c: string, v: unknown) => { if (c === "id") id = v; return q; };
+    q.single = async () => ({ data: { ...(io.list.find((c) => c.id === id) ?? io.list[0]), messages: [] }, error: null }); return q; },
   channel: () => ({ on() { return this; }, subscribe() { return this; } }), removeChannel: vi.fn(),
 } }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: io.info } }));
 
 function Loc() { const l = useLocation(); return <div data-testid="loc">{l.search}</div>; }
+function Nav() { const n = useNavigate(); return <button onClick={() => n("/g/loja/conversas?cliente=c1")}>ir</button>; }
 function mount(search: string) {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <MemoryRouter initialEntries={[`/g/loja/conversas${search}`]}><Conversas /><Loc /></MemoryRouter></QueryClientProvider>);
+    <MemoryRouter initialEntries={[`/g/loja/conversas${search}`]}><Conversas /><Loc /><Nav /></MemoryRouter></QueryClientProvider>);
 }
 
 beforeEach(() => { io.info.mockReset(); io.loading = false; io.error = false; });
@@ -44,6 +45,7 @@ describe("Conversas deep link ?cliente=", () => {
     mount("?cliente=c1&x=1");
     await waitFor(() => expect(screen.getByPlaceholderText(/Digite a mensagem/)).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe("?x=1"));
+    await waitFor(() => expect(screen.getAllByText("Cliente Um").length).toBeGreaterThan(1));
     expect(io.info).not.toHaveBeenCalled();
   });
 
@@ -64,6 +66,24 @@ describe("Conversas deep link ?cliente=", () => {
 
   it("não processa enquanto carrega", async () => {
     io.list = []; io.loading = true;
+    mount("?cliente=c1");
+    expect(io.info).not.toHaveBeenCalled();
+    expect(screen.getByTestId("loc").textContent).toBe("?cliente=c1");
+  });
+
+  it("uma segunda navegação para o mesmo cliente na página montada reabre a conversa", async () => {
+    io.list = [mk("c-b", "c1", "Cliente Um")];
+    mount("?cliente=c1");
+    await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe(""));
+    fireEvent.click(screen.getByLabelText("Voltar para a lista"));
+    await waitFor(() => expect(screen.queryByPlaceholderText(/Digite a mensagem/)).toBeNull());
+    fireEvent.click(screen.getByText("ir"));
+    await waitFor(() => expect(screen.getByPlaceholderText(/Digite a mensagem/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe(""));
+  });
+
+  it("com erro na lista, não avisa e mantém o parâmetro", () => {
+    io.list = []; io.error = true;
     mount("?cliente=c1");
     expect(io.info).not.toHaveBeenCalled();
     expect(screen.getByTestId("loc").textContent).toBe("?cliente=c1");

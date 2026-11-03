@@ -485,7 +485,11 @@ export default function Conversas() {
   // só depois de a lista carregar, e remove o parâmetro para não reabrir ao trocar de filtro.
   const clienteParam = searchParams.get("cliente");
   useEffect(() => {
-    if (!clienteParam || !allConversations || isLoading || isError) return;
+    if (!clienteParam) {
+      handledClienteRef.current = null;
+      return;
+    }
+    if (!allConversations || isLoading || isError) return;
     if (handledClienteRef.current === clienteParam) return;
     handledClienteRef.current = clienteParam;
     const target = allConversations.find((c) => c.customer_id === clienteParam);
