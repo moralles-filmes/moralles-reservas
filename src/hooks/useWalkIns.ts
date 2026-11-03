@@ -39,10 +39,15 @@ export function useCreateWalkIn(unitId: string) {
       customer_phone?: string | null;
       party_size: number;
       notes?: string | null;
+      table_id?: string | null;
+      /** Já nasce sentado na mesa: status, seated_at e table_id numa linha só. */
+      seated?: boolean;
     }) => {
+      const { seated, ...fields } = payload;
       const { error } = await supabase.from("walk_ins").insert({
         unit_id: unitId,
-        ...payload,
+        ...fields,
+        ...(seated ? { status: "seated", seated_at: new Date().toISOString() } : {}),
       });
       if (error) throw error;
     },

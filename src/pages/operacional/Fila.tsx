@@ -16,11 +16,7 @@ import {
   deliveryTooltip,
 } from "@/hooks/useNotificationDeliveries";
 import { DeliveryBadge } from "@/components/notifications/DeliveryBadge";
-import {
-  WAITLIST_TEMPLATES,
-  renderWaitlistTemplate,
-  useWaitlistTemplates,
-} from "@/hooks/useWaitlistTemplates";
+import { useWaitlistTemplates } from "@/hooks/useWaitlistTemplates";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -45,6 +41,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { buildWaitlistMessage } from "@/lib/waitlist-message";
 import { cn, formatPhone } from "@/lib/utils";
 import { validateBrPhone } from "@/lib/phone";
 import type {
@@ -166,24 +163,12 @@ export default function Fila() {
     }
   };
 
-  // Monta a mensagem de um evento de fila (template customizado ou default).
-  // Paridade com as edge functions: `.trim()` + mesmos fallbacks.
-  const buildWaitlistMessage = (
-    entry: WaitlistEntry,
-    event: "entered" | "table_ready",
-  ) => {
-    const tpl = templates?.find((t) => t.event === event);
-    const defaultBody =
-      WAITLIST_TEMPLATES.find((t) => t.event === event)?.defaultBody ?? "";
-    const body = tpl?.customized && tpl.body && tpl.body.trim() ? tpl.body : defaultBody;
-    return renderWaitlistTemplate(body, {
-      cliente_nome: entry.customer_name,
-      unidade_nome: unit?.unit_name || "nosso restaurante",
-      party_size: entry.party_size,
-      codigo_fila: entry.code,
-      link_status: `${window.location.origin}/acompanhar/${entry.id}`,
+  const buildMessage = (entry: WaitlistEntry, event: "entered" | "table_ready") =>
+    buildWaitlistMessage(entry, event, {
+      templates,
+      unitName: unit?.unit_name,
+      origin: window.location.origin,
     });
-  };
 
   const handleNotify = (entry: WaitlistEntry) => {
     if (!entry.customer_phone) {
@@ -192,7 +177,7 @@ export default function Fila() {
     }
     if (notifyingIds.has(entry.id)) return; // evita double-click na mesma entry
 
-    const message = buildWaitlistMessage(entry, "table_ready");
+    const message = buildMessage(entry, "table_ready");
 
     setNotifyingIds((prev) => {
       const next = new Set(prev);
@@ -231,7 +216,7 @@ export default function Fila() {
     resendEntered.mutate({
       id: entry.id,
       phone: entry.customer_phone,
-      message: buildWaitlistMessage(entry, "entered"),
+      message: buildMessage(entry, "entered"),
     });
   };
 
