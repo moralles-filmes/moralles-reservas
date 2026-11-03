@@ -61,7 +61,9 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
             "pointer-events-auto absolute inset-0 flex select-none items-center justify-center border-2 text-foreground",
             "transition-transform duration-200 ease-out-expo motion-safe:active:scale-95",
             "after:absolute after:left-1/2 after:top-1/2 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
-            "coarse:after:h-11 coarse:after:w-11",
+            // No 3D o plano está inclinado (rotateX 56°): a altura projetada encolhe para cos(56°) ≈ 0,56,
+            // então o alvo precisa de ≥ 44/0,56 ≈ 79 px de altura no plano para seguir com 44 px na tela.
+            is3d ? "coarse:after:h-20 coarse:after:w-11" : "coarse:after:h-11 coarse:after:w-11",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             shape,
             cls.cap,

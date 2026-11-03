@@ -1,4 +1,5 @@
 import type { WaitlistEntry } from "@/types/reserva";
+import { brtNow } from "@/lib/table-situation-core";
 
 interface Props {
   entries: WaitlistEntry[];
@@ -9,7 +10,11 @@ const minutesSince = (iso: string, now: Date) =>
   Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 60_000));
 
 export function ResumoFila({ entries, now }: Props) {
-  const sorted = [...entries].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  // Só entradas criadas hoje (BRT): fila esquecida de dias atrás não infla a espera média.
+  const today = brtNow(now).date;
+  const sorted = entries
+    .filter((e) => brtNow(new Date(e.created_at)).date === today)
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   const next = sorted[0];
   const avg = sorted.length
     ? Math.round(sorted.reduce((sum, e) => sum + minutesSince(e.created_at, now), 0) / sorted.length)

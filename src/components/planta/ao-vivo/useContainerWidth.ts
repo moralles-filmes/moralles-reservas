@@ -18,3 +18,22 @@ export function useContainerWidth(fallback = 600) {
   }, []);
   return { ref, width };
 }
+
+/** Altura da janela, acompanhando resize e rotação do aparelho; 900 fora do navegador. */
+export function useViewportHeight(fallback = 900) {
+  const read = () => (typeof window === "undefined" || !window.innerHeight ? fallback : window.innerHeight);
+  const [height, setHeight] = useState(read);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const update = () => setHeight(read());
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return height;
+}

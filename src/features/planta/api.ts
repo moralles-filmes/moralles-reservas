@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase";
-import type { Hall, Mesa, PlanWall, Reserva, WaitlistEntry } from "@/types/reserva";
+import type { Hall, Mesa, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 import type { BlockWindow } from "@/lib/table-situation-core";
 
 /** Colunas de `Mesa`, com a planta (`plan_*`). */
@@ -98,27 +98,44 @@ export async function fetchSalaoReservations(unitId: string, today: string, yest
   return (data ?? []) as Reserva[];
 }
 
-/** Fila sentada em mesa e ainda não liberada. */
-export async function fetchSalaoSeatedWaitlist(unitId: string): Promise<WaitlistEntry[]> {
+// Estas consultas são limitadas a ≤ 2 dias (hoje e ontem em BRT), bem abaixo do teto de 1000 linhas do PostgREST.
+
+/** Fila sentada em mesa e ainda não liberada, com `seated_at` desde ontem (BRT). */
+export async function fetchSalaoSeatedWaitlist(unitId: string, yesterday: string): Promise<WaitlistEntry[]> {
   const { data, error } = await supabase
     .from("waitlist")
     .select("*")
     .eq("unit_id", unitId)
     .eq("status", "seated")
     .not("table_id", "is", null)
-    .is("released_at", null);
+    .is("released_at", null)
+    .gte("seated_at", `${yesterday}T00:00:00-03:00`);
   if (error) throw error;
   return (data ?? []) as WaitlistEntry[];
 }
 
+/** Passantes sentados em mesa e ainda não liberados, com `seated_at` desde ontem (BRT). */
+export async function fetchSalaoSeatedWalkIns(unitId: string, yesterday: string): Promise<WalkIn[]> {
+  const { data, error } = await supabase
+    .from("walk_ins")
+    .select("*, table:tables(number)")
+    .eq("unit_id", unitId)
+    .eq("status", "seated")
+    .not("table_id", "is", null)
+    .is("released_at", null)
+    .gte("seated_at", `${yesterday}T00:00:00-03:00`);
+  if (error) throw error;
+  return (data ?? []) as WalkIn[];
+}
+
 /** Bloqueios que tocam o dia BRT; a janela exata de "agora" é aplicada pela função pura. */
-export async function fetchSalaoBlocks(unitId: string, today: string): Promise<BlockWindow[]> {
+export async function fetchSalaoBlocks(unitId: string, today: string, tomorrow: string): Promise<BlockWindow[]> {
   const { data, error } = await supabase
     .from("table_blocks")
     .select("table_id, hall_id, blocked_from, blocked_to")
     .eq("unit_id", unitId)
     .gte("blocked_to", `${today}T00:00:00-03:00`)
-    .lte("blocked_from", `${today}T23:59:59-03:00`);
+    .lt("blocked_from", `${tomorrow}T00:00:00-03:00`);
   if (error) throw error;
   return (data ?? []) as BlockWindow[];
 }

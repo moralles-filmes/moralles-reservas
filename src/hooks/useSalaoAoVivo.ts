@@ -4,12 +4,12 @@ import {
   fetchSalaoDurationSetting,
   fetchSalaoPlan,
   fetchSalaoReservations,
+  fetchSalaoSeatedWalkIns,
   fetchSalaoSeatedWaitlist,
 } from "@/features/planta/api";
 import { brtNow } from "@/lib/table-situation-core";
 import { useNow } from "./useNow";
 import { useWaitlist } from "./useWaitlist";
-import { useWalkIns } from "./useWalkIns";
 
 const DEFAULT_DURATION_MINUTES = 90;
 
@@ -34,7 +34,7 @@ export function parseDurationMinutes(raw: unknown): number {
 /** Dados ao vivo da planta do salão. Hoje/ontem em BRT rolam à meia-noite via `useNow`. */
 export function useSalaoAoVivo(unitId: string) {
   const now = useNow();
-  const { date: today, yesterday } = brtNow(now);
+  const { date: today, yesterday, tomorrow } = brtNow(now);
   const enabled = !!unitId;
 
   const plan = useQuery({
@@ -48,17 +48,22 @@ export function useSalaoAoVivo(unitId: string) {
     enabled,
     refetchInterval: pollWhenVisible,
   });
-  const walkIns = useWalkIns(unitId, true);
+  const walkIns = useQuery({
+    queryKey: ["walk-ins", unitId, "salao", today],
+    queryFn: () => fetchSalaoSeatedWalkIns(unitId, yesterday),
+    enabled,
+    refetchInterval: pollWhenVisible,
+  });
   const waitlist = useWaitlist(unitId, true);
   const seated = useQuery({
     queryKey: ["waitlist", unitId, "seated-at-table"],
-    queryFn: () => fetchSalaoSeatedWaitlist(unitId),
+    queryFn: () => fetchSalaoSeatedWaitlist(unitId, yesterday),
     enabled,
     refetchInterval: pollWhenVisible,
   });
   const blocks = useQuery({
     queryKey: ["table-blocks", unitId, "salao", today],
-    queryFn: () => fetchSalaoBlocks(unitId, today),
+    queryFn: () => fetchSalaoBlocks(unitId, today, tomorrow),
     enabled,
     refetchInterval: pollWhenVisible,
   });
@@ -79,6 +84,8 @@ export function useSalaoAoVivo(unitId: string) {
     blocks: blocks.data ?? [],
     durationMinutes: parseDurationMinutes(duration.data),
     isLoading: all.some((q) => q.isLoading),
+    /** Há dados da planta em cache: um erro de refetch não deve derrubar a cena. */
+    hasData: plan.data !== undefined,
     isError: all.some((q) => q.isError),
     refetch: () => {
       all.forEach((q) => void q.refetch());

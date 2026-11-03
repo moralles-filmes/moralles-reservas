@@ -82,7 +82,12 @@ describe("brtNow", () => {
       date: "2026-10-30",
       minutes: 1410,
       yesterday: "2026-10-29",
+      tomorrow: "2026-10-31",
     });
+  });
+
+  it("amanhã vira o mês e o ano em BRT", () => {
+    expect(brtNow(new Date("2026-12-31T15:00:00Z")).tomorrow).toBe("2027-01-01");
   });
 });
 

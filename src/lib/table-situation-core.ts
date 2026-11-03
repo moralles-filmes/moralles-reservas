@@ -7,6 +7,7 @@ export interface BrtNow {
   date: string;
   minutes: number;
   yesterday: string;
+  tomorrow: string;
 }
 
 export interface Occupant {
@@ -70,7 +71,9 @@ export function brtNow(now: Date): BrtNow {
   // Ontem em BRT: meio-dia UTC da data de hoje menos 24h evita borda de fuso.
   const y = new Date(`${date}T12:00:00Z`);
   y.setUTCDate(y.getUTCDate() - 1);
-  return { date, minutes, yesterday: y.toISOString().slice(0, 10) };
+  const t = new Date(`${date}T12:00:00Z`);
+  t.setUTCDate(t.getUTCDate() + 1);
+  return { date, minutes, yesterday: y.toISOString().slice(0, 10), tomorrow: t.toISOString().slice(0, 10) };
 }
 
 function toMinutes(time: string): number {

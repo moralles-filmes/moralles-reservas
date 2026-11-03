@@ -12,7 +12,7 @@ import {
   projectedSpanCm,
   wallRect,
 } from "./scene-geometry";
-import { useContainerWidth } from "./useContainerWidth";
+import { useContainerWidth, useViewportHeight } from "./useContainerWidth";
 
 const WALL_PX = 6;
 const WALL_RISE_PX = 18;
@@ -21,7 +21,8 @@ const RAISED: PlanWall[] = ["top", "right"];
 function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSelect, now }: CenaProps) {
   const { ref, width } = useContainerWidth();
   // Altura disponível: no máximo 70% da janela e 640 px; a escala cabe a caixa projetada nos dois eixos.
-  const maxH = Math.min(typeof window === "undefined" ? 640 : window.innerHeight * 0.7, 640);
+  const viewportH = useViewportHeight();
+  const maxH = Math.min(viewportH * 0.7, 640);
   const scale = fitSceneScale(plan.widthCm, plan.depthCm, width, maxH);
   const span = projectedSpanCm(plan.widthCm, plan.depthCm);
   const height = Math.min(maxH, Math.max(240, span.h * scale + 64));

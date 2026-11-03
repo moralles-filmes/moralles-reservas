@@ -36,8 +36,9 @@ const hookData = {
 let current: typeof hookData = hookData;
 
 vi.mock("@/hooks/useSalaoAoVivo", () => ({ useSalaoAoVivo: () => current }));
+let currentUnitId = "u1";
 vi.mock("@/hooks/useCurrentUnit", () => ({
-  useCurrentUnit: () => ({ unit_id: "u1", unit_slug: "moralles", isGerente: true }),
+  useCurrentUnit: () => ({ unit_id: currentUnitId, unit_slug: "moralles", isGerente: true }),
 }));
 
 function setMedia(matches: (q: string) => boolean) {
@@ -54,6 +55,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
   current = hookData;
+  currentUnitId = "u1";
   setMedia(() => false);
   localStorage.clear();
 });
@@ -103,6 +105,53 @@ describe("SalaoAoVivo", () => {
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: "Tentar de novo" }));
     expect(hookData.refetch).toHaveBeenCalled();
+  });
+
+  it("unidade ainda vazia mostra o esqueleto, não o estado vazio", () => {
+    currentUnitId = "";
+    current = { ...hookData, halls: [], tables: [] };
+    const { container } = renderPage();
+    expect(screen.queryByText("Cadastre salões e mesas na Gestão")).toBeNull();
+    expect(container.querySelector(".animate-pulse")).not.toBeNull();
+  });
+
+  it("erro de refetch com dados em cache mantém a cena e avisa Dados desatualizados", () => {
+    current = { ...hookData, isError: true, hasData: true } as typeof hookData;
+    renderPage();
+    expect(screen.getByTestId("planta-3d")).toBeInTheDocument();
+    expect(screen.queryByText("Não foi possível carregar o salão.")).toBeNull();
+    expect(screen.getByText("Dados desatualizados")).toBeInTheDocument();
+    hookData.refetch.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Tentar de novo" }));
+    expect(hookData.refetch).toHaveBeenCalled();
+  });
+
+  it("trocar de salão pelo seletor limpa a mesa selecionada; próximas chegadas não", () => {
+    const hall2 = { ...hall, id: "h2", name: "Varanda", sort_order: 1 };
+    const t6 = { ...mk("t6", 6), hall_id: "h2" };
+    current = {
+      ...hookData,
+      halls: [hall, hall2],
+      tables: [...tables, t6],
+      reservations: [...hookData.reservations, res("r6", "t6", "18:00")],
+    };
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 3,/ }));
+    expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 3");
+    fireEvent.click(screen.getByRole("button", { name: "Varanda" }));
+    expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Toque numa mesa");
+    // volta ao salão 1 e escolhe uma mesa; depois pula para o salão 2 via próximas chegadas
+    fireEvent.click(screen.getByRole("button", { name: "Salão" }));
+    fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r6").closest("button")!);
+    expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 6");
+  });
+
+  it("o painel só anuncia a troca de mesa, não o conteúdo que muda por minuto", () => {
+    renderPage();
+    const painel = screen.getByTestId("painel-mesa");
+    expect(painel).not.toHaveAttribute("aria-live");
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 3,/ }));
+    expect(within(painel).getByRole("status")).toHaveTextContent("Mesa 3 selecionada");
   });
 
   it("o plano girado do 3D não carrega a animação de entrada, que sobrescreveria o transform", () => {

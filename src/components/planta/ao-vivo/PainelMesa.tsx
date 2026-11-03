@@ -94,7 +94,11 @@ export function PainelMesa({ table, state, reservations, walkIns, waitlistSeated
   }
 
   return (
-    <section data-testid="painel-mesa" aria-live="polite" className="surface rounded-lg p-4">
+    <section data-testid="painel-mesa" className="surface rounded-lg p-4">
+      {/* Só a troca de mesa é anunciada; o tique de minuto no corpo não. */}
+      <p key={table?.id ?? "nenhuma"} className="sr-only" role="status" aria-live="polite">
+        {table ? `Mesa ${table.number} selecionada` : ""}
+      </p>
       {body}
     </section>
   );

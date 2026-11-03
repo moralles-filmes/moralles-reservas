@@ -8,6 +8,7 @@ import {
   fetchSalaoPlan,
   fetchSalaoReservations,
   fetchSalaoSeatedWaitlist,
+  fetchSalaoSeatedWalkIns,
   fetchSalaoDurationSetting,
 } from "@/features/planta/api";
 import { parseDurationMinutes, useSalaoAoVivo } from "./useSalaoAoVivo";
@@ -52,10 +53,11 @@ describe("fetch* do salão ao vivo", () => {
   it("toda consulta filtra por unit_id", async () => {
     await fetchSalaoPlan("unit-a");
     await fetchSalaoReservations("unit-a", "2026-11-03", "2026-11-02");
-    await fetchSalaoSeatedWaitlist("unit-a");
-    await fetchSalaoBlocks("unit-a", "2026-11-03");
+    await fetchSalaoSeatedWaitlist("unit-a", "2026-11-02");
+    await fetchSalaoSeatedWalkIns("unit-a", "2026-11-02");
+    await fetchSalaoBlocks("unit-a", "2026-11-03", "2026-11-04");
     await fetchSalaoDurationSetting("unit-a");
-    for (const t of ["halls", "tables", "reservations", "waitlist", "table_blocks", "settings"]) {
+    for (const t of ["halls", "tables", "reservations", "waitlist", "walk_ins", "table_blocks", "settings"]) {
       expect(eqUnit(t), t).toBe(true);
     }
   });
@@ -69,18 +71,31 @@ describe("fetch* do salão ao vivo", () => {
     expect(String(or.args[0])).toContain("released_at.is.null");
   });
 
-  it("bloqueios por sobreposição com o dia BRT", async () => {
-    await fetchSalaoBlocks("unit-a", "2026-11-03");
+  it("bloqueios por sobreposição com o dia BRT (fim exclusivo à meia-noite seguinte)", async () => {
+    await fetchSalaoBlocks("unit-a", "2026-11-03", "2026-11-04");
     const gte = mocks.calls.find((c) => c.table === "table_blocks" && c.method === "gte")!;
-    const lte = mocks.calls.find((c) => c.table === "table_blocks" && c.method === "lte")!;
+    const lt = mocks.calls.find((c) => c.table === "table_blocks" && c.method === "lt")!;
     expect(gte.args).toEqual(["blocked_to", "2026-11-03T00:00:00-03:00"]);
-    expect(lte.args).toEqual(["blocked_from", "2026-11-03T23:59:59-03:00"]);
+    expect(lt.args).toEqual(["blocked_from", "2026-11-04T00:00:00-03:00"]);
+    expect(mocks.calls.some((c) => c.method === "lte")).toBe(false);
+  });
+
+  it("passantes e fila sentados são limitados por seated_at desde ontem (BRT)", async () => {
+    await fetchSalaoSeatedWalkIns("unit-a", "2026-11-02");
+    await fetchSalaoSeatedWaitlist("unit-a", "2026-11-02");
+    for (const t of ["walk_ins", "waitlist"]) {
+      const gte = mocks.calls.find((c) => c.table === t && c.method === "gte")!;
+      expect(gte.args, t).toEqual(["seated_at", "2026-11-02T00:00:00-03:00"]);
+      expect(eqUnit(t), t).toBe(true);
+    }
+    expect(mocks.calls.some((c) => c.table === "walk_ins" && c.method === "eq" && c.args[0] === "status" && c.args[1] === "seated")).toBe(true);
+    expect(mocks.calls.some((c) => c.table === "walk_ins" && c.method === "is" && c.args[0] === "released_at")).toBe(true);
   });
 
   it("o erro do PostgREST sobe como está", async () => {
     const err = { code: "42501", message: "x" };
     mocks.results.waitlist = { data: null, error: err };
-    await expect(fetchSalaoSeatedWaitlist("unit-a")).rejects.toBe(err);
+    await expect(fetchSalaoSeatedWaitlist("unit-a", "2026-11-02")).rejects.toBe(err);
   });
 });
 
@@ -102,6 +117,12 @@ describe("useSalaoAoVivo", () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.durationMinutes).toBe(120);
     expect(client.getQueryCache().findAll({ queryKey: ["reservas", "unit-a"] })).toHaveLength(1);
+  });
+
+  it("passantes usam a key [walk-ins, unitId, salao, hoje]", async () => {
+    const { result } = renderHook(() => useSalaoAoVivo("unit-a"), { wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(client.getQueryCache().findAll({ queryKey: ["walk-ins", "unit-a", "salao"] })).toHaveLength(1);
   });
 
   it("duração ausente → 90", async () => {

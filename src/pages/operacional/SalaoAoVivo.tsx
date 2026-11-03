@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
@@ -38,6 +38,12 @@ export default function SalaoAoVivo() {
   const reduced = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [hallPref, setHallPref] = useState<string | null>(() => readStoredHall(unitId));
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // O inicializador do useState roda uma vez: ao trocar de unidade, relê a preferência dela.
+  useEffect(() => {
+    setHallPref(readStoredHall(unitId));
+    setSelectedId(null);
+  }, [unitId]);
 
   const halls = useMemo(() => data.halls.filter((h) => h.active), [data.halls]);
   const tables = useMemo(() => data.tables.filter((t) => t.active && t.hall_id), [data.tables]);
@@ -81,7 +87,7 @@ export default function SalaoAoVivo() {
     return m;
   }, [hallTables, states, data.reservations]);
 
-  const chooseHall = (id: string) => {
+  const applyHall = (id: string) => {
     setHallPref(id);
     try {
       localStorage.setItem(hallKey(unitId), id);
@@ -90,15 +96,24 @@ export default function SalaoAoVivo() {
     }
   };
 
+  // Troca pelo seletor limpa a mesa selecionada (ela pode ser de outro salão).
+  const chooseHall = (id: string) => {
+    applyHall(id);
+    setSelectedId(null);
+  };
+
+  // Vindo de próximas chegadas, a troca de salão mantém a mesa recém escolhida.
   const pickTable = (t: Mesa) => {
-    if (t.hall_id) chooseHall(t.hall_id);
+    if (t.hall_id) applyHall(t.hall_id);
     setSelectedId(t.id);
   };
 
   const selectedTable = tables.find((t) => t.id === selectedId) ?? null;
 
   let content: React.ReactNode;
-  if (data.isError) {
+  if (!unitId) {
+    content = <Skeleton className="h-[360px] w-full rounded-lg" />;
+  } else if (data.isError && !data.hasData) {
     content = (
       <div className="space-y-3 py-8 text-center">
         <p className="text-sm text-muted-foreground">Não foi possível carregar o salão.</p>
@@ -117,6 +132,17 @@ export default function SalaoAoVivo() {
     const Cena = narrow || reduced ? PlantaCena2D : PlantaCena3D;
     content = (
       <>
+        {data.isError && (
+          <p
+            role="status"
+            className="flex flex-wrap items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground"
+          >
+            Dados desatualizados
+            <Button type="button" size="sm" variant="outline" onClick={data.refetch}>
+              Tentar de novo
+            </Button>
+          </p>
+        )}
         {hall.plan_width_cm == null && (
           <p className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
             Planta ainda não desenhada; as mesas aparecem em grade automática.
