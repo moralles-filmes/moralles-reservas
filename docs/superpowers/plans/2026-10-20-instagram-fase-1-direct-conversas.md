@@ -1048,8 +1048,8 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 - [x] Faça rebase sobre `origin/main`. Rode `npm run typecheck`, `npm run lint`, `npm run build` e `npm run test`. As falhas aceitas são só as preexistentes que falham igual num checkout limpo de `origin/main`: `whatsapp-template-surfaces`, `template-catalog-v2`, `waitlist-voucher-routing`, `receipts-request`, `reservation-automation-routing`, `migration-twin` e `TemplateCatalogAdminCard`, mais `OfficialConnectionCard` por falta de `.env.local`. Registre as contagens.
 - [x] Rode o `deno check` de todas as EFs da matriz, `node scripts/check-padrao.mjs` e `node scripts/check-portabilidade.mjs`.
 - [x] Faça o pré-voo completo: `79a`, `79`, `08`, `38` e `67d`.
-- [ ] Faça a review da branch inteira com a skill `superpowers:requesting-code-review` no Opus. Rode `saas-shield-br:pre-deploy` e `saas-shield-br:secret-scan`.
-- [ ] Faça `git status`, `git diff --cached` integral, a varredura de segredos das linhas staged (AGENTS §5) e `git add` explícito.
+- [x] Faça a review da branch inteira com a skill `superpowers:requesting-code-review` no Opus. Rode `saas-shield-br:pre-deploy` e `saas-shield-br:secret-scan`.
+- [x] Faça `git status`, `git diff --cached` integral, a varredura de segredos das linhas staged (AGENTS §5) e `git add` explícito.
 
 ### Task 6.2: PR e banco (cada passo com autorização)
 
@@ -1445,4 +1445,41 @@ Execução por tarefa: implementador Sonnet; revisão Opus em 5.1, 5.3 (callback
 - Lacunas de teste: refetch do card depois de liberar, erro propagado em settings/dm/diagnóstico, controles positivos dos testes de operador/menu/grant, mock síncrono de `onError` em `Conversas.channel.test.tsx`.
 
 ### Bloco 6
-_(preencher)_
+**Task 6.1 (2026-11-03), branch `feat/instagram-fase-1`, local, sem push.** Base `origin/main` = `0b60419` (redesign "Salão em vidro" e planta do salão B1).
+
+**Rebase:** 81 commits; backup `backup/instagram-fase-1-pre-rebase-b72870d`. Conflitos triviais: `scripts/function-acl-allowlist.json` (união das entradas no fim do array; JSON válido, sem duplicata; frente ao backup só +5 entradas da planta) e `Conversas.tsx` (`PageHeader` da main com o título "Conversas" da branch).
+
+**Commits do bloco:**
+- `e47bea8`: `/privacidade*` no tema Dia (`theme-routes.ts` + script do `index.html` + teste com `/privacidadex` negativo; o teste reprovou o `index.html` desatualizado antes do ajuste).
+- `828d9a5`: **R6-a (responsável)** migrations renomeadas `2026102920xxxx` → `2026110312xxxx`. A planta (`20261030120000/120100`) entrou em produção antes e o `db push` recusaria fora de ordem. Objetos sem sobreposição; diff por palavra só troca timestamp; o plano da planta (menção histórica) não mudou.
+- `c76b51c` + `7287625`: `webhook-whatsapp`: a leitura de `units` no turno lança `agent_unit_lookup_failed` (retentável) antes de billing e cliente. **R6-b:** a review da branch apontou perda terminal da mensagem; a prova de RED mostrou que ela já era retentada adiante (`customer_resolve_failed`), então é endurecimento (falha cedo, sem consulta com tenant vazio). Teste pelo webhook real com controle positivo (`whatsapp-agent-unit-lookup.test.ts`, controle `unitSelectError` no fixture).
+- `4722aa7`: **R6-c (responsável), desvio da Task 5.4:** na conversa do Instagram o nome exibido é perfil do IG → `contact_name` → `@username` → "Contato do Instagram", nunca o nome do cadastro ligado por telefone declarado (D4). WhatsApp inalterado. A busca casa o `@username` (mesmo saneamento do termo). Regra `whatsapp.md` atualizada.
+- `7287625`: plano (6.3 com `send-scheduled-whatsapp`, **R6-d, responsável**; lista do remoto antes do `db push`; smoke do WhatsApp ampliado), sufixos `1200xx` na ordem de deploy e no README do pré-voo.
+
+**Gates locais (HEAD `7287625`):**
+- `npm run typecheck` 0; lint 0 erros (19 warnings: 2 novos em arquivos do redesign vindos da main); `npm run build` ok; `check-padrao` ok; `check-portabilidade` 489 = linha de base.
+- `deno check` das 11 EFs da matriz: exit 0.
+- Vitest completo: 1026 arquivos, 5464 testes; só falha `OfficialConnectionCard` (sem `.env.local`). O `reservation-automation-routing` (112) ficou sem status no relatório do lote e passou isolado (113/113). Nenhuma das falhas preexistentes listadas na 6.1 reproduz: os 10 arquivos isolados, 350/350.
+- Matriz recalculada pelo `ef-import-graph` sobre os `_shared` tocados: `manage-platform-secrets` + `webhook-instagram`, `instagram-connect`, `process-instagram-inbound`, `process-instagram-token-refresh`, `webhook-whatsapp`, `send-manual-message`, `send-scheduled-whatsapp`, `create-reservation`, `update-reservation`, `create-manual-reservation`.
+
+**Pré-voo SQL (Sonnet, local, sem remoto):**
+- 79a + 79: RED exit 3; 98/98 após aplicar e após reaplicar; sem resíduo. (O cluster precisa de `lc_messages='C'`: o 79 compara texto de erro em inglês.)
+- 67d: `GREEN67d` em 3 aplicações, no schema do 67d e sobre um clone do `ig79` com as migrations do Instagram.
+- 73 (`GREEN73`), 78 (`GREEN74`/`GREEN78`) e SQL do 38 (48 checks): verdes na base e com as 9 migrations do Instagram aplicadas duas vezes (contêineres `--network none`). Para encadear, o fixture mínimo pediu `01-audit.sql` como `supabase_admin` e o CHECK `reservations_source_check` no lugar de `resource41_source` (ajuste local, sem mudar o repo).
+- 08: verde no estado pré-Instagram. Com a 120300 o fixture reprova (`conversations_channel_identity_check`): o 08 insere conversa WhatsApp com `customer_id` nulo, que produção já recusa (`NOT NULL` desde a 001). Não é regressão; follow-up: o 08 passar `customer_id`.
+- `38-automation-acceptance-testsetup.mjs` completo não rodou (exige o stack CLI `moralles-templates-20261003`, inexistente); só `--source-check`, exit 0.
+
+**Review da branch inteira (Opus):** "With fixes", 0 Critical. Important: (1) `send-scheduled-whatsapp` fora da 6.3 → R6-d; (2) nome do cadastro na conversa IG → R6-c; (3) leitura de `units` → R6-b. Minor 4 (sufixos antigos) feito; os demais em follow-up abaixo. Re-revisão (Sonnet) das correções: aprovadas; ajustes de comentário, teste e regra aplicados.
+
+**Pré-deploy (`saas-shield-br:pre-deploy`, production):**
+- 0 Dependências: dois P1 **anteriores à branch** (ela não toca `package*.json`, CI nem `vercel.json`): Node 20 em `.github/workflows/function-acl-audit.yml` e Vite 5.4 (a correção é major). P2/P3 de dev (vitest, tinypool, eslint).
+- 1 Segredos: histórico com 0 achados em 1199 commits (todas as refs); estático com 0 bloqueante e 1 P3 (`.gitignore` sem `*.pem`, `*.key`, `id_rsa*`, `service-account*.json`; nenhum desses arquivos existe); staged limpo em todo commit.
+- 2 Isolamento de tenant (Opus): PASS_WITH_WARNINGS, 0 P0/P1. P3: corpo do POST com várias contas na fila (já aceito em "Fora desta fase"); `search_path = public` na `get_or_create_whatsapp_conversation` (copiada da 20260905143453; só `service_role` executa).
+- 3 Identidade e acesso (Opus): PASS_WITH_WARNINGS, 0 P0/P1, sem escalonamento. P3: o mesmo `search_path`.
+- 4 Integrações (Sonnet): PASS_WITH_WARNINGS, 0 P0/P1. P3: 429 definitivo da Meta fecha `send_error` sem nova tentativa; dead do Direct só loga (o WhatsApp promove a handoff); retentativa do erro de `units` gasta vaga do rate limit; envio manual IG sem idempotência contra duplo clique (paridade com o WhatsApp).
+- 5 Schema diff: na 6.2, antes do `db push` (ordem do plano).
+- 6 RLS (Sonnet): PASS_WITH_WARNINGS. P2: `raw_body` com texto de DM fora da anonimização (7 dias em `done`, 30 em `dead`; FORCE RLS sem policy, purga diária). P3: `search_path`; FKs simples (Bloco 1); policy de `instagram_settings` com `exists` em `unit_members`.
+- 7 Vercel: rotas novas cobertas pelo rewrite de SPA; `no-referrer` pelo meta do `index.html` (o callback recebe `code`); source map desligado. Sem CSP/HSTS (anterior à branch).
+- 8 Edge Functions (Sonnet): PASS_WITH_WARNINGS; `verify_jwt` das 4 novas confere com o desenho. P2: CORS `*` em `send-manual-message` (anterior; Bearer sem cookie). P3: o worker não revalida o HMAC (a regra `instagram.md` dizia que sim; texto corrigido), sem rate limit próprio no webhook e no worker, identidade declarada (desenho D4).
+
+**Follow-ups do Bloco 6 (P2/P3, nenhum bloqueia):** 429 da Meta com retry quando a parte 1 não saiu; dead do Direct promovendo a conversa a `awaiting_human`; `raw_body` na anonimização ou na política de privacidade; `search_path = ''` na `get_or_create_whatsapp_conversation`; CORS por lista em `send-manual-message`; sweep do inbound sem `net.http_post` quando não há fila devida; `maxLength` de `notes` provado por provider (smoke da 6.3); `Instagram.tsx` com `PageHeader`; mensagem quando o callback chega sem login; canal no `ConversationsWaitingPanel`; fixture do 08 com `customer_id`; `.gitignore` com os padrões do AGENTS §5; Node 22/24 no CI e Vite major (dependências).
