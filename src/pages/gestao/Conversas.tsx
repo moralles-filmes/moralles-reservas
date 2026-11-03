@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, Fragment } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useConversations, useConversationActions } from "@/hooks/useConversations";
@@ -428,6 +429,8 @@ export default function Conversas() {
   const [activeFilter, setActiveFilter] = useState<FilterValue>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const handledClienteRef = useRef<string | null>(null);
   const debouncedSearch = useDebounce(search.trim(), 200);
   const { width: listWidth, handleProps: listResizeHandle } = useResizableWidth({
     storageKey: "conversas-list-width",
@@ -477,6 +480,25 @@ export default function Conversas() {
   const hasActiveSearch = debouncedSearch.trim().length > 0;
   const totalCount = conversations?.length ?? 0;
   const filteredCount = filteredConversations.length;
+
+  // Link direto (?cliente=<customer_id>): abre a conversa do cliente uma vez por valor,
+  // só depois de a lista carregar, e remove o parâmetro para não reabrir ao trocar de filtro.
+  const clienteParam = searchParams.get("cliente");
+  useEffect(() => {
+    if (!clienteParam || !allConversations || isLoading || isError) return;
+    if (handledClienteRef.current === clienteParam) return;
+    handledClienteRef.current = clienteParam;
+    const target = allConversations.find((c) => c.customer_id === clienteParam);
+    if (target) {
+      setActiveFilter((f) => (f !== "all" && target.status !== f ? "all" : f));
+      setSelectedId(target.id);
+    } else {
+      toast.info("Ainda não há conversa com este cliente.");
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete("cliente");
+    setSearchParams(next, { replace: true });
+  }, [clienteParam, allConversations, isLoading, isError, searchParams, setSearchParams]);
 
   // Clear selection when it's no longer in the current tab
   useEffect(() => {
