@@ -265,10 +265,10 @@ export default function SalaoDetalhe() {
               <h3 className="text-sm font-semibold">Mapa de mesas</h3>
             </header>
             <p className="text-xs text-muted-foreground">
-              Visualização espacial das mesas. (Em breve.)
+              Posicione as mesas na planta do salão.
             </p>
-            <Button variant="outline" size="sm" className="w-full" disabled>
-              Criar mapa
+            <Button asChild variant="outline" size="sm" className="w-full">
+              <Link to={`/g/${unitSlug}/reservas/saloes/${hall.id}/planta`}>Editar planta</Link>
             </Button>
           </Card>
 

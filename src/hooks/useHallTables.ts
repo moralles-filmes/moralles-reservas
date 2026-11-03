@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { Mesa } from "@/types/reserva";
+import { TABLE_COLUMNS } from "@/features/planta/api";
 
 /** Lista todas as mesas da unit (opcionalmente filtradas por hall). */
 export function useUnitTables(unitId: string, { activeOnly = true } = {}) {
@@ -9,7 +10,7 @@ export function useUnitTables(unitId: string, { activeOnly = true } = {}) {
     queryFn: async () => {
       let q = supabase
         .from("tables")
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active")
+        .select(TABLE_COLUMNS)
         .eq("unit_id", unitId)
         .order("number", { ascending: true });
       if (activeOnly) q = q.eq("active", true);
@@ -27,7 +28,7 @@ export function useHallTables(hallId: string | undefined, { activeOnly = false }
     queryFn: async () => {
       let q = supabase
         .from("tables")
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active")
+        .select(TABLE_COLUMNS)
         .eq("hall_id", hallId!)
         .order("number", { ascending: true });
       if (activeOnly) q = q.eq("active", true);
@@ -76,7 +77,7 @@ export function useCreateTable() {
           location: input.location ?? "internal",
           active: input.active ?? true,
         })
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active")
+        .select(TABLE_COLUMNS)
         .single();
       if (error) throw error;
       return data as Mesa;
@@ -113,7 +114,7 @@ export function useCreateTablesBulk() {
       const { data, error } = await supabase
         .from("tables")
         .insert(rows)
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active");
+        .select(TABLE_COLUMNS);
       if (error) throw error;
       return data as Mesa[];
     },
@@ -135,7 +136,7 @@ export function useUpdateTable() {
         .from("tables")
         .update(patch)
         .eq("id", id)
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active")
+        .select(TABLE_COLUMNS)
         .single();
       if (error) throw error;
       return data as Mesa;
