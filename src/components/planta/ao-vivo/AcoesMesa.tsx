@@ -10,13 +10,14 @@ import {
 } from "@/hooks/useMesaAcoes";
 import { useCreateWalkIn, useUpdateWalkInStatus } from "@/hooks/useWalkIns";
 import { conversationHref } from "@/lib/conversation-link";
+import { activeQueueToday } from "@/lib/waitlist-queue";
 import type { BlockWindow, TableState } from "@/lib/table-situation-core";
 import type { Mesa, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 
 interface Props {
   unitId: string;
-  /** `/o/:unitSlug`. */
-  basePath: string;
+  /** `/o/:unitSlug`; sem ele (slug ausente) o botão "Abrir conversa" some. */
+  basePath?: string;
   table: Mesa;
   state: TableState;
   now: Date;
@@ -37,9 +38,6 @@ const hhmmBrt = new Intl.DateTimeFormat("pt-BR", {
   minute: "2-digit",
   hourCycle: "h23",
 });
-
-const byPriority = (a: WaitlistEntry, b: WaitlistEntry) =>
-  a.priority - b.priority || new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
 
 const pessoas = (n: number) => `${n} ${n === 1 ? "pessoa" : "pessoas"}`;
 
@@ -83,7 +81,7 @@ export function AcoesMesa({
   const occ = state.occupant;
 
   const openChat = (customerId: string | null | undefined) =>
-    customerId ? (
+    customerId && basePath ? (
       <Button asChild variant="outline" size="sm" className={BTN}>
         <Link to={conversationHref(basePath, customerId)}>Abrir conversa</Link>
       </Button>
@@ -179,7 +177,10 @@ export function AcoesMesa({
 
   if (state.situation !== "free") return null;
 
-  const queue = waitlistActive.filter((e) => e.status === "waiting" || e.status === "notified").sort(byPriority);
+  const queue = activeQueueToday(
+    waitlistActive.filter((e) => e.status === "waiting" || e.status === "notified"),
+    now,
+  );
   const waiting = waitingWalkIns.filter((w) => w.status === "waiting");
   const partyNumber = Number(people);
   const formValid = name.trim().length > 0 && Number.isInteger(partyNumber) && partyNumber >= 1;

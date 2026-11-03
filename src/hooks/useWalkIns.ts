@@ -19,7 +19,8 @@ export function useWalkIns(unitId: string, onlyActive = true) {
         .order("arrived_at", { ascending: true });
 
       if (onlyActive) {
-        query = query.in("status", ["waiting", "seated"]);
+        // Liberados seguem `seated` para sempre: sem este filtro a lista ativa cresce sem limite (PostgREST trunca em 1000).
+        query = query.in("status", ["waiting", "seated"]).is("released_at", null);
       }
 
       const { data, error } = await query;

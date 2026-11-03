@@ -39,7 +39,9 @@ export function ReservaCard({ reserva, showActions = false, unitId, confirmation
     isToday &&
     (reserva.status === "pending" || reserva.status === "confirmed") &&
     !reserva.arrived_at;
-  const canRelease = showActions && !!reserva.arrived_at && !reserva.released_at;
+  // Mesma janela da regra de chegada no banco: hoje ou ontem (BRT).
+  const inPresenceWindow = isToday || reserva.date === brtNow(new Date()).yesterday;
+  const canRelease = showActions && inPresenceWindow && !!reserva.arrived_at && !reserva.released_at;
 
   const handleStatus = async (status: "confirmed" | "cancelled" | "no_show") => {
     try {

@@ -75,6 +75,25 @@ describe("ReservaCard presença", () => {
     expect(screen.queryByRole("button", { name: "Desfazer chegada" })).not.toBeInTheDocument();
   });
 
+  it("chegada antiga (3 dias) sem liberação não mostra Liberar mesa nem Desfazer chegada; ontem mostra", () => {
+    const old = new Date(Date.now() - 3 * 86_400_000);
+    const threeDaysAgo = brtNow(old).date;
+    const { unmount } = render(
+      <ReservaCard reserva={reserva({ date: threeDaysAgo, arrived_at: "2026-10-30T22:00:00Z" })} showActions />,
+    );
+    expect(screen.queryByRole("button", { name: "Liberar mesa" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Desfazer chegada" })).not.toBeInTheDocument();
+    unmount();
+    render(
+      <ReservaCard
+        reserva={reserva({ date: brtNow(new Date()).yesterday, arrived_at: "2026-11-02T22:00:00Z" })}
+        showActions
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Liberar mesa" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Desfazer chegada" })).toBeInTheDocument();
+  });
+
   it("reserva de amanhã não mostra Chegou", () => {
     render(<ReservaCard reserva={reserva({ date: tomorrow })} showActions />);
     expect(screen.queryByRole("button", { name: "Chegou" })).not.toBeInTheDocument();

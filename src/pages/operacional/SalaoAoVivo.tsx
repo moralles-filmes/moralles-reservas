@@ -235,7 +235,7 @@ export default function SalaoAoVivo() {
             selectedTable && selectedState ? (
               <AcoesMesa
                 unitId={unitId}
-                basePath={`/o/${unit?.unit_slug ?? ""}`}
+                basePath={unit?.unit_slug ? `/o/${unit.unit_slug}` : undefined}
                 table={selectedTable}
                 state={selectedState}
                 now={now}

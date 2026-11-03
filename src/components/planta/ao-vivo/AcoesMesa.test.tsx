@@ -131,6 +131,18 @@ describe("AcoesMesa", () => {
     expect(m.seat.mutate).toHaveBeenCalledWith({ waitlistId: "b", tableId: "t1", tableNumber: 7 });
   });
 
+  it("livre: entrada de dia anterior não aparece em Sentar da fila", () => {
+    const velha = { ...entry("velha", 0), created_at: "2026-10-20T15:00:00Z" } as WaitlistEntry;
+    setup({ situation: "free" }, { waitlistActive: [velha, entry("a", 1)] });
+    const seatBtns = screen.getAllByRole("button", { name: /^Sentar da fila N-/ });
+    expect(seatBtns.map((b) => b.getAttribute("aria-label"))).toEqual(["Sentar da fila N-a"]);
+  });
+
+  it("sem basePath (slug ausente) não mostra Abrir conversa", () => {
+    setup({ situation: "reserved", focusReservationId: "r1" }, { basePath: undefined });
+    expect(links()).toEqual([]);
+  });
+
   it("livre: sentar passante existente em espera", () => {
     const w = { id: "p1", customer_name: "Ze", party_size: 3, status: "waiting" } as unknown as WalkIn;
     setup({ situation: "free" }, { waitingWalkIns: [w] });

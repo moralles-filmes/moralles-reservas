@@ -35,7 +35,6 @@ export function useReservationPresence(unitId: string) {
   const mutation = useMutation<void, Error, { reservationId: string; action: PresenceAction }>({
     mutationFn: ({ reservationId, action }) => setReservationPresence(reservationId, action),
     onSuccess: (_data, { reservationId, action }) => {
-      queryClient.invalidateQueries({ queryKey: ["reservas", unitId] });
       if (action === "arrive") {
         toast.success("Chegada marcada.", {
           action: {
@@ -50,6 +49,8 @@ export function useReservationPresence(unitId: string) {
       }
     },
     onError,
+    // Também em erro: outro tablet pode ter vencido a corrida e a lista local está velha.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["reservas", unitId] }),
   });
   return mutation;
 }
@@ -60,10 +61,10 @@ export function useSeatWaitlistEntry(unitId: string) {
   return useMutation<void, Error, { waitlistId: string; tableId: string; tableNumber?: number | string }>({
     mutationFn: ({ waitlistId, tableId }) => seatWaitlistEntry(waitlistId, tableId),
     onSuccess: (_data, { tableNumber }) => {
-      queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] });
       toast.success(tableNumber != null ? `Cliente sentado na mesa ${tableNumber}.` : "Cliente sentado na mesa.");
     },
     onError,
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] }),
   });
 }
 
@@ -72,10 +73,10 @@ export function useReleaseWaitlistEntry(unitId: string) {
   return useMutation<void, Error, { waitlistId: string }>({
     mutationFn: ({ waitlistId }) => releaseWaitlistEntry(waitlistId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] });
       toast.success("Mesa liberada.");
     },
     onError,
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] }),
   });
 }
 
@@ -84,9 +85,9 @@ export function useReleaseWalkIn(unitId: string) {
   return useMutation<void, Error, { walkInId: string }>({
     mutationFn: ({ walkInId }) => releaseWalkIn(walkInId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] });
       toast.success("Mesa liberada.");
     },
     onError,
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] }),
   });
 }

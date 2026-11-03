@@ -104,6 +104,51 @@ describe("fila e passante", () => {
   });
 });
 
+describe("invalidação também em erro (dois tablets disputando)", () => {
+  const rpcError = { code: "23514", details: "not_seatable" };
+  beforeEach(() => mocks.rpc.mockResolvedValue({ data: null, error: rpcError }));
+
+  it("useReservationPresence", async () => {
+    const { wrapper, invalidate } = setup();
+    const { result } = renderHook(() => useReservationPresence("u1"), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ reservationId: "r1", action: "arrive" }).catch(() => undefined);
+    });
+    expect(mocks.error).toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["reservas", "u1"] });
+  });
+
+  it("useSeatWaitlistEntry", async () => {
+    const { wrapper, invalidate } = setup();
+    const { result } = renderHook(() => useSeatWaitlistEntry("u1"), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ waitlistId: "w1", tableId: "t1" }).catch(() => undefined);
+    });
+    expect(mocks.error).toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["waitlist", "u1"] });
+  });
+
+  it("useReleaseWaitlistEntry", async () => {
+    const { wrapper, invalidate } = setup();
+    const { result } = renderHook(() => useReleaseWaitlistEntry("u1"), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ waitlistId: "w1" }).catch(() => undefined);
+    });
+    expect(mocks.error).toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["waitlist", "u1"] });
+  });
+
+  it("useReleaseWalkIn", async () => {
+    const { wrapper, invalidate } = setup();
+    const { result } = renderHook(() => useReleaseWalkIn("u1"), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ walkInId: "p1" }).catch(() => undefined);
+    });
+    expect(mocks.error).toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["walk-ins", "u1"] });
+  });
+});
+
 describe("presenceErrorMessage", () => {
   it.each([
     [{ code: "42501" }, "Sem permissão para esta mesa."],
