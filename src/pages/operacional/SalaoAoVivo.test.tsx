@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, within, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, within, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import SalaoAoVivo from "./SalaoAoVivo";
 
@@ -11,7 +11,7 @@ const mk = (id: string, n: number) => ({
 });
 const tables = [mk("t1", 1), mk("t2", 2), mk("t3", 3), mk("t4", 4), mk("t5", 5)];
 const res = (id: string, table_id: string, time: string, extra = {}) => ({
-  id, unit_id: "u1", table_id, date: "2026-11-03", time, party_size: 2, status: "confirmed",
+  id, unit_id: "u1", table_id, customer_id: "c" + id, date: "2026-11-03", time, party_size: 2, status: "confirmed",
   arrived_at: null, released_at: null, customer: { id: "c" + id, name: "Cliente " + id, phone: "11999990000" }, ...extra,
 });
 
@@ -36,9 +36,24 @@ const hookData = {
 let current: typeof hookData = hookData;
 
 vi.mock("@/hooks/useSalaoAoVivo", () => ({ useSalaoAoVivo: () => current }));
+const presenceMutate = vi.fn();
+vi.mock("@/hooks/useMesaAcoes", () => ({
+  useReservationPresence: () => ({ mutate: presenceMutate, isPending: false, variables: undefined }),
+  useSeatWaitlistEntry: () => ({ mutate: vi.fn(), isPending: false, variables: undefined }),
+  useReleaseWaitlistEntry: () => ({ mutate: vi.fn(), isPending: false, variables: undefined }),
+  useReleaseWalkIn: () => ({ mutate: vi.fn(), isPending: false, variables: undefined }),
+}));
+vi.mock("@/hooks/useWalkIns", () => ({
+  useWalkIns: () => ({ data: [] }),
+  useCreateWalkIn: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateWalkInStatus: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+vi.mock("@/hooks/useWaitlist", () => ({ useNotifyWaitlist: () => ({ mutate: vi.fn(), isPending: false }) }));
+vi.mock("@/hooks/useWaitlistTemplates", () => ({ useWaitlistTemplates: () => ({ data: [] }) }));
 let currentUnitId = "u1";
+let currentSlug: string | undefined = "moralles";
 vi.mock("@/hooks/useCurrentUnit", () => ({
-  useCurrentUnit: () => ({ unit_id: currentUnitId, unit_slug: "moralles", isGerente: true }),
+  useCurrentUnit: () => ({ unit_id: currentUnitId, unit_slug: currentSlug, isGerente: true }),
 }));
 
 function setMedia(matches: (q: string) => boolean) {
@@ -56,6 +71,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   current = hookData;
   currentUnitId = "u1";
+  currentSlug = "moralles";
   setMedia(() => false);
   localStorage.clear();
 });
@@ -90,6 +106,27 @@ describe("SalaoAoVivo", () => {
     const painel = screen.getByTestId("painel-mesa");
     expect(painel).toHaveTextContent("Mesa 3");
     expect(painel).toHaveTextContent("Cliente r3");
+  });
+
+  it("a mesa selecionada mostra as ações da sua situação", () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 4,/ })); // chegando
+    fireEvent.click(within(screen.getByTestId("painel-mesa")).getByRole("button", { name: "Marcar chegada" }));
+    expect(presenceMutate).toHaveBeenCalledWith({ reservationId: "r4", action: "arrive" });
+  });
+
+  it("com slug, a mesa chegando oferece Abrir conversa; sem slug, não monta /o//conversas", () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 4,/ }));
+    expect(within(screen.getByTestId("painel-mesa")).getByRole("link", { name: "Abrir conversa" })).toHaveAttribute(
+      "href",
+      "/o/moralles/conversas?cliente=cr4",
+    );
+    cleanup();
+    currentSlug = undefined;
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 4,/ }));
+    expect(within(screen.getByTestId("painel-mesa")).queryByRole("link", { name: "Abrir conversa" })).toBeNull();
   });
 
   it("tocar numa linha de próximas chegadas seleciona a mesa", () => {

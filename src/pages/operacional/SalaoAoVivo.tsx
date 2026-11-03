@@ -4,18 +4,23 @@ import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
 import { useSalaoAoVivo } from "@/hooks/useSalaoAoVivo";
+import { useWalkIns } from "@/hooks/useWalkIns";
+import { useNotifyWaitlist } from "@/hooks/useWaitlist";
+import { useWaitlistTemplates } from "@/hooks/useWaitlistTemplates";
+import { buildWaitlistMessage } from "@/lib/waitlist-message";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { hallPlanFrom, resolveTableBoxes } from "@/lib/hall-plan-core";
 import { brtNow, deriveTableStates } from "@/lib/table-situation-core";
 import type { TableSituation } from "@/lib/table-situation-core";
-import type { Mesa } from "@/types/reserva";
+import type { Mesa, WaitlistEntry } from "@/types/reserva";
 import { SITUATION_ORDER } from "@/components/planta/situation-labels";
 import { PlantaCena2D } from "@/components/planta/ao-vivo/PlantaCena2D";
 import { PlantaCena3D } from "@/components/planta/ao-vivo/PlantaCena3D";
 import { LegendaSituacoes } from "@/components/planta/ao-vivo/LegendaSituacoes";
 import { PainelMesa } from "@/components/planta/ao-vivo/PainelMesa";
+import { AcoesMesa } from "@/components/planta/ao-vivo/AcoesMesa";
 import { ProximasChegadas } from "@/components/planta/ao-vivo/ProximasChegadas";
 import { ResumoFila } from "@/components/planta/ao-vivo/ResumoFila";
 
@@ -38,6 +43,23 @@ export default function SalaoAoVivo() {
   const reduced = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [hallPref, setHallPref] = useState<string | null>(() => readStoredHall(unitId));
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const walkInsAtivos = useWalkIns(unitId);
+  const waitingWalkIns = useMemo(
+    () => (walkInsAtivos.data ?? []).filter((w) => w.status === "waiting"),
+    [walkInsAtivos.data],
+  );
+  const { data: templates } = useWaitlistTemplates(unitId);
+  const notify = useNotifyWaitlist(unitId);
+
+  const callNext = (entry: WaitlistEntry) => {
+    if (!entry.customer_phone || (notify.isPending && notify.variables?.id === entry.id)) return;
+    const message = buildWaitlistMessage(entry, "table_ready", {
+      templates,
+      unitName: unit?.unit_name,
+      origin: window.location.origin,
+    });
+    notify.mutate({ id: entry.id, message });
+  };
 
   // O inicializador do useState roda uma vez: ao trocar de unidade, relê a preferência dela.
   useEffect(() => {
@@ -109,6 +131,7 @@ export default function SalaoAoVivo() {
   };
 
   const selectedTable = tables.find((t) => t.id === selectedId) ?? null;
+  const selectedState = selectedTable ? (states.get(selectedTable.id) ?? null) : null;
 
   let content: React.ReactNode;
   if (!unitId) {
@@ -204,13 +227,34 @@ export default function SalaoAoVivo() {
       <aside className="space-y-4">
         <PainelMesa
           table={selectedTable}
-          state={selectedTable ? (states.get(selectedTable.id) ?? null) : null}
+          state={selectedState}
           reservations={data.reservations}
           walkIns={data.walkIns}
           waitlistSeated={data.waitlistSeated}
+          actions={
+            selectedTable && selectedState ? (
+              <AcoesMesa
+                unitId={unitId}
+                basePath={unit?.unit_slug ? `/o/${unit.unit_slug}` : undefined}
+                table={selectedTable}
+                state={selectedState}
+                now={now}
+                reservations={data.reservations}
+                waitlistSeated={data.waitlistSeated}
+                waitlistActive={data.waitlistActive}
+                waitingWalkIns={waitingWalkIns}
+                blocks={data.blocks}
+              />
+            ) : undefined
+          }
         />
         <ProximasChegadas reservations={data.reservations} tables={tables} today={today} onPick={pickTable} />
-        <ResumoFila entries={data.waitlistActive} now={now} />
+        <ResumoFila
+          entries={data.waitlistActive}
+          now={now}
+          onCall={callNext}
+          callingId={notify.isPending ? (notify.variables?.id ?? null) : null}
+        />
       </aside>
     </div>
   );

@@ -151,3 +151,35 @@ export async function fetchSalaoDurationSetting(unitId: string): Promise<unknown
   if (error) throw error;
   return data?.value ?? null;
 }
+
+// ─── Ações de presença (Task 11) ─────────────────────────────────────────────
+// Os erros sobem como vieram do PostgREST (`code` e `details`) para `presenceErrorMessage`.
+
+export type PresenceAction = "arrive" | "undo_arrive" | "release";
+
+/** Chegada, desfazer chegada ou liberação da mesa de uma reserva. */
+export async function setReservationPresence(reservationId: string, action: PresenceAction): Promise<void> {
+  const { error } = await supabase.rpc("set_reservation_presence", {
+    p_reservation_id: reservationId,
+    p_action: action,
+  });
+  if (error) throw error;
+}
+
+/** Senta uma entrada da fila na mesa. */
+export async function seatWaitlistEntry(waitlistId: string, tableId: string): Promise<void> {
+  const { error } = await supabase.rpc("seat_waitlist_entry", { p_waitlist_id: waitlistId, p_table_id: tableId });
+  if (error) throw error;
+}
+
+/** Libera a mesa de uma entrada da fila sentada. */
+export async function releaseWaitlistEntry(waitlistId: string): Promise<void> {
+  const { error } = await supabase.rpc("release_waitlist_entry", { p_waitlist_id: waitlistId });
+  if (error) throw error;
+}
+
+/** Libera a mesa de um passante sentado (carimba `released_at`, não muda `status`). */
+export async function releaseWalkIn(walkInId: string): Promise<void> {
+  const { error } = await supabase.rpc("release_walk_in", { p_walk_in_id: walkInId });
+  if (error) throw error;
+}
