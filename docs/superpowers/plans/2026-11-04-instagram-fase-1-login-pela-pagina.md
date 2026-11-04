@@ -112,23 +112,23 @@
   - `public.store_instagram_account_connection(p_unit_id uuid, p_ig_user_id text, p_page_id text, p_username text, p_account_type text, p_token text, p_expires_at timestamptz, p_actor uuid) returns uuid`, com `SECURITY DEFINER` e `search_path = ''`.
 - A assinatura antiga de 7 argumentos sai com `drop function if exists` antes do `create`.
 
-- [ ] **Passo 1: escrever os casos do 79 (RED antes da migration):**
+- [x] **Passo 1: escrever os casos do 79 (RED antes da migration):**
   - `p_page_id` nulo, vazio ou `'12a'` dá `22023`;
   - conectar com `p_page_id='111'` grava `page_id='111'`;
   - reconectar o mesmo `ig_user_id` na mesma unidade com `'222'` reaproveita a linha (mesmo `id`, contatos intactos) e grava `page_id='222'` com o token novo;
   - a assinatura de 7 argumentos não existe mais (`to_regprocedure(...) is null`);
   - `has_function_privilege` da nova: `service_role` sim; `anon`/`authenticated` não;
   - `select count(*) from cron.job where jobname='instagram-token-refresh'` = 0, e os jobs `instagram-inbound-sweep` e `instagram-inbound-purge` continuam.
-- [ ] **Passo 2:** rodar o pré-voo 79a + 79 sem a migration nova (README, seção 79). Esperado: RED nos casos novos.
-- [ ] **Passo 3:** escrever a migration.
+- [x] **Passo 2:** rodar o pré-voo 79a + 79 sem a migration nova (README, seção 79). Esperado: RED nos casos novos.
+- [x] **Passo 3:** escrever a migration.
   - O corpo da `store_…` é o da `20261103120100` sem mudança de regra, com três acréscimos: validar `p_page_id` (`btrim`, `^[0-9]{1,64}$`, senão `invalid_instagram_account_argument` 22023); gravar `page_id` no `update` e no `insert`; `p_expires_at` nulo aceito.
   - Ao fim:
     - revoke/grant da nova assinatura;
     - `do $$ begin if exists (select 1 from pg_namespace where nspname='cron') then perform cron.unschedule(jobid) from cron.job where jobname='instagram-token-refresh'; end if; end $$;`;
     - `comment on column ... page_id`: "Página do Facebook ligada à conta; endereço do envio. Nulo só em linha anterior ao login pela Página."
-- [ ] **Passo 4:** gêmeo textual. O teste confere que a migration nova contém o `cron.unschedule` de `instagram-token-refresh` e que nenhuma migration posterior à `120500` volta a agendar esse job.
-- [ ] **Passo 5:** pré-voo 79a + 79 aplicando e reaplicando a migration nova. Esperado: GREEN nas duas, sem resíduo. Rodar também o `67d` sobre o clone `ig79`.
-- [ ] **Passo 6:** `npx vitest run src/lib/instagram-queue-migration-twin.test.ts`. Esperado: PASS. Commit `feat(instagram): page_id na conta e fim do agendamento do refresh`.
+- [x] **Passo 4:** gêmeo textual. O teste confere que a migration nova contém o `cron.unschedule` de `instagram-token-refresh` e que nenhuma migration posterior à `120500` volta a agendar esse job.
+- [x] **Passo 5:** pré-voo 79a + 79 aplicando e reaplicando a migration nova. Esperado: GREEN nas duas, sem resíduo. Rodar também o `67d` sobre o clone `ig79`.
+- [x] **Passo 6:** `npx vitest run src/lib/instagram-queue-migration-twin.test.ts`. Esperado: PASS. Commit `feat(instagram): page_id na conta e fim do agendamento do refresh`.
 
 ### Task 3: adapter do Graph e `instagram-connect`
 
