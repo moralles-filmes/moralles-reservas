@@ -90,6 +90,28 @@ describe("extractAccountItems", () => {
     ]);
   });
 
+  it("cartão automático do Instagram (anexo template, ex. 'Phone number') é ignorado, não é mídia", () => {
+    // Forma real do piloto: o IG manda o texto com o telefone e, segundos depois,
+    // uma mensagem separada só com o cartão gerado por ele.
+    const card = { type: "template", payload: { generic: { elements: [{ title: "Phone number" }] } } };
+    const b = body({
+      id: ME,
+      messaging: [
+        msg({ message: { mid: "txt", text: "43999990000\nPara as 12h00. Serão 2 pessoas!" } }, 1),
+        msg({ message: { mid: "card", attachments: [card] } }, 2),
+        msg({ message: { mid: "cards", attachments: [card, { type: "template", payload: {} }] } }, 3),
+        msg({ message: { mid: "card+img", attachments: [card, { type: "image", payload: { url: "https://cdn.invalid/i" } }] } }, 4),
+      ],
+    });
+    expect(extractAccountItems(b, ME)).toEqual([
+      { kind: "text", mid: "txt", igsid: "555", text: "43999990000\nPara as 12h00. Serão 2 pessoas!", timestamp: 1 },
+      { kind: "ignored", mid: "card", reason: "auto_card" },
+      { kind: "ignored", mid: "cards", reason: "auto_card" },
+      { kind: "media", mid: "card+img", igsid: "555", timestamp: 4 },
+    ]);
+    expect(ignoredOutcome("auto_card")).toBe("ignored_auto_card");
+  });
+
   it("ids numéricos só se forem inteiros seguros; mid ou remetente faltando é malformed", () => {
     const b = body({
       id: Number(ME.slice(0, 15)),
@@ -129,7 +151,7 @@ describe("eco próprio e desfechos", () => {
   });
 
   it("os desfechos seguem o CHECK ^[a-z0-9_]{1,64}$", () => {
-    for (const r of ["deleted", "unsupported", "non_message", "self", "malformed"] as const) {
+    for (const r of ["deleted", "unsupported", "non_message", "self", "malformed", "auto_card"] as const) {
       expect(ignoredOutcome(r)).toMatch(/^[a-z0-9_]{1,64}$/);
     }
     expect(ignoredOutcome("self")).toBe("ignored_self");
