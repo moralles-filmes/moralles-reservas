@@ -50,7 +50,7 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
     { to: `${base}/salao`,     label: "Salão ao vivo",   icon: LayoutGrid },
     { to: `${base}/agenda`,    label: "Calendário",      icon: CalendarDays },
     { to: `${base}/fila`,      label: "Fila de espera",  icon: Users },
-    { to: `${base}/passantes`, label: "Walk-ins",        icon: UtensilsCrossed },
+    { to: `${base}/passantes`, label: "Passantes",       icon: UtensilsCrossed },
     { to: `${base}/giftback`,  label: "Validar voucher", icon: Gift },
     { to: `${base}/entregas`,  label: "Entregas",        icon: MailWarning, badge: undeliveredCount },
     { to: `${base}/whatsapp`,  label: "WhatsApp",        icon: MessageCircle },

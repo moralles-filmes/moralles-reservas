@@ -54,9 +54,9 @@ export function useCreateWalkIn(unitId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] });
-      toast.success("Walk-in registrado.");
+      toast.success("Passante registrado.");
     },
-    onError: () => toast.error("Erro ao registrar walk-in."),
+    onError: () => toast.error("Erro ao registrar passante."),
   });
 }
 
