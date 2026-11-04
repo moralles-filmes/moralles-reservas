@@ -10,7 +10,8 @@ import { createAgentTurn } from "../_shared/agent/turn.ts";
 import { buildAgentUnit } from "../_shared/agent/unit-context.ts";
 import { isOrgBillingBlocked } from "../_shared/org-billing-gate-core.ts";
 // Mesmo texto do Direct (process-instagram-inbound): uma constante, dois canais.
-import { MEDIA_REPLY_TEXT } from "../_shared/media-reply-text.ts";
+import { MEDIA_REPLY_TEXT, mediaNoticeText } from "../_shared/media-reply-text.ts";
+import { recordInboundMedia } from "../_shared/adapters/conversation-media-notice.ts";
 import { checkFlagEnabled } from "../_shared/platform-flags.ts";
 // ─── Ingestão assíncrona (Fase C) ────────────────────────────────────────────
 // Adapter de I/O; NENHUMA decisão desta fase é redigitada aqui. `vitest` não
@@ -2397,33 +2398,41 @@ async function handleWebhookRequest(
       const mediaReceivedAt = new Date().toISOString();
       // deno-lint-ignore no-explicit-any
       let mediaConv: any = null;
-      // deno-lint-ignore no-explicit-any
-      let mediaMessages: any[] = [];
       if (mediaCustomer && unitId) {
         mediaConv = await getOrCreateConversation(mediaCustomer.id, unitId, media.contactName, inboundChatLid);
-        if (mediaConv) {
-          const mediaAppend = await appendToConversation(
-            mediaConv.id,
-            mediaConv.messages || [],
-            "user",
-            userPlaceholder,
-            {
-              author: "customer",
-              timestamp: media.timestamp,
-              receivedAt: mediaReceivedAt,
-              eventId: `wa-in:${provider}:${media.providerMessageId}`,
-              required: true,
-            },
-          );
-          mediaMessages = mediaAppend.messages;
-        }
       }
       if (!mediaConv) throw new Error("media_conversation_lookup_failed");
 
-      // Conversa em handoff humano? Não responde — atendente assume.
-      if (mediaConv && (mediaConv.status === "human_active" || mediaConv.status === "awaiting_human")) {
+      // Grava a mídia pelo RPC atômico, que decide aviso agora, adiado (o turno
+      // de texto responde e avisa depois), suprimido (handoff) ou duplicado.
+      // Erro lança `media_message_persist_failed` e força reentrega.
+      const mediaNoticeAllowed = !(mediaConv.status === "human_active" || mediaConv.status === "awaiting_human");
+      const mediaRecord = await recordInboundMedia(supabase, {
+        conversationId: mediaConv.id,
+        message: {
+          event_id: `wa-in:${provider}:${media.providerMessageId}`,
+          role: "user",
+          content: userPlaceholder,
+          timestamp: conversationTimestamp(media.timestamp),
+          author: "customer",
+          received_at: mediaReceivedAt,
+          media_kind: media.mediaKind,
+        },
+        noticeAllowed: mediaNoticeAllowed,
+      });
+
+      if (mediaRecord.decision === "suppressed") {
         jsonLog("info", { requestId, evt: "media_during_handoff", mediaKind: media.mediaKind, phone: phoneHash });
         await finish("media_during_handoff", null, { mediaKind: media.mediaKind });
+        return new Response("ok");
+      }
+      if (mediaRecord.decision === "duplicate") {
+        await finish("duplicate");
+        return new Response("ok");
+      }
+      if (mediaRecord.decision === "deferred") {
+        jsonLog("info", { requestId, evt: "media_notice_deferred", mediaKind: media.mediaKind, phone: phoneHash });
+        await finish("media_notice_deferred", null, { mediaKind: media.mediaKind });
         return new Response("ok");
       }
 
@@ -2451,14 +2460,15 @@ async function handleWebhookRequest(
       }
 
       externalSideEffectStarted = true;
-      const sendRes = await sendOutbound(provider, credentials, { toPhone: mediaPhone, text: MEDIA_REPLY_TEXT });
+      const mediaNotice = mediaRecord.variant ? mediaNoticeText([media.mediaKind]) : MEDIA_REPLY_TEXT;
+      const sendRes = await sendOutbound(provider, credentials, { toPhone: mediaPhone, text: mediaNotice });
       let historyPersisted = true;
       if (sendRes.ok && mediaConv) {
         const replyAppend = await appendToConversation(
           mediaConv.id,
-          mediaMessages,
+          [], // o RPC não devolve o histórico; ninguém encadeia depois
           "assistant",
-          MEDIA_REPLY_TEXT,
+          mediaNotice,
           { author: "automation" },
         );
         historyPersisted = replyAppend.persisted;
