@@ -24,7 +24,11 @@ export interface SaveHallPlanArgs {
     h: number | null;
     rotation: number | null;
     shape: "round" | "square" | "rect" | null;
+    /** Ausente = não muda. */
+    bookable?: boolean;
   }>;
+  /** Nulo ou ausente = não mexe; array = conjunto ativo de combinações do salão. */
+  p_combinations?: Array<{ min: number; max: number; table_ids: string[] }> | null;
 }
 
 /**
@@ -63,6 +67,7 @@ export async function saveHallPlan(
     p_expected_updated_at: expectedUpdatedAt,
     p_hall: payload.p_hall,
     p_tables: payload.p_tables,
+    ...(payload.p_combinations !== undefined ? { p_combinations: payload.p_combinations } : {}),
   });
   if (error) throw error;
   return data as string;

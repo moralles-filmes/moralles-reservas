@@ -304,6 +304,19 @@ export interface Mesa {
   plan_h?: number | null;
   plan_rotation?: number | null;
   plan_shape?: "round" | "square" | "rect" | null;
+  /** false = "Não disponível para reservas" (cliente, IA e automático não usam; a recepção sim). */
+  bookable?: boolean;
+}
+
+/** Mesas juntas cadastradas no editor, com a faixa de pessoas digitada pelo restaurante. */
+export interface TableCombination {
+  id: string;
+  unit_id: string;
+  hall_id: string;
+  min_capacity: number;
+  max_capacity: number;
+  active: boolean;
+  table_ids: string[];
 }
 
 export type PlanWall = "top" | "right" | "bottom" | "left";

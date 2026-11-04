@@ -663,7 +663,15 @@
       "name": "save_hall_plan",
       "args": "p_hall_id uuid, p_expected_updated_at timestamptz, p_hall jsonb, p_tables jsonb",
       "roles": ["authenticated"],
-      "why": "Owner/gerente/admin salva a planta do salão da própria unidade; INVOKER sobre RLS; ids validados contra o salão. O papel é decidido pelo trigger app_private.guard_plan_write em modo estrito (GUC local), pois authenticated não tem USAGE em app_private; salão alheio ou inexistente e mesa de outro salão dão o mesmo 42501 hall_plan_forbidden. Medido no pré-voo 81 (L-9 a L-13, L-16, L-18) com controles L-CP e L-CP2.",
+      "why": "Assinatura de 4 argumentos concedida pela 20261030120000 e DROPADA pela 20261105120000 (substituída pela de 5 argumentos abaixo); a entrada fica só para classificar o grant histórico na checagem estática das migrations posteriores à 085. Owner/gerente/admin salva a planta do salão da própria unidade; INVOKER sobre RLS; ids validados contra o salão. O papel é decidido pelo trigger app_private.guard_plan_write em modo estrito (GUC local), pois authenticated não tem USAGE em app_private; salão alheio ou inexistente e mesa de outro salão dão o mesmo 42501 hall_plan_forbidden. Medido no pré-voo 81 (L-9 a L-13, L-16, L-18) com controles L-CP e L-CP2.",
+      "security_definer": false,
+      "advisor_lints": []
+    },
+    {
+      "name": "save_hall_plan",
+      "args": "p_hall_id uuid, p_expected_updated_at timestamptz, p_hall jsonb, p_tables jsonb, p_combinations jsonb",
+      "roles": ["authenticated"],
+      "why": "Owner/gerente/admin salva a planta do salão da própria unidade; INVOKER sobre RLS; ids validados contra o salão. O papel é decidido pelo trigger app_private.guard_plan_write em modo estrito (GUC local), pois authenticated não tem USAGE em app_private; salão alheio ou inexistente e mesa de outro salão dão o mesmo 42501 hall_plan_forbidden. Criada na 20261105120000 (drop da assinatura de 4 argumentos + create com p_combinations default null, revoke/grant repetidos; a chamada nomeada de 4 argumentos do front publicado resolve para esta): também grava bookable por mesa e o conjunto ativo de combinações do salão; mesa de outro salão/unidade em combinação dá 42501 hall_plan_forbidden, mesa não reservável ou inativa 42501 combination_invalid (trigger app_private.guard_combination_member), e o papel nas tabelas de combinação é do app_private.guard_layout_write. Medido no pré-voo 81 (L-9 a L-13, L-16, L-18) com controles L-CP e L-CP2, e no 83 (C-1 a C-10, controles C-CP1 e C-CP2).",
       "security_definer": false,
       "advisor_lints": []
     },

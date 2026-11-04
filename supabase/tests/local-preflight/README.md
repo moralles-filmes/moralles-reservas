@@ -2885,3 +2885,64 @@ O que NÃO prova: PostgREST/JWT real nem concorrência (o `FOR SHARE` do
 duas sessões). Os triggers são DEFINER e só leem `unit_members`,
 `platform_admins`, `halls`, `tables`, `hall_schedules`, `table_blocks` e
 `special_dates`.
+
+### 83 — Escolha de mesa
+
+Pré-voo das migrations da escolha de mesa (spec
+`docs/superpowers/specs/2026-11-04-escolha-de-mesa-design.md`). Mesmo contêiner,
+motor e fixtures do 81/82; o `83a-escolha-de-mesa-bootstrap.sql` só acrescenta
+tabelas que o 81a/82a não projetam, e fixtures que mudariam contagens do 81/82
+(como a mesa T14 em S1) nascem dentro da transação desfeita do 83. Roda **da
+raiz do repo**.
+
+```bash
+docker run -d --name mesa83-pg --network none -e POSTGRES_PASSWORD=x \
+  public.ecr.aws/supabase/postgres:17.11.0.004
+P()  { docker exec -i mesa83-pg psql -U postgres       -d postgres -X -q -v ON_ERROR_STOP=1; }
+PA() { docker exec -i mesa83-pg psql -U supabase_admin -d postgres -X -q -v ON_ERROR_STOP=1; }
+PA < supabase/tests/local-preflight/81a-planta-do-salao-bootstrap.sql
+P  < supabase/migrations/20261030120000_planta_do_salao_layout.sql
+P  < supabase/migrations/20261030120100_planta_do_salao_presenca.sql
+P  < supabase/tests/local-preflight/82a-planta-endurecimento-bootstrap.sql
+P  < supabase/migrations/20261104120000_planta_endurecimento.sql
+P  < supabase/tests/local-preflight/83a-escolha-de-mesa-bootstrap.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED
+P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN
+P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # segue verde
+P  < supabase/tests/local-preflight/82-planta-endurecimento.sql       # segue verde
+P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql   # reaplicar
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
+docker rm -f mesa83-pg
+```
+
+- **C-1 (8501–8505):** gerente salva combinações pela `save_hall_plan`; salvar
+  o mesmo conjunto (em qualquer ordem) mantém o id e só atualiza a faixa; lista
+  vazia desativa sem apagar; combinações podem dividir mesas; a que sai vira
+  inativa e a nova nasce com id novo.
+- **C-2, C-3 (8506–8510):** operador → `42501 hall_plan_forbidden`; mesa de
+  outro salão, de outra unidade ou inexistente → o mesmo `42501`, sem gravar
+  nada do payload (C-3d).
+- **C-4 (8511–8513):** mesa não reservável (já desligada ou desligada no mesmo
+  payload) ou inativa → `42501 combination_invalid`.
+- **C-5 (8514–8521):** uma mesa só, conjunto repetido, mesa repetida, faixa em
+  texto ou não inteira, chave faltando, objeto em vez de array, id que não é
+  uuid, `bookable` que não é boolean → `22023 hall_plan_invalid`; faixa
+  invertida → `23514` do CHECK.
+- **C-6 (8522–8525):** desligar, desativar, mudar de salão ou apagar a mesa
+  desativa as combinações dela; `bookable` ausente no payload não muda a mesa.
+- **C-7 (8526):** a chamada nomeada de 4 argumentos (front publicado) resolve
+  para a função nova e não mexe nas combinações.
+- **C-8, C-9 (8527–8530, 8541–8542):** anon sem privilégio nas duas tabelas;
+  outsider e gerente de B não veem; operador de A vê; platform_admin sem
+  membership salva.
+- **C-10 (8531–8538):** escrita direta pela API: operador e gerente de B →
+  `layout_write_forbidden` (o guard de papel vem antes da RLS); salão de B,
+  mesa de outro salão, reativar ou mover combinação → `combination_invalid`;
+  `DELETE` sem privilégio; salão com combinação não muda de unidade.
+- **C-CP1, C-CP2 (8539–8540), controles:** sem o guard de membro a mesa não
+  reservável entra; sem o trigger de desativação a combinação segue ativa.
+
+**Resultados observados em 05/11/2026** (imagem `supabase/postgres:17.11.0.004`,
+sem rede, contêiner novo): **0/42 antes da migration**, **42/42** depois e
+42/42 com a migration reaplicada; 81 em 83/83 e 82 em 52/52 com ela aplicada.
