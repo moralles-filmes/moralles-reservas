@@ -74,3 +74,8 @@ export function brtDayBounds(
     endIsoExclusive: `${addDaysKey(toKey, 1)}T00:00:00-03:00`,
   };
 }
+
+/** Dia civil atual em Brasília. */
+export function brtTodayKey(now = new Date()): string {
+  return brtDateOf(now.toISOString());
+}

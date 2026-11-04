@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addDaysKey,
   brtDateOf,
+  brtTodayKey,
   brtDayBounds,
   brtDowOf,
   brtHourOf,
@@ -11,6 +12,9 @@ import {
 } from "./brt";
 
 describe("brt", () => {
+  it("hoje em Brasília", () => {
+    expect(brtTodayKey(new Date("2026-11-05T02:30:00Z"))).toBe("2026-11-04");
+  });
   it("01:30Z é o dia anterior, hora 22, em BRT", () => {
     const iso = "2026-11-04T01:30:00Z";
     expect(brtDateOf(iso)).toBe("2026-11-03");
