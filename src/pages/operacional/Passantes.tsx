@@ -9,6 +9,7 @@ import {
   useUpdateWalkInStatus,
   useDeleteWalkIn,
 } from "@/hooks/useWalkIns";
+import { useReleaseWalkIn } from "@/hooks/useMesaAcoes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,14 +42,15 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn, formatPhone } from "@/lib/utils";
 import type { WalkIn, WalkInStatus } from "@/types/reserva";
+import { StatusPill, type StatusTone } from "@/components/ui/status-pill";
 import { AlertCircle, Clock, Plus, Trash2, UtensilsCrossed, Users } from "lucide-react";
 import { toast } from "sonner";
 
-const STATUS_CONFIG: Record<WalkInStatus, { label: string; className: string }> = {
-  waiting:  { label: "Aguardando", className: "bg-warning/10 text-warning border-warning/20" },
-  seated:   { label: "Na mesa",    className: "bg-success/10 text-success border-success/20" },
-  left:     { label: "Foi embora", className: "bg-muted text-muted-foreground border-border" },
-  no_show:  { label: "Não apareceu", className: "bg-destructive/10 text-destructive border-destructive/20" },
+const STATUS_CONFIG: Record<WalkInStatus, { label: string; tone: StatusTone }> = {
+  waiting:  { label: "Aguardando", tone: "pending" },
+  seated:   { label: "Na mesa",    tone: "success" },
+  left:     { label: "Foi embora", tone: "muted" },
+  no_show:  { label: "Não apareceu", tone: "destructive" },
 };
 
 function WaitingTime({ arrivedAt }: { arrivedAt: string }) {
@@ -76,6 +78,7 @@ export default function Passantes() {
   const createWalkIn = useCreateWalkIn(unitId);
   const updateStatus = useUpdateWalkInStatus(unitId);
   const deleteWalkIn = useDeleteWalkIn(unitId);
+  const releaseWalkIn = useReleaseWalkIn(unitId);
 
   const { data: mesas } = useQuery({
     queryKey: ["mesas", unitId],
@@ -109,11 +112,11 @@ export default function Passantes() {
   };
 
   const waiting = walkIns?.filter((w) => w.status === "waiting") ?? [];
-  const seated  = walkIns?.filter((w) => w.status === "seated") ?? [];
+  const seated  = walkIns?.filter((w) => w.status === "seated" && !w.released_at) ?? [];
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Walk-ins">
+      <PageHeader title="Passantes">
         {waiting.length > 0 && <span className="rounded-full border px-2 py-0.5 text-xs font-medium tabular bg-warning/10 text-warning border-warning/20">{waiting.length} aguardando</span>}
         <Button size="sm" onClick={() => setOpen(true)}>
           <Plus className="h-4 w-4 mr-1" /> Registrar
@@ -125,7 +128,7 @@ export default function Passantes() {
       ) : isError ? (
         <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
           <AlertCircle className="h-8 w-8 text-destructive" />
-          <p className="text-sm font-medium">Erro ao carregar os walk-ins.</p>
+          <p className="text-sm font-medium">Erro ao carregar os passantes.</p>
           <p className="text-xs text-muted-foreground">Verifique sua conexão e tente novamente.</p>
           <Button size="sm" variant="outline" onClick={() => refetch()}>
             Tentar de novo
@@ -134,7 +137,7 @@ export default function Passantes() {
       ) : !walkIns?.length ? (
         <div className="surface rounded-card py-12 text-center text-muted-foreground text-sm">
             <UtensilsCrossed className="h-8 w-8 mx-auto mb-2 opacity-30" />
-            Nenhum walk-in no momento.
+            Nenhum passante no momento.
         </div>
       ) : (
         <div className="space-y-5">
@@ -150,6 +153,7 @@ export default function Passantes() {
                   mesas={mesas ?? []}
                   onSeat={handleSeat}
                   onStatus={(id, status) => updateStatus.mutate({ id, status })}
+                  onRelease={(id) => releaseWalkIn.mutate({ walkInId: id })}
                   onDelete={(id) => deleteWalkIn.mutate(id)}
                   isUpdating={updateStatus.isPending && updateStatus.variables?.id === w.id}
                   isDeleting={deleteWalkIn.isPending && deleteWalkIn.variables === w.id}
@@ -169,8 +173,9 @@ export default function Passantes() {
                   mesas={mesas ?? []}
                   onSeat={handleSeat}
                   onStatus={(id, status) => updateStatus.mutate({ id, status })}
+                  onRelease={(id) => releaseWalkIn.mutate({ walkInId: id })}
                   onDelete={(id) => deleteWalkIn.mutate(id)}
-                  isUpdating={updateStatus.isPending && updateStatus.variables?.id === w.id}
+                  isUpdating={releaseWalkIn.isPending && releaseWalkIn.variables?.walkInId === w.id}
                   isDeleting={deleteWalkIn.isPending && deleteWalkIn.variables === w.id}
                 />
               ))}
@@ -179,10 +184,10 @@ export default function Passantes() {
         </div>
       )}
 
-      {/* Formulário de novo walk-in */}
+      {/* Formulário de novo passante */}
       <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Registrar walk-in</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Registrar passante</DialogTitle></DialogHeader>
           <div className="space-y-4 mt-2">
             <div className="space-y-1">
               <Label htmlFor="walkin-name">Nome do cliente *</Label>
@@ -235,6 +240,7 @@ function WalkInCard({
   mesas,
   onSeat,
   onStatus,
+  onRelease,
   onDelete,
   isUpdating,
   isDeleting,
@@ -243,6 +249,7 @@ function WalkInCard({
   mesas: MesaOption[];
   onSeat: (w: WalkIn, tableId?: string) => void;
   onStatus: (id: string, status: WalkInStatus) => void;
+  onRelease: (id: string) => void;
   onDelete: (id: string) => void;
   isUpdating: boolean;
   isDeleting: boolean;
@@ -264,7 +271,7 @@ function WalkInCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-1">
             <p className="font-medium text-sm">{walkIn.customer_name}</p>
-            <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium shrink-0", statusCfg.className)}>{statusCfg.label}</span>
+            <StatusPill tone={statusCfg.tone}>{statusCfg.label}</StatusPill>
             {walkIn.table && (
               <Badge variant="outline" className="text-[11px]">Mesa {walkIn.table.number}</Badge>
             )}
@@ -327,7 +334,7 @@ function WalkInCard({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => onStatus(walkIn.id, "left")}
+              onClick={() => onRelease(walkIn.id)}
               disabled={isUpdating}
             >
               Foi embora
@@ -335,13 +342,13 @@ function WalkInCard({
           )}
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="ghost" size="icon" aria-label="Remover walk-in">
+              <Button variant="ghost" size="icon" aria-label="Remover passante">
                 <Trash2 className="h-4 w-4 text-destructive" />
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>Remover walk-in?</AlertDialogTitle>
+                <AlertDialogTitle>Remover passante?</AlertDialogTitle>
                 <AlertDialogDescription>O registro será removido permanentemente.</AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
@@ -67,6 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const orphanLogoutInFlight = useRef(false);
   const mounted = useRef(false);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     mounted.current = true;
@@ -97,6 +99,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       const nextUserId = session?.user?.id ?? null;
       if (event === "SIGNED_IN" && nextUserId !== currentUserId) setLoading(true);
+      // Cache privado nunca atravessa sessões: saída ou troca de um usuário por outro.
+      if (event === "SIGNED_OUT" || (currentUserId !== null && nextUserId !== null && nextUserId !== currentUserId)) {
+        queryClient.clear();
+      }
       currentUserId = nextUserId;
       setUser(session?.user ?? null);
 

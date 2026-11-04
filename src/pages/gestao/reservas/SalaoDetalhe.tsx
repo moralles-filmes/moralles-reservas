@@ -33,12 +33,13 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Map, Pencil, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowLeft, Map, Pencil, Trash2 } from "lucide-react";
 import { HallScheduleGrid } from "@/components/halls/HallScheduleGrid";
 import { HallScheduleSheet } from "@/components/halls/HallScheduleSheet";
 import { BreadcrumbReservas } from "./Saloes";
 import type { HallSchedule, Mesa } from "@/types/reserva";
 import { toast } from "sonner";
+import { HALL_NOT_IN_UNIT_MESSAGE, layoutErrorMessage } from "@/lib/layout-errors";
 
 export default function SalaoDetalhe() {
   const { hallId } = useParams<{ hallId: string }>();
@@ -54,18 +55,18 @@ export default function SalaoDetalhe() {
   const [editName, setEditName] = useState("");
   const [editDesc, setEditDesc] = useState("");
 
-  const { data: hall, isLoading: hallLoading } = useHall(hallId);
-  const { data: schedules, isLoading: schedulesLoading } = useHallSchedules(hallId);
-  const { data: hallTables } = useHallTables(hallId);
-  const createSchedules = useCreateHallSchedules();
-  const updateSchedule = useUpdateHallSchedule();
-  const deleteSchedule = useDeleteHallSchedule();
+  const { data: hall, isLoading: hallLoading, isError: hallError, refetch: refetchHall } = useHall(unitId, hallId);
+  const { data: schedules, isLoading: schedulesLoading } = useHallSchedules(unitId, hallId);
+  const { data: hallTables } = useHallTables(unitId, hallId);
+  const createSchedules = useCreateHallSchedules(unitId);
+  const updateSchedule = useUpdateHallSchedule(unitId);
+  const deleteSchedule = useDeleteHallSchedule(unitId);
   const createTablesBulk = useCreateTablesBulk();
   const deleteTable = useDeleteTable();
   const updateHall = useUpdateHall(unitId);
   const removeHall = useDeleteHall(unitId);
 
-  if (hallLoading || !hall) {
+  if (hallLoading || (!hall && !hallError && hall !== null)) {
     return (
       <div className="space-y-4">
         <Skeleton className="h-7 w-40" />
@@ -74,22 +75,48 @@ export default function SalaoDetalhe() {
     );
   }
 
+  if (hallError && !hall) {
+    return (
+      <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
+        <AlertCircle className="h-8 w-8 text-destructive" />
+        <p className="text-sm font-medium">Erro ao carregar o salão.</p>
+        <Button size="sm" variant="outline" onClick={() => refetchHall()}>
+          Tentar de novo
+        </Button>
+      </div>
+    );
+  }
+
+  // Salão de outra unidade (a RLS libera todas as do membro) ou inexistente: nenhuma ação.
+  if (!hall) {
+    return (
+      <div className="surface rounded-card py-8 flex flex-col items-center gap-3 text-center">
+        <p className="text-sm font-medium">{HALL_NOT_IN_UNIT_MESSAGE}</p>
+        <Button size="sm" variant="outline" asChild>
+          <Link to={`/g/${unitSlug}/reservas/saloes`}>Voltar para os salões</Link>
+        </Button>
+      </div>
+    );
+  }
+
+  const onLayoutError = (fallback: string) => (err: unknown) => toast.error(layoutErrorMessage(err, fallback));
+
   const handleDelete = async (schedule: HallSchedule) => {
     deleteSchedule.mutate(
       { id: schedule.id, hall_id: schedule.hall_id },
       {
         onSuccess: () => toast.success("Horário removido."),
-        onError: () => toast.error("Erro ao remover horário."),
+        onError: onLayoutError("Erro ao remover horário."),
       },
     );
   };
 
   const handleDeleteTable = async (table: Mesa) => {
     deleteTable.mutate(
-      { id: table.id, unit_id: table.unit_id, hall_id: table.hall_id },
+      { id: table.id, unit_id: unitId, hall_id: table.hall_id },
       {
         onSuccess: () => toast.success("Mesa removida."),
-        onError: () => toast.error("Não foi possível remover (verifique reservas vinculadas)."),
+        onError: onLayoutError("Não foi possível remover (verifique reservas vinculadas)."),
       },
     );
   };
@@ -120,6 +147,7 @@ export default function SalaoDetalhe() {
       // 2) Atualizar OU criar schedules
       if (payload.id) {
         await updateSchedule.mutateAsync({
+          hall_id: hall.id,
           id: payload.id,
           day_of_week: payload.days[0],
           open_time: payload.open_time,
@@ -146,7 +174,7 @@ export default function SalaoDetalhe() {
         toast.success("Horário criado.");
       }
     } catch (err) {
-      toast.error((err as Error).message ?? "Erro ao salvar horário.");
+      toast.error(layoutErrorMessage(err, "Erro ao salvar horário."));
       throw err;
     }
   };
@@ -170,7 +198,7 @@ export default function SalaoDetalhe() {
           toast.success("Salão atualizado.");
           setEditOpen(false);
         },
-        onError: (err: Error) => toast.error(err.message ?? "Erro ao atualizar salão."),
+        onError: onLayoutError("Erro ao atualizar salão."),
       },
     );
   };
@@ -219,7 +247,9 @@ export default function SalaoDetalhe() {
               <span>Salão ativo?</span>
               <Switch
                 checked={hall.active}
-                onCheckedChange={(active) => updateHall.mutate({ id: hall.id, active })}
+                onCheckedChange={(active) =>
+                  updateHall.mutate({ id: hall.id, active }, { onError: onLayoutError("Erro ao atualizar salão.") })
+                }
               />
             </label>
             <Button variant="outline" size="sm" className="w-full gap-2" onClick={openEdit}>
@@ -248,6 +278,7 @@ export default function SalaoDetalhe() {
                           toast.success("Salão excluído.");
                           navigate(`/g/${unitSlug}/reservas/saloes`);
                         },
+                        onError: onLayoutError("Erro ao excluir salão."),
                       })
                     }
                     className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
@@ -265,10 +296,10 @@ export default function SalaoDetalhe() {
               <h3 className="text-sm font-semibold">Mapa de mesas</h3>
             </header>
             <p className="text-xs text-muted-foreground">
-              Visualização espacial das mesas. (Em breve.)
+              Posicione as mesas na planta do salão.
             </p>
-            <Button variant="outline" size="sm" className="w-full" disabled>
-              Criar mapa
+            <Button asChild variant="outline" size="sm" className="w-full">
+              <Link to={`/g/${unitSlug}/reservas/saloes/${hall.id}/planta`}>Editar planta</Link>
             </Button>
           </Card>
 
@@ -278,7 +309,10 @@ export default function SalaoDetalhe() {
               <Switch
                 checked={hall.allow_empty_seat}
                 onCheckedChange={(allow) =>
-                  updateHall.mutate({ id: hall.id, allow_empty_seat: allow })
+                  updateHall.mutate(
+                    { id: hall.id, allow_empty_seat: allow },
+                    { onError: onLayoutError("Erro ao atualizar salão.") },
+                  )
                 }
               />
             </label>

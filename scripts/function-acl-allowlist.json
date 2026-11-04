@@ -689,7 +689,7 @@
       "name": "set_reservation_presence",
       "args": "p_reservation_id uuid, p_action text",
       "roles": ["authenticated"],
-      "why": "Planta do salão: chegada, desfazer chegada e liberar mesa de uma reserva. Não muda status nem cria linha; carimbo de presença. INVOKER sobre a RLS (reservations com FORCE RLS): alheia e inexistente dão o mesmo 42501 presence_forbidden; relógio e ordem impostos pelo trigger app_private.guard_presence_stamps. Medido no pré-voo 81 (P-1 a P-7, P-14) com controle P-CP.",
+      "why": "Planta do salão: chegada, desfazer chegada e liberar mesa de uma reserva. Não muda status nem cria linha; carimbo de presença. Devolve boolean (true gravou, false já estava feito) desde a 20261104120000, que faz drop + create e repete o revoke/grant. INVOKER sobre a RLS (reservations com FORCE RLS): alheia e inexistente dão o mesmo 42501 presence_forbidden; relógio e ordem impostos pelo trigger app_private.guard_presence_stamps. Medido no pré-voo 81 (P-1 a P-7, P-14) com controle P-CP e no 82 (H-12).",
       "security_definer": false,
       "advisor_lints": []
     },

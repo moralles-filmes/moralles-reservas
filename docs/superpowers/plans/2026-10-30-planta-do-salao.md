@@ -89,7 +89,7 @@ Cinco fases. A B1 vai para a `main` sozinha (passo "expand"): as migrations prec
 4. Merge `--no-ff` na base da tabela. A B1 e a B5 vão por PR, com autorização.
 5. Marcar os checkboxes deste plano e commitar o plano.
 6. Atualizar o STATE e a memória do projeto.
-7. Push da integração com autorização: preview da Vercel, que usa o Supabase de produção. Testar escrita só na MORALLES.
+7. Sem push entre as fases. Em 2026-10-31 o dono decidiu economizar build na Vercel: a integração fica local até a Task 17, e o preview dela está desligado no `vercel.json`. A conferência do dono é pelo `npm run dev`, que usa o mesmo Supabase de produção. Testar escrita só na MORALLES.
 8. Sugerir chat novo.
 
 ## Mapa de arquivos
@@ -336,7 +336,7 @@ git add src/types/reserva.ts src/hooks/useHallTables.ts supabase/tests/local-pre
 git commit -m "feat(planta): tipos de layout e presença; README do harness 81"
 ```
 
-- [ ] **Step 5: PR para `main` (autorização do dono)**
+- [x] **Step 5: PR para `main` (autorização do dono)**
   - `gh pr create --base main --head feat/planta-b1-banco`.
   - Corpo:
     - o que é aditivo e inerte (nenhuma tela usa ainda);
@@ -345,12 +345,12 @@ git commit -m "feat(planta): tipos de layout e presença; README do harness 81"
     - o aviso de ordem para o Instagram (`db push --include-all`);
     - o rodapé de atribuição.
   - Conferir o `acl-estatico` verde na aba Checks antes do merge.
-- [ ] **Step 6: Merge e `supabase db push` (autorização do dono)**
+- [x] **Step 6: Merge e `supabase db push` (autorização do dono)**
   - Depois do merge: `git switch main && git pull`.
   - `supabase db push --dry-run` lista só `<ts1>` e `<ts2>`; depois, `supabase db push`.
   - Conferir com `supabase migration list` que as duas versões estão em local e remoto.
   - Deploy da Vercel em READY (só tipos mudaram).
-- [ ] **Step 7: Criar a integração:** `git switch -c feat/planta-do-salao` a partir da `main` nova. Atualizar o STATE.
+- [x] **Step 7: Criar a integração:** `git switch -c feat/planta-do-salao` a partir da `main` nova. Atualizar o STATE.
 
 ---
 
@@ -379,7 +379,7 @@ export function clampBox(box: TableBox, plan: HallPlan): TableBox;
 export function toSavePayload(plan: HallPlan, boxes: TableBox[]): { p_hall: { width_cm: number; depth_cm: number; entrance_wall: PlanWall | null; entrance_offset_cm: number | null; window_walls: PlanWall[] }; p_tables: Array<{ id: string; x: number | null; y: number | null; w: number | null; h: number | null; rotation: number | null; shape: PlanShape | null }> };
 ```
 
-- [ ] **Step 1: Testes que falham** (`hall-plan-core.test.ts`):
+- [x] **Step 1: Testes que falham** (`hall-plan-core.test.ts`):
   - `hallPlanFrom` devolve `DEFAULT_HALL_PLAN` quando `plan_width_cm` é nulo e copia as colunas quando preenchidas.
   - `defaultSizeFor(2)` dá `{70,70,"round"}`; `defaultSizeFor(4)` dá `{80,80,"square"}`; `defaultSizeFor(6)` dá `{140,80,"rect"}`; `defaultSizeFor(10)` dá `{260,80,"rect"}` (regra: 5 ou mais → `w = 80 + 60 * ceil((cap - 4) / 2)`, limitado a 600).
   - **`grade automática`:** 12 mesas sem posição num salão padrão.
@@ -394,10 +394,10 @@ export function toSavePayload(plan: HallPlan, boxes: TableBox[]): { p_hall: { wi
     - mesa `positioned=false` sai com todos os campos `null`;
     - `rotation` é normalizada para 0–359;
     - `x`/`y`/`w`/`h` são inteiros.
-- [ ] **Step 2:** `npx vitest run src/lib/hall-plan-core.test.ts` → FAIL (módulo ausente).
-- [ ] **Step 3: Implementar.** Na grade automática, a posição sem colisão pode ser encontrada por varredura em passos de `GRID_CM`.
-- [ ] **Step 4:** mesmo comando → PASS.
-- [ ] **Step 5: Commit** `feat(planta): geometria pura da planta com grade automática`.
+- [x] **Step 2:** `npx vitest run src/lib/hall-plan-core.test.ts` → FAIL (módulo ausente).
+- [x] **Step 3: Implementar.** Na grade automática, a posição sem colisão pode ser encontrada por varredura em passos de `GRID_CM`.
+- [x] **Step 4:** mesmo comando → PASS.
+- [x] **Step 5: Commit** `feat(planta): geometria pura da planta com grade automática`.
 
 ### Task 5: Dados e salvamento da planta
 
@@ -423,15 +423,15 @@ export function toSavePayload(plan: HallPlan, boxes: TableBox[]): { p_hall: { wi
     - `42501` → "Você não tem permissão para editar esta planta.";
     - outro → "Não foi possível salvar a planta. Tente de novo.".
 
-- [ ] **Step 1: Testes que falham**, no molde de `useAiStoreSettings.test.tsx` com `vi.mock("@/lib/supabase")`:
+- [x] **Step 1: Testes que falham**, no molde de `useAiStoreSettings.test.tsx` com `vi.mock("@/lib/supabase")`:
   - a leitura filtra `unit_id` e `hall_id`;
   - salvar chama `rpc("save_hall_plan", { p_hall_id, p_expected_updated_at, p_hall, p_tables })` com o payload intacto;
   - erro `{ code: "40001" }` vira a mensagem de conflito;
   - sucesso invalida as quatro chaves.
-- [ ] **Step 2:** `npx vitest run src/hooks/useHallPlan.test.tsx` → FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): leitura e salvamento da planta por RPC`.
+- [x] **Step 2:** `npx vitest run src/hooks/useHallPlan.test.tsx` → FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): leitura e salvamento da planta por RPC`.
 
 ### Task 6: Tela do editor
 
@@ -466,20 +466,20 @@ O que a tela faz:
 - **Permissão:** quem não é `isGerente` vê a planta só para leitura, sem salvar. Hoje só o platform_admin com pseudo-owner e o owner/gerente chegam à Gestão.
 - **Visual:** `surface` nos painéis, sem `glass`; mesas com o token `--status-free`; 2D, sem 3D.
 
-- [ ] **Step 1: Testes que falham** (`SalaoPlanta.test.tsx`, hooks mockados):
+- [x] **Step 1: Testes que falham** (`SalaoPlanta.test.tsx`, hooks mockados):
   - renderiza as mesas como `button` com `aria-label` `"Mesa 3, 4 lugares"`;
   - `ArrowRight` com a mesa 3 selecionada desloca 25 cm no estado e habilita "Salvar";
   - "Salvar" chama `useSaveHallPlan().mutate` com `expectedUpdatedAt` igual a `hall.updated_at`;
   - com `isGerente=false` não existe botão "Salvar";
   - erro de leitura mostra "Tentar de novo".
-- [ ] **Step 2:** `npx vitest run src/pages/gestao/reservas/SalaoPlanta.test.tsx` → FAIL.
-- [ ] **Step 3: Implementar** a página, os componentes, a rota e o link.
-- [ ] **Step 4:** PASS; `npm run typecheck` 0.
-- [ ] **Step 5: Revisão visual na MORALLES:**
+- [x] **Step 2:** `npx vitest run src/pages/gestao/reservas/SalaoPlanta.test.tsx` → FAIL.
+- [x] **Step 3: Implementar** a página, os componentes, a rota e o link.
+- [x] **Step 4:** PASS; `npm run typecheck` 0.
+- [x] **Step 5: Revisão visual na MORALLES:**
   - posicionar as mesas de um salão, salvar e recarregar: a planta é a mesma;
   - arrastar por toque no DevTools com emulação de toque;
   - 1440×900, 1194×834 e 390×844, nos dois temas.
-- [ ] **Step 6: Commit** `feat(planta): editor 2D da planta na Gestão`.
+- [x] **Step 6: Commit** `feat(planta): editor 2D da planta na Gestão`.
 
 ---
 
@@ -535,7 +535,7 @@ Regras (spec §5.4; a ordem é a prioridade; a primeira que casa vence):
 - **free:** nenhuma das anteriores.
 - Reserva com `released_at` ou `status` `cancelled|no_show` é ignorada. Reserva sem `table_id` não acende mesa nenhuma.
 
-- [ ] **Step 1: Testes que falham** (um `it` por linha):
+- [x] **Step 1: Testes que falham** (um `it` por linha):
   - `brtNow` às `2026-10-31T02:30:00Z` → `{ date: "2026-10-30", minutes: 1410, yesterday: "2026-10-29" }`.
   - Cada situação isolada com uma mesa.
   - **Prioridade:** bloqueio vence ocupada; ocupada vence atrasada na mesma mesa.
@@ -546,10 +546,10 @@ Regras (spec §5.4; a ordem é a prioridade; a primeira que casa vence):
   - **Passante e fila sentados** sem `released_at` → `occupied`; com `released_at` → `free`.
   - **Reserva `pending` daqui a 10 min** → `reserved`, não `arriving`.
   - **`time` com segundos** (`"19:00:00"`) → mesmo resultado que `"19:00"`.
-- [ ] **Step 2:** `npx vitest run src/lib/table-situation-core.test.ts` → FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): situação derivada de cada mesa em BRT`.
+- [x] **Step 2:** `npx vitest run src/lib/table-situation-core.test.ts` → FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): situação derivada de cada mesa em BRT`.
 
 ### Task 8: Relógio de tela e dados ao vivo
 
@@ -570,15 +570,15 @@ Regras (spec §5.4; a ordem é a prioridade; a primeira que casa vence):
     - `["settings", unitId, "reservation_duration_minutes"]`, `.maybeSingle()`: aceita número, string ou `{minutes}`; padrão 90 (mesma regra de `availability.ts:98-112`).
   - As consultas ao vivo usam `refetchInterval` ciente da aba, 30 s. `isError` é verdadeiro se qualquer consulta falhar.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - toda consulta leva `.eq("unit_id", unitId)`;
   - o filtro de reservas contém hoje e ontem em BRT;
   - duração `"120"` → 120, `{ minutes: 75 }` → 75, ausente → 90;
   - erro numa consulta → `isError`.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): dados ao vivo do salão com polling ciente da aba`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): dados ao vivo do salão com polling ciente da aba`.
 
 ### Task 9: Página Salão ao vivo (cena 3D/2D, legenda, painel de leitura, chegadas e fila)
 
@@ -631,30 +631,30 @@ O que a tela faz (mockup `Salao.dc.html`):
   - **`ResumoFila`:** número de grupos aguardando, o próximo ("família X, N pessoas, há N min") e a espera média em minutos (`created_at` até agora, entradas ativas).
 - **Estados:** skeleton; erro com "Tentar de novo" (`refetch`); unidade sem salões ou mesas ("Cadastre salões e mesas na Gestão"); salão sem planta usa a grade automática e mostra o aviso "Planta ainda não desenhada" com link para o editor quando `isGerente`.
 
-- [ ] **Step 1: Testes que falham** (`SalaoAoVivo.test.tsx`, `useSalaoAoVivo` mockado, `matchMedia` controlado):
+- [x] **Step 1: Testes que falham** (`SalaoAoVivo.test.tsx`, `useSalaoAoVivo` mockado, `matchMedia` controlado):
   - legenda com as contagens certas para um conjunto de 5 mesas, uma de cada situação;
   - `matchMedia("(prefers-reduced-motion: reduce)")` verdadeiro renderiza `PlantaCena2D` (`data-testid="planta-2d"`);
   - largura 390 renderiza 2D;
   - tocar na "Mesa 3" mostra no painel o nome do ocupante;
   - tocar numa linha de próximas chegadas seleciona a mesa;
   - `isError` mostra "Tentar de novo".
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar** a página, os componentes, a rota, o menu e a entrada no guard de blur.
-- [ ] **Step 4:** PASS; `npx vitest run src/lib/glass-usage-guard.test.ts` PASS.
-- [ ] **Step 5: Commit** `feat(planta): Salão ao vivo em 3D com legenda, chegadas e fila`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar** a página, os componentes, a rota, o menu e a entrada no guard de blur.
+- [x] **Step 4:** PASS; `npx vitest run src/lib/glass-usage-guard.test.ts` PASS.
+- [x] **Step 5: Commit** `feat(planta): Salão ao vivo em 3D com legenda, chegadas e fila`.
 
 ### Task 10: Desempenho e revisão visual da B3
 
-- [ ] **Step 1: Preparar 40 mesas num salão da MORALLES** pelo cadastro em lote atual (`HallScheduleSheet`) e posicioná-las no editor (B2).
-- [ ] **Step 2: Medir** no Chrome com DevTools Performance, 1194×834, CPU 4×, abrindo `/o/moralles-centro/salao`.
+- [x] **Step 1: Preparar 40 mesas num salão da MORALLES** pelo cadastro em lote atual (`HallScheduleSheet`) e posicioná-las no editor (B2).
+- [x] **Step 2: Medir** no Chrome com DevTools Performance, 1194×834, CPU 4×, abrindo `/o/moralles-centro/salao`.
   - Expected:
     - nenhuma long task acima de 200 ms depois da primeira pintura;
     - toque numa mesa até a atualização do painel abaixo de 100 ms;
     - com o halo ativo em 5 mesas, rolagem do aside sem queda de quadros visível no FPS meter.
   - Anotar os números no STATE.
-- [ ] **Step 3: Se falhar,** reduzir as camadas `translateZ` das mesas (de 4 para 2) e o halo para só `opacity`, e medir de novo. Não trocar a técnica sem o dono.
-- [ ] **Step 4: Revisão visual:** 1440×900, 1194×834 e 390×844, nos dois temas, com movimento reduzido ligado; teclado (Tab percorre as mesas por número; Enter seleciona).
-- [ ] **Step 5: Commit** dos ajustes, se houver: `perf(planta): ...`.
+- [x] **Step 3: Se falhar,** reduzir as camadas `translateZ` das mesas (de 4 para 2) e o halo para só `opacity`, e medir de novo. Não trocar a técnica sem o dono.
+- [x] **Step 4: Revisão visual:** 1440×900, 1194×834 e 390×844, nos dois temas, com movimento reduzido ligado; teclado (Tab percorre as mesas por número; Enter seleciona).
+- [x] **Step 5: Commit** dos ajustes, se houver: `perf(planta): ...`.
 
 ---
 
@@ -704,17 +704,17 @@ export function conversationHref(basePath: string, customerId: string): string; 
   - outro → "Não foi possível atualizar a mesa. Recarregue a tela.".
 - **`useCreateWalkIn` com `seated: true`:** grava `status: "seated"`, `seated_at` agora e o `table_id`, numa linha só.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - cada mutation chama `supabase.rpc` com o nome e os parâmetros exatos;
   - as invalidações certas;
   - o mapa de mensagens com `{ code: "23514", details: "release_requires_arrival" }`;
   - `buildWaitlistMessage` produz o mesmo texto que o `Fila.tsx` atual para template customizado e padrão (fixture);
   - `useCreateWalkIn` com `seated` faz um único `insert` com `status: "seated"`;
   - `conversationHref("/o/moralles-centro", "a b")` → `"/o/moralles-centro/conversas?cliente=a%20b"`.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar** e trocar o `Fila.tsx` pela lib.
-- [ ] **Step 4:** PASS; os testes existentes de Fila/Passantes continuam verdes.
-- [ ] **Step 5: Commit** `feat(planta): mutations de presença e mensagem da fila compartilhada`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar** e trocar o `Fila.tsx` pela lib.
+- [x] **Step 4:** PASS; os testes existentes de Fila/Passantes continuam verdes.
+- [x] **Step 5: Commit** `feat(planta): mutations de presença e mensagem da fila compartilhada`.
 
 ### Task 12: Ações no painel da mesa
 
@@ -739,16 +739,16 @@ Ações por situação (todas as pessoas da unidade):
 - `ResumoFila`: "Chamar no WhatsApp" chama `useNotifyWaitlist` com `buildWaitlistMessage(entry, "table_ready", …)` para o próximo da fila, no padrão `{ externalOk, dbOk }`. Sem telefone, o botão fica desabilitado com o texto "Sem WhatsApp cadastrado".
 - Botões desabilitados por `mutation.isPending && mutation.variables?.… === id`.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - para cada linha da tabela, as ações visíveis são exatamente as listadas;
   - "Marcar chegada" chama `mutate({ reservationId, action: "arrive" })`;
   - "Sentar da fila" chama `useSeatWaitlistEntry` com a mesa selecionada;
   - o passante novo chama `useCreateWalkIn` com `seated: true` e `table_id`;
   - a mesa bloqueada não tem nenhum botão de ação.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): ações essenciais por mesa no Salão ao vivo`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): ações essenciais por mesa no Salão ao vivo`.
 
 ### Task 13: Presença em Reservas do dia e passante liberado
 
@@ -767,13 +767,13 @@ Ações por situação (todas as pessoas da unidade):
 - A lista "Na mesa" esconde quem tem `released_at`.
 - **Decisão do dono (aprovada em 2026-10-30):** "Foi embora" de quem está na mesa passa a chamar `useReleaseWalkIn`. O status fica `seated`, e as métricas de sentados e receita deixam de subcontar daqui em diante; os dias passados não mudam. "Não apareceu" continua igual.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - `ReservaCard`: confirmada de hoje sem chegada mostra "Chegou" e não mostra "Liberar mesa"; com `arrived_at` mostra "Liberar mesa" e "Desfazer chegada"; reserva de amanhã não mostra "Chegou"; o operador também vê os três.
   - Passantes: passante `seated` com `released_at` não aparece em "Na mesa"; "Foi embora" chama `useReleaseWalkIn` e não faz UPDATE de `status`.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Commit** `feat(planta): chegada e liberação em Reservas do dia; passante liberado sai da mesa`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Commit** `feat(planta): chegada e liberação em Reservas do dia; passante liberado sai da mesa`.
 
 ### Task 14: Link direto para a conversa do cliente
 
@@ -790,13 +790,13 @@ Ações por situação (todas as pessoas da unidade):
 - sem conversa, mostra `toast.info("Ainda não há conversa com este cliente.")`;
 - depois remove o parâmetro (`setSearchParams(..., { replace: true })`), para não reabrir ao trocar de filtro.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - com `?cliente=c1` e uma lista que contém a conversa de `c1`, o painel de detalhe abre nela;
   - sem conversa, o toast é chamado e o parâmetro some.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar.**
-- [ ] **Step 4:** PASS.
-- [ ] **Step 5: Teste manual da B4 na MORALLES:**
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar.**
+- [x] **Step 4:** PASS.
+- [x] **Step 5: Teste manual da B4 na MORALLES:**
   - marcar chegada, desfazer e liberar;
   - sentar um passante novo;
   - sentar alguém da fila;
@@ -804,7 +804,7 @@ Ações por situação (todas as pessoas da unidade):
   - abrir conversa.
 
   Depois, conferir na Gestão › Fluxo de clientes do dia que as contagens não mudaram além do que a tela Passantes/Fila já registraria.
-- [ ] **Step 6: Commit** `feat(planta): abrir conversa do cliente a partir da mesa`.
+- [x] **Step 6: Commit** `feat(planta): abrir conversa do cliente a partir da mesa`.
 
 ---
 
@@ -839,43 +839,44 @@ export function reservationLiveSituation(r: Pick<Reserva, "date" | "time" | "sta
 
 As listas mostram a pílula gravada e, quando não é `null`, a derivada ao lado, no máximo duas. O relógio é `useNow(60_000)`.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - `StatusPill` aplica `bg-status-late/15 text-status-late`, sem cor fixa;
   - `reservationLiveSituation` nos quatro ramos e em `cancelled` → `null`;
   - `ReservaCard` de reserva confirmada às 19:00, agora 19:12 → pílulas "Confirmada" e "Atrasada 12 min".
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar e substituir** as três tabelas locais de classes pelas `StatusPill`.
-- [ ] **Step 4:** PASS; os testes existentes das listas verdes.
-- [ ] **Step 5: Commit** `feat(planta): situações Chegando, Atrasada e Sentada nas listas`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar e substituir** as três tabelas locais de classes pelas `StatusPill`.
+- [x] **Step 4:** PASS; os testes existentes das listas verdes.
+- [x] **Step 5: Commit** `feat(planta): situações Chegando, Atrasada e Sentada nas listas`.
 
 ### Task 16: Regras e documentação
 
 **Files:**
 - Modify: `.claude/rules/reservas.md`, `.claude/rules/frontend.md`, `.claude/rules/banco-de-dados.md`
 
-- [ ] **Step 1: Acrescentar,** no formato do AGENTS §3, uma frase de regra, uma de porquê e um ponteiro:
+- [x] **Step 1: Acrescentar,** no formato do AGENTS §3, uma frase de regra, uma de porquê e um ponteiro:
   - **reservas.md:** chegada e liberação são carimbos e o `status` não muda; liberar passante nunca usa `left` (métrica de sentados); sentar da fila grava `waitlist.table_id` na mesma linha; o relógio é o do servidor, via trigger.
   - **frontend.md:** a situação da mesa só sai de `table-situation-core.ts`; o link de conversa usa `conversationHref`; a planta ao vivo tem um único `glass`.
   - **banco-de-dados.md:** `plan_*` de `tables`/`halls` são guardadas por `guard_plan_write` (owner/gerente/admin), enquanto o resto da linha continua na policy `unit_member_all_*`; as RPCs de presença são INVOKER por causa do `FORCE RLS`.
-- [ ] **Step 2:** `node scripts/check-padrao.mjs` verde (o AGENTS.md fica abaixo de 200 linhas; nada novo nele).
-- [ ] **Step 3: Commit** `docs(planta): invariantes da planta e da presença`.
+- [x] **Step 2:** `node scripts/check-padrao.mjs` verde (o AGENTS.md fica abaixo de 200 linhas; nada novo nele).
+- [x] **Step 3: Commit** `docs(planta): invariantes da planta e da presença`.
 
 ### Task 17: Lançamento
 
-- [ ] **Step 1: Gates completos** na integração (seção Global Constraints).
-- [ ] **Step 2: Auditores** `saas-shield-br`:
+- [x] **Step 1: Gates completos** na integração (seção Global Constraints).
+- [x] **Step 2: Auditores** `saas-shield-br`:
   - `migration-validator`, `rls-auditor`, `tenant-isolation-auditor` e `identity-access-auditor` sobre a branch inteira contra `main`;
   - corrigir bloqueante em nova task.
-- [ ] **Step 3: Revisão da branch inteira** com `superpowers:requesting-code-review` (modelo mais capaz).
-- [ ] **Step 4: Segredos:** `git diff main...feat/planta-do-salao | grep -nE "sk-|sk-ant-|xai-|AIza|eyJ|Bearer |service_role|whsec_"` sem resultado.
-- [ ] **Step 5: Preview para o dono, com autorização:**
-  - push de `feat/planta-do-salao`;
-  - o dono confere na MORALLES o editor, o Salão ao vivo no tablet e as listas.
-- [ ] **Step 6: PR e merge, com autorização:**
-  - `gh pr create --base main --head feat/planta-do-salao`, com o resumo das fases, as medições da Task 10, os achados fora do escopo e o rodapé de atribuição;
+- [x] **Step 3: Revisão da branch inteira** com `superpowers:requesting-code-review` (modelo mais capaz).
+- [x] **Step 4: Segredos:** `git diff main...feat/planta-do-salao | grep -nE "sk-|sk-ant-|xai-|AIza|eyJ|Bearer |service_role|whsec_"` sem resultado.
+- [x] **Step 5: Conferência do dono, local:**
+  - pelo `npm run dev`, o dono confere na MORALLES o editor, o Salão ao vivo no tablet e as listas;
+  - não existe preview da Vercel: está desligado para `feat/planta-do-salao` em `vercel.json` (`git.deploymentEnabled`).
+- [x] **Step 6: PR e merge, com autorização:**
+  - primeiro e único push de `feat/planta-do-salao`, e `gh pr create --base main --head feat/planta-do-salao`, com o resumo das fases, as medições da Task 10, os achados fora do escopo e o rodapé de atribuição;
   - merge depois dos checks;
-  - conferir a produção na Vercel em READY.
-- [ ] **Step 7: Fechar a mudança:**
+  - conferir a produção na Vercel em READY. O único build da B2 até a B5 é este;
+  - a entrada `feat/planta-do-salao` do `vercel.json` sai num commit de limpeza que pega carona no próximo PR, para não gastar um build só com ela.
+- [x] **Step 7: Fechar a mudança:**
   - STATE em "concluído";
   - memória do projeto atualizada;
   - checkboxes deste plano marcados.

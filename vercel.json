@@ -1,5 +1,5 @@
 {
-  "git": { "deploymentEnabled": { "feat/datafy-parceiro-self-service": false } },
+  "git": { "deploymentEnabled": { "main": true, "**": false } },
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "headers": [
     {

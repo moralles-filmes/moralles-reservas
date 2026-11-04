@@ -15,7 +15,7 @@ export default function RelatorioVendas() {
           <DollarSign className="h-10 w-10 mx-auto opacity-30" />
           <h2 className="text-base font-medium text-foreground">Em breve</h2>
           <p className="text-sm">
-            Receita por canal (reserva, fila, walk-in), ticket médio, conversão de
+            Receita por canal (reserva, fila, passante), ticket médio, conversão de
             cobrança antecipada, cupons aplicados — disponíveis assim que os
             pagamentos integrados forem ativados nas configurações de reserva.
           </p>

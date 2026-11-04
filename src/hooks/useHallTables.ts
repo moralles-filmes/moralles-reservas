@@ -1,6 +1,8 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { Mesa } from "@/types/reserva";
+import { TABLE_COLUMNS } from "@/features/planta/api";
+import { TABLE_NOT_IN_UNIT_MESSAGE, assertWrote } from "@/lib/layout-errors";
 
 /** Lista todas as mesas da unit (opcionalmente filtradas por hall). */
 export function useUnitTables(unitId: string, { activeOnly = true } = {}) {
@@ -9,7 +11,7 @@ export function useUnitTables(unitId: string, { activeOnly = true } = {}) {
     queryFn: async () => {
       let q = supabase
         .from("tables")
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active")
+        .select(TABLE_COLUMNS)
         .eq("unit_id", unitId)
         .order("number", { ascending: true });
       if (activeOnly) q = q.eq("active", true);
@@ -21,13 +23,15 @@ export function useUnitTables(unitId: string, { activeOnly = true } = {}) {
   });
 }
 
-export function useHallTables(hallId: string | undefined, { activeOnly = false } = {}) {
+/** Mesas de um salão, só da unidade ativa (a RLS libera todas as unidades do membro). */
+export function useHallTables(unitId: string, hallId: string | undefined, { activeOnly = false } = {}) {
   return useQuery({
-    queryKey: ["hall-tables", hallId, activeOnly ? "active" : "all"],
+    queryKey: ["hall-tables", unitId, hallId, activeOnly ? "active" : "all"],
     queryFn: async () => {
       let q = supabase
         .from("tables")
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active")
+        .select(TABLE_COLUMNS)
+        .eq("unit_id", unitId)
         .eq("hall_id", hallId!)
         .order("number", { ascending: true });
       if (activeOnly) q = q.eq("active", true);
@@ -35,8 +39,14 @@ export function useHallTables(hallId: string | undefined, { activeOnly = false }
       if (error) throw error;
       return data as Mesa[];
     },
-    enabled: !!hallId,
+    enabled: !!unitId && !!hallId,
   });
+}
+
+function invalidateTables(qc: QueryClient, unitId: string | undefined, hallId: string | null | undefined) {
+  if (!unitId) return;
+  qc.invalidateQueries({ queryKey: ["unit-tables", unitId] });
+  if (hallId) qc.invalidateQueries({ queryKey: ["hall-tables", unitId, hallId] });
 }
 
 export type CreateTableInput = {
@@ -76,15 +86,12 @@ export function useCreateTable() {
           location: input.location ?? "internal",
           active: input.active ?? true,
         })
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active")
+        .select(TABLE_COLUMNS)
         .single();
       if (error) throw error;
       return data as Mesa;
     },
-    onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: ["unit-tables", data.unit_id] });
-      if (data.hall_id) qc.invalidateQueries({ queryKey: ["hall-tables", data.hall_id] });
-    },
+    onSuccess: (data) => invalidateTables(qc, data.unit_id, data.hall_id),
   });
 }
 
@@ -113,36 +120,33 @@ export function useCreateTablesBulk() {
       const { data, error } = await supabase
         .from("tables")
         .insert(rows)
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active");
+        .select(TABLE_COLUMNS);
       if (error) throw error;
       return data as Mesa[];
     },
-    onSuccess: (rows) => {
-      const unitId = rows[0]?.unit_id;
-      const hallId = rows[0]?.hall_id;
-      if (unitId) qc.invalidateQueries({ queryKey: ["unit-tables", unitId] });
-      if (hallId) qc.invalidateQueries({ queryKey: ["hall-tables", hallId] });
-    },
+    onSuccess: (_rows, input) => invalidateTables(qc, input.unit_id, input.hall_id),
   });
 }
 
+/** `unit_id` é o predicado de tenant, não um campo a gravar. */
 export function useUpdateTable() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { id: string } & Partial<Omit<Mesa, "id" | "capacity">>) => {
-      const { id, ...patch } = input;
+    mutationFn: async (input: { id: string; unit_id: string } & Partial<Omit<Mesa, "id" | "capacity" | "unit_id">>) => {
+      const { id, unit_id, ...patch } = input;
       const { data, error } = await supabase
         .from("tables")
         .update(patch)
         .eq("id", id)
-        .select("id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active")
-        .single();
+        .eq("unit_id", unit_id)
+        .select(TABLE_COLUMNS);
       if (error) throw error;
-      return data as Mesa;
+      assertWrote(data, TABLE_NOT_IN_UNIT_MESSAGE);
+      return data![0] as Mesa;
     },
-    onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: ["unit-tables", data.unit_id] });
-      if (data.hall_id) qc.invalidateQueries({ queryKey: ["hall-tables", data.hall_id] });
+    onSettled: (data, _err, input) => {
+      invalidateTables(qc, input.unit_id, input.hall_id);
+      if (data && data.hall_id !== input.hall_id) invalidateTables(qc, input.unit_id, data.hall_id);
     },
   });
 }
@@ -151,13 +155,16 @@ export function useDeleteTable() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { id: string; unit_id: string; hall_id: string | null }) => {
-      const { error } = await supabase.from("tables").delete().eq("id", input.id);
+      const { data, error } = await supabase
+        .from("tables")
+        .delete()
+        .eq("id", input.id)
+        .eq("unit_id", input.unit_id)
+        .select("id");
       if (error) throw error;
+      assertWrote(data, TABLE_NOT_IN_UNIT_MESSAGE);
       return input;
     },
-    onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: ["unit-tables", data.unit_id] });
-      if (data.hall_id) qc.invalidateQueries({ queryKey: ["hall-tables", data.hall_id] });
-    },
+    onSettled: (_data, _err, input) => invalidateTables(qc, input.unit_id, input.hall_id),
   });
 }

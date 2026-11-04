@@ -19,7 +19,8 @@ export function useWalkIns(unitId: string, onlyActive = true) {
         .order("arrived_at", { ascending: true });
 
       if (onlyActive) {
-        query = query.in("status", ["waiting", "seated"]);
+        // Liberados seguem `seated` para sempre: sem este filtro a lista ativa cresce sem limite (PostgREST trunca em 1000).
+        query = query.in("status", ["waiting", "seated"]).is("released_at", null);
       }
 
       const { data, error } = await query;
@@ -39,19 +40,35 @@ export function useCreateWalkIn(unitId: string) {
       customer_phone?: string | null;
       party_size: number;
       notes?: string | null;
+      table_id?: string | null;
+      /** Já nasce sentado na mesa: status, seated_at e table_id numa linha só. */
+      seated?: boolean;
     }) => {
+      const { seated, ...fields } = payload;
       const { error } = await supabase.from("walk_ins").insert({
+        ...fields,
+        ...(seated ? { status: "seated", seated_at: new Date().toISOString() } : {}),
+        // Por último: o tenant é o da tela, nunca um campo que veio no payload.
         unit_id: unitId,
-        ...payload,
       });
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] });
-      toast.success("Walk-in registrado.");
+      toast.success("Passante registrado.");
     },
-    onError: () => toast.error("Erro ao registrar walk-in."),
+    onError: () => toast.error("Erro ao registrar passante."),
   });
+}
+
+export const STALE_WALKIN_MESSAGE = "Esse passante já foi atualizado em outro aparelho.";
+
+/** UPDATE/DELETE casou zero linhas: outro aparelho já mudou o passante. */
+export class StaleWalkInError extends Error {
+  constructor() {
+    super(STALE_WALKIN_MESSAGE);
+    this.name = "StaleWalkInError";
+  }
 }
 
 const WALKIN_STATUS_TOAST: Record<WalkInStatus, string> = {
@@ -69,15 +86,23 @@ export function useUpdateWalkInStatus(unitId: string) {
       if (status === "seated") updates.seated_at = new Date().toISOString();
       if (table_id !== undefined) updates.table_id = table_id;
 
-      const { error } = await supabase.from("walk_ins").update(updates).eq("id", id);
+      const { data, error } = await supabase
+        .from("walk_ins")
+        .update(updates)
+        .eq("id", id)
+        .eq("unit_id", unitId)
+        .eq("status", "waiting")
+        .select("id");
       if (error) throw error;
+      if (!data || data.length === 0) throw new StaleWalkInError();
       return { status };
     },
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] });
       toast.success(WALKIN_STATUS_TOAST[result.status] ?? "Status atualizado.");
     },
-    onError: (err: Error) => toast.error(err.message || "Erro ao atualizar status."),
+    onError: (err: Error) =>
+      toast.error(err instanceof StaleWalkInError ? STALE_WALKIN_MESSAGE : err.message || "Erro ao atualizar status."),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] }),
   });
 }
 
@@ -85,10 +110,16 @@ export function useDeleteWalkIn(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from("walk_ins").delete().eq("id", id);
+      const { data, error } = await supabase
+        .from("walk_ins")
+        .delete()
+        .eq("id", id)
+        .eq("unit_id", unitId)
+        .select("id");
       if (error) throw error;
+      if (!data || data.length === 0) throw new StaleWalkInError();
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] }),
-    onError: () => toast.error("Erro ao remover."),
+    onError: (err: Error) => toast.error(err instanceof StaleWalkInError ? STALE_WALKIN_MESSAGE : "Erro ao remover."),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] }),
   });
 }
