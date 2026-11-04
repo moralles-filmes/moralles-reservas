@@ -1,13 +1,12 @@
 /**
- * Núcleo puro do cliente do Graph do Instagram (Login com Instagram).
+ * Núcleo puro do cliente do Graph do Instagram (Login do Facebook para Empresas com a Página).
  * Sem Deno e sem imports remotos: o Vitest importa direto.
  */
 
 export const INSTAGRAM_GRAPH_VERSION = "v26.0";
-export const INSTAGRAM_SCOPES = ["instagram_business_basic", "instagram_business_manage_messages"] as const;
 export const INSTAGRAM_SUBSCRIBED_FIELDS = ["messages"] as const;
 
-export const INSTAGRAM_AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize";
+export const INSTAGRAM_AUTHORIZE_URL = `https://www.facebook.com/${INSTAGRAM_GRAPH_VERSION}/dialog/oauth`;
 
 export type GraphErrorClass =
   | "reauth_required"
@@ -43,14 +42,15 @@ export function classifyGraphError(i: {
   return "invalid_request";
 }
 
-export function buildAuthorizeUrl(i: { appId: string; redirectUri: string; state: string }): string {
-  // Vírgula literal entre escopos (formato da documentação da Meta); o resto é codificado.
+export function buildAuthorizeUrl(i: { appId: string; redirectUri: string; state: string; configId: string }): string {
+  // Sem `scope`: as permissões vêm da configuração (config_id) do Login do Facebook para Empresas.
   const q = [
     `client_id=${encodeURIComponent(i.appId)}`,
     `redirect_uri=${encodeURIComponent(i.redirectUri)}`,
-    `response_type=code`,
-    `scope=${INSTAGRAM_SCOPES.join(",")}`,
     `state=${encodeURIComponent(i.state)}`,
+    `config_id=${encodeURIComponent(i.configId)}`,
+    `response_type=code`,
+    `override_default_response_type=true`,
   ].join("&");
   return `${INSTAGRAM_AUTHORIZE_URL}?${q}`;
 }
@@ -79,11 +79,14 @@ function isObj(v: unknown): v is Record<string, unknown> {
 }
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
 
+/** Número só se for inteiro seguro: ids de 17 dígitos perdem precisão no JSON.parse. */
+function parseId(raw: unknown): string | null {
+  return typeof raw === "number" ? (Number.isSafeInteger(raw) && raw > 0 ? String(raw) : null) : str(raw);
+}
+
 export function parseCodeExchange(json: unknown): { shortToken: string } | null {
   if (!isObj(json)) return null;
-  const row = Array.isArray(json.data) ? json.data[0] : json;
-  if (!isObj(row)) return null;
-  const t = str(row.access_token);
+  const t = str(json.access_token);
   return t ? { shortToken: t } : null;
 }
 
@@ -95,13 +98,73 @@ export function parseLongLived(json: unknown): { token: string; expiresInSec: nu
   return { token: t, expiresInSec: e };
 }
 
+export function parseUserLongLived(json: unknown): { token: string } | null {
+  if (!isObj(json)) return null;
+  const t = str(json.access_token);
+  return t ? { token: t } : null;
+}
+
+export type PageCandidate = {
+  pageId: string;
+  pageName: string | null;
+  pageToken: string;
+  tasks: string[];
+  igUserId: string;
+  igUsername: string | null;
+};
+
+/** `GET /me/accounts`: fica só a Página com token, id e conta do Instagram válidos. */
+export function parsePages(json: unknown): PageCandidate[] | null {
+  if (!isObj(json) || !Array.isArray(json.data)) return null;
+  const out: PageCandidate[] = [];
+  for (const row of json.data) {
+    if (!isObj(row)) continue;
+    const pageToken = str(row.access_token);
+    const pageId = parseId(row.id);
+    const ig = row.instagram_business_account;
+    const igUserId = isObj(ig) ? parseId(ig.id) : null;
+    if (!pageToken || !pageId || !igUserId || !isObj(ig)) continue;
+    out.push({
+      pageId,
+      pageName: str(row.name),
+      pageToken,
+      tasks: Array.isArray(row.tasks) ? row.tasks.filter((t): t is string => typeof t === "string") : [],
+      igUserId,
+      igUsername: str(ig.username),
+    });
+  }
+  return out;
+}
+
+export type PageChoice =
+  | { kind: "one"; page: PageCandidate }
+  | { kind: "none"; reason: "no_instagram" | "insufficient_task" }
+  | { kind: "many"; usernames: string[] };
+
+const REQUIRED_TASKS = ["MODERATE", "MANAGE"];
+
+export function choosePage(pages: PageCandidate[]): PageChoice {
+  if (pages.length === 0) return { kind: "none", reason: "no_instagram" };
+  const ok = pages.filter((p) => p.tasks.some((t) => REQUIRED_TASKS.includes(t)));
+  if (ok.length === 0) return { kind: "none", reason: "insufficient_task" };
+  if (ok.length === 1) return { kind: "one", page: ok[0] };
+  return { kind: "many", usernames: ok.map((p) => p.igUsername ?? p.pageName ?? p.pageId) };
+}
+
+/** `data.data_access_expires_at` (segundos) do `debug_token` em ISO; inválido ou 0 dá null. */
+export function parseDataAccessExpiry(json: unknown): string | null {
+  if (!isObj(json) || !isObj(json.data)) return null;
+  const v = json.data.data_access_expires_at;
+  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) return null;
+  const d = new Date(v * 1000);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 export function parseMe(
   json: unknown,
 ): { igUserId: string; username: string | null; accountType: string | null } | null {
   if (!isObj(json)) return null;
-  const raw = json.user_id;
-  // Número só se for inteiro seguro: ids de 17 dígitos perdem precisão no JSON.parse.
-  const id = typeof raw === "number" ? (Number.isSafeInteger(raw) && raw > 0 ? String(raw) : null) : str(raw);
+  const id = parseId(json.user_id);
   if (!id) return null;
   return { igUserId: id, username: str(json.username), accountType: str(json.account_type) };
 }

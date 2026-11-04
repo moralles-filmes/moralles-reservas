@@ -1,16 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   INSTAGRAM_GRAPH_VERSION,
-  INSTAGRAM_SCOPES,
   INSTAGRAM_SUBSCRIBED_FIELDS,
   buildAuthorizeUrl,
+  choosePage,
   classifyGraphError,
   isGraphOutcomeUnknown,
   parseCodeExchange,
+  parseDataAccessExpiry,
   parseLongLived,
   parseMe,
+  parsePages,
+  parseUserLongLived,
   redactSecrets,
   stripOAuthCodeSuffix,
+  type PageCandidate,
 } from "../../supabase/functions/_shared/instagram-graph-core";
 import { createInstagramGraph } from "../../supabase/functions/_shared/instagram-graph";
 
@@ -19,9 +23,8 @@ const SECRET = "app-secret-test-ABC";
 const SHORT = "IGAA-short-test-QRS";
 
 describe("constantes", () => {
-  it("fixa versão, escopos e campos", () => {
+  it("fixa versão e campos", () => {
     expect(INSTAGRAM_GRAPH_VERSION).toBe("v26.0");
-    expect(INSTAGRAM_SCOPES).toEqual(["instagram_business_basic", "instagram_business_manage_messages"]);
     expect(INSTAGRAM_SUBSCRIBED_FIELDS).toEqual(["messages"]);
   });
 });
@@ -56,15 +59,18 @@ describe("classifyGraphError", () => {
 });
 
 describe("buildAuthorizeUrl", () => {
-  it("monta URL com escopos por vírgula, response_type=code e state codificado", () => {
-    const u = buildAuthorizeUrl({ appId: "123", redirectUri: "https://x.test/cb?a=1", state: "a.b c/d+e" });
-    expect(u.startsWith("https://www.instagram.com/oauth/authorize?")).toBe(true);
-    const p = new URL(u).searchParams;
+  it("monta URL do Login do Facebook com config_id, sem scope, state codificado", () => {
+    const u = buildAuthorizeUrl({ appId: "123", redirectUri: "https://x.test/cb?a=1", state: "a.b c/d+e", configId: "999" });
+    const url = new URL(u);
+    expect(url.origin + url.pathname).toBe("https://www.facebook.com/v26.0/dialog/oauth");
+    const p = url.searchParams;
     expect(p.get("client_id")).toBe("123");
     expect(p.get("redirect_uri")).toBe("https://x.test/cb?a=1");
-    expect(p.get("response_type")).toBe("code");
-    expect(p.get("scope")).toBe("instagram_business_basic,instagram_business_manage_messages");
     expect(p.get("state")).toBe("a.b c/d+e");
+    expect(p.get("config_id")).toBe("999");
+    expect(p.get("response_type")).toBe("code");
+    expect(p.get("override_default_response_type")).toBe("true");
+    expect(p.has("scope")).toBe(false);
     expect(u).not.toContain("a.b c/d+e");
   });
 });
@@ -98,9 +104,9 @@ describe("parsers", () => {
   it("parseLongLived exige expires_in inteiro positivo", () => {
     for (const bad of [0, -1, 1.5]) expect(parseLongLived({ access_token: TOKEN, expires_in: bad })).toBeNull();
   });
-  it("parseCodeExchange aceita array data e objeto direto", () => {
-    expect(parseCodeExchange({ data: [{ access_token: SHORT, user_id: 1 }] })).toEqual({ shortToken: SHORT });
+  it("parseCodeExchange aceita só objeto de topo", () => {
     expect(parseCodeExchange({ access_token: SHORT })).toEqual({ shortToken: SHORT });
+    expect(parseCodeExchange({ data: [{ access_token: SHORT, user_id: 1 }] })).toBeNull();
     expect(parseCodeExchange({ data: [] })).toBeNull();
     expect(parseCodeExchange("x")).toBeNull();
   });
@@ -108,6 +114,84 @@ describe("parsers", () => {
     expect(parseLongLived({ access_token: TOKEN, expires_in: 5184000 })).toEqual({ token: TOKEN, expiresInSec: 5184000 });
     expect(parseLongLived({ access_token: TOKEN })).toBeNull();
     expect(parseLongLived({ expires_in: 5 })).toBeNull();
+  });
+});
+
+const page = (over: Record<string, unknown> = {}) => ({
+  id: "111",
+  name: "Moralles Films",
+  tasks: ["MODERATE", "MESSAGING"],
+  access_token: "PAGE-T",
+  instagram_business_account: { id: "17841470263374765", username: "morallesfilmes" },
+  ...over,
+});
+const cand = (username: string, tasks: string[]): PageCandidate => ({
+  pageId: "1", pageName: null, pageToken: "t", tasks, igUserId: "9", igUsername: username,
+});
+
+describe("parsePages", () => {
+  it("devolve o candidato com os valores", () => {
+    expect(parsePages({ data: [page()] })).toEqual([
+      {
+        pageId: "111",
+        pageName: "Moralles Films",
+        pageToken: "PAGE-T",
+        tasks: ["MODERATE", "MESSAGING"],
+        igUserId: "17841470263374765",
+        igUsername: "morallesfilmes",
+      },
+    ]);
+  });
+  it("id numérico inseguro descarta o item; inteiro seguro vira string", () => {
+    const unsafe = JSON.parse('{"data":[{"id":"1","access_token":"T","instagram_business_account":{"id":17841470263374765}}]}');
+    expect(parsePages(unsafe)).toEqual([]);
+    const safe = parsePages({ data: [page({ id: 222, instagram_business_account: { id: 333 } })] });
+    expect(safe?.[0]).toMatchObject({ pageId: "222", igUserId: "333", igUsername: null });
+    expect(parsePages({ data: [page({ id: 0 })] })).toEqual([]);
+  });
+  it("sem access_token ou sem instagram_business_account sai", () => {
+    expect(parsePages({ data: [page({ access_token: undefined }), page({ instagram_business_account: undefined })] })).toEqual([]);
+  });
+  it("data ausente ou não array dá null", () => {
+    expect(parsePages({})).toBeNull();
+    expect(parsePages({ data: "x" })).toBeNull();
+    expect(parsePages(null)).toBeNull();
+  });
+});
+
+describe("choosePage", () => {
+  it("vazio dá no_instagram", () => {
+    expect(choosePage([])).toEqual({ kind: "none", reason: "no_instagram" });
+  });
+  it("sem tarefa suficiente dá insufficient_task", () => {
+    expect(choosePage([cand("a", ["ADVERTISE"])])).toEqual({ kind: "none", reason: "insufficient_task" });
+  });
+  it("dois válidos dão many; um válido dá one", () => {
+    expect(choosePage([cand("a", ["MANAGE"]), cand("b", ["MODERATE"])])).toEqual({ kind: "many", usernames: ["a", "b"] });
+    const ok = cand("a", ["MANAGE"]);
+    expect(choosePage([ok, cand("b", ["ADVERTISE"])])).toEqual({ kind: "one", page: ok });
+  });
+});
+
+describe("parseUserLongLived", () => {
+  it("aceita access_token mesmo sem expires_in", () => {
+    expect(parseUserLongLived({ access_token: "U-LONG", token_type: "bearer" })).toEqual({ token: "U-LONG" });
+    expect(parseUserLongLived({ token_type: "bearer" })).toBeNull();
+    expect(parseUserLongLived(null)).toBeNull();
+  });
+});
+
+describe("parseDataAccessExpiry", () => {
+  it("converte segundos positivos em ISO", () => {
+    expect(parseDataAccessExpiry({ data: { data_access_expires_at: 1801579536 } })).toBe("2027-02-02T14:45:36.000Z");
+  });
+  it("valores inválidos dão null", () => {
+    for (const v of [0, "1801579536", -5, 1.5]) {
+      expect(parseDataAccessExpiry({ data: { data_access_expires_at: v } })).toBeNull();
+    }
+    expect(parseDataAccessExpiry({ data: {} })).toBeNull();
+    expect(parseDataAccessExpiry({})).toBeNull();
+    expect(parseDataAccessExpiry(null)).toBeNull();
   });
 });
 
@@ -209,7 +293,7 @@ describe("adapter createInstagramGraph", () => {
   });
 
   it("exchangeCode: POST form, code sem #_, sem token na query", async () => {
-    const { f, calls } = fakeFetch(() => json({ data: [{ access_token: SHORT, user_id: 1 }] }));
+    const { f, calls } = fakeFetch(() => json({ access_token: SHORT }));
     const r = await createInstagramGraph(f).exchangeCode({
       appId: "42",
       appSecret: SECRET,
