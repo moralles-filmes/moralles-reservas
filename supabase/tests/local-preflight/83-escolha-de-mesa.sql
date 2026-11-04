@@ -836,6 +836,104 @@ select pg_temp.caso(8643, 'A-7 catálogo: sem a policy anon_insert_reservations 
      || '/' || (not has_table_privilege('anon', 'public.reservations', 'INSERT'))$s$,
   'ok', $c$$1 = 'true/true'$c$);
 
+-- ═══ IG-M — reserva do Instagram com mesas juntas (migration 20261105120400) ═══
+-- Contato IGC de A ligado a F1. Linha = a que o reserveSlot manda ao hook.
+insert into t_ids values ('IGC', 'a0d81000-0000-4000-8000-000000000ac1');
+insert into public.instagram_contacts (id, organization_id, unit_id, customer_id) values
+  ('a0d81000-0000-4000-8000-000000000ac1', 'a0d81000-0000-4000-8000-00000000000a',
+   'a0d81000-0000-4000-8000-0000000000aa', 'a0d81000-0000-4000-8000-0000000000f1');
+
+-- Chamada da RPC (devolve o id da reserva como texto).
+create function pg_temp.ig(p_tok text, p_hora text, p_extra text) returns text language sql as $f$
+  select format($q$select (select x.id::text from public.create_instagram_contact_reservation('{IGC}',
+      jsonb_build_object('customer_id', '{F1}', 'unit_id', '{A}', 'date', '{D1}', 'time', '%s',
+        'party_size', 6, 'notes', null, 'reservation_code', 'P83-%s', 'status', 'confirmed',
+        'applied_discount_percent', null, 'source', 'instagram'%s)) x)$q$, p_hora, p_tok, p_extra)
+$f$;
+-- table_choice : mesas : linhas no ledger, pela reserva de código dado.
+create function pg_temp.ig_mesas(p_code text) returns text language plpgsql as $f$
+begin
+  return (select coalesce(r.table_choice, 'null') || ':' || pg_temp.mesas(r.id)
+                 || ':' || (select count(*) from public.instagram_contact_reservations l where l.reservation_id = r.id)
+            from public.reservations r where r.reservation_code = p_code);
+end $f$;
+
+select pg_temp.caso(8650, 'IG-M-1 mesas juntas T13+T14: principal, extra e ledger na mesma transação', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', '{T14}'), 'table_choice', 'system'$x$),
+  'ok', $c$pg_temp.ig_mesas('P83-IG1') = 'system:13+14:1'$c$);
+select pg_temp.caso(8651, 'IG-M-2 escolha do cliente de mesa sozinha grava customer', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_choice', 'customer'$x$),
+  'ok', $c$pg_temp.ig_mesas('P83-IG1') = 'customer:13:1'$c$);
+select pg_temp.caso(8652, 'IG-M-3 linha antiga (sem table_ids e table_choice) segue valendo', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}'$x$),
+  'ok', $c$pg_temp.ig_mesas('P83-IG1') = 'null:13:1'$c$);
+select pg_temp.caso(8653, 'IG-M-4 junta às 19:00 e T14 sozinha às 19:30 → 23P01', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', '{T14}'), 'table_choice', 'system'$x$)
+  || '; ' || pg_temp.ig('IG2', '19:30', $x$, 'table_id', '{T14}', 'table_choice', 'system'$x$),
+  '23P01 %occupant_tables_no_overlap%');
+select pg_temp.caso(8654, 'IG-M-5 a recusada por 23P01 não deixa reserva nem ledger', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T14}', 'table_choice', 'system'$x$) || $s$;
+   do $d$ begin
+     perform $s$ || substr(pg_temp.ig('IG2', '19:30', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', '{T14}'), 'table_choice', 'system'$x$), 8) || $s$;
+   exception when exclusion_violation then perform set_config('t83.ig', 'recusou', true);
+   end $d$;
+   select current_setting('t83.ig', true) || ':' || (select count(*) from public.reservations where reservation_code = 'P83-IG2')
+     || ':' || (select count(*) from public.instagram_contact_reservations)$s$,
+  'ok', $c$$1 = 'recusou:0:1'$c$);
+select pg_temp.caso(8655, 'IG-M-6 table_ids[1] diferente de table_id → forbidden', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T14}', 'table_ids', jsonb_build_array('{T13}', '{T14}'), 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8656, 'IG-M-7a table_ids com uma mesa só → forbidden', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}'), 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8657, 'IG-M-7b table_ids repetida → forbidden', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', '{T13}'), 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8658, 'IG-M-7c table_ids que não é array → forbidden', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_ids', '{T13}', 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8659, 'IG-M-7d table_ids com texto que não é uuid → forbidden', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', 'x'), 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8660, 'IG-M-8 mesa extra não reservável → forbidden', 'postgres',
+  $s$update public.tables set bookable = false where id = '{T14}'; set local role service_role; $s$
+  || pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', '{T14}'), 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8661, 'IG-M-8b mesa principal inativa → forbidden (antes só a unidade contava)', 'postgres',
+  $s$update public.tables set active = false where id = '{T13}'; set local role service_role; $s$
+  || pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8662, 'IG-M-9 mesa extra de outra unidade → forbidden', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', '{TB1}'), 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8663, 'IG-M-10 table_choice staff → forbidden (staff é da recepção)', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_choice', 'staff'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8664, 'IG-M-11 table_choice sem mesa → forbidden', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', null, 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8665, 'IG-M-12 reserva flutuante (sem mesa nem table_choice) segue valendo', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', null$x$),
+  'ok', $c$pg_temp.ig_mesas('P83-IG1') = 'null:-:1'$c$);
+select pg_temp.caso(8666, 'IG-M-13 authenticated não executa', 'GER',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}'$x$), '42501 permission denied%');
+select pg_temp.caso(8667, 'IG-M-14 catálogo: só service_role executa, DEFINER, search_path vazio', 'postgres',
+  $s$select has_function_privilege('service_role', 'public.create_instagram_contact_reservation(uuid, jsonb)', 'EXECUTE')::text
+     || '/' || has_function_privilege('anon', 'public.create_instagram_contact_reservation(uuid, jsonb)', 'EXECUTE')::text
+     || '/' || has_function_privilege('authenticated', 'public.create_instagram_contact_reservation(uuid, jsonb)', 'EXECUTE')::text
+     || '/' || (select prosecdef::text || array_to_string(proconfig, ';') from pg_proc
+                 where oid = 'public.create_instagram_contact_reservation(uuid, jsonb)'::regprocedure)$s$,
+  'ok', $c$$1 = 'true/false/false/truesearch_path=""'$c$);
+select pg_temp.caso(8668, 'IG-M-15 table_ids com elemento null → forbidden', 'service_role',
+  pg_temp.ig('IG1', '19:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', null), 'table_choice', 'system'$x$),
+  '42501 instagram_contact_reservation_forbidden');
+select pg_temp.caso(8669, 'IG-M-16 teto de 3 ativas vale com mesas juntas: a 4ª → limit', 'service_role',
+  pg_temp.ig('IG1', '12:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', '{T14}'), 'table_choice', 'system'$x$) || '; '
+  || pg_temp.ig('IG2', '14:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', '{T14}'), 'table_choice', 'system'$x$) || '; '
+  || pg_temp.ig('IG3', '16:00', $x$, 'table_id', '{T13}', 'table_ids', jsonb_build_array('{T13}', '{T14}'), 'table_choice', 'system'$x$) || '; '
+  || pg_temp.ig('IG4', '18:00', $x$, 'table_id', '{T13}', 'table_choice', 'system'$x$),
+  'P0001 instagram_contact_reservation_limit');
+
 -- ═══ Resultado ═══════════════════════════════════════════════════════════════
 \o
 \pset footer off

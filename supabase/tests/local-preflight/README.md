@@ -3405,6 +3405,12 @@ P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql   # re
 P  < supabase/migrations/20261105120100_ocupacao_multi_mesa.sql             # reaplicar
 P  < supabase/migrations/20261105120200_links_escolha_mesa.sql              # reaplicar
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
+# E1 (anon) e E2 (Instagram com mesas juntas): sem a 120400 só os IG-M-* falham (42883).
+P  < supabase/migrations/20261105120300_fechar_anon_insert_reservations.sql
+P  < supabase/migrations/20261105120400_instagram_reserva_multi_mesa.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN (inclui A-* e IG-M-*)
+P  < supabase/migrations/20261105120400_instagram_reserva_multi_mesa.sql    # reaplicar
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
 docker rm -f mesa83-pg
 ```
 

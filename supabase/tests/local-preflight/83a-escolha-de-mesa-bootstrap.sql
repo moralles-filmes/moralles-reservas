@@ -45,4 +45,28 @@ create table public.whatsapp_channels (
   unit_id uuid not null references public.units(id) on delete cascade,
   display_phone text);
 
+-- ─── Instagram (E2: reserva do contato com mesas juntas, migration 20261105120400) ─
+-- Só o que create_instagram_contact_reservation lê e grava (forma das 20261103*):
+-- contato (organização, unidade, cliente ligado, anonimização), ledger e o
+-- soft delete do cliente. Fora da projeção: RLS, grants, contador de trocas e
+-- as demais colunas. O contato de A nasce dentro da transação desfeita do 83.
+alter table public.customers add column if not exists deleted_at timestamptz;
+-- Colunas da linha que a RPC grava e o 81a não projeta (nulas: não mudam o 81/82).
+alter table public.reservations
+  add column if not exists payment_status text,
+  add column if not exists payment_amount_cents integer,
+  add column if not exists payment_expires_at timestamptz,
+  add column if not exists applied_discount_percent integer,
+  add column if not exists source text;
+create table public.instagram_contacts (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  unit_id uuid not null references public.units(id) on delete cascade,
+  customer_id uuid references public.customers(id) on delete set null,
+  anonymized_at timestamptz);
+create table public.instagram_contact_reservations (
+  reservation_id uuid primary key references public.reservations(id) on delete cascade,
+  instagram_contact_id uuid not null references public.instagram_contacts(id) on delete cascade,
+  unit_id uuid not null references public.units(id) on delete cascade);
+
 commit;
