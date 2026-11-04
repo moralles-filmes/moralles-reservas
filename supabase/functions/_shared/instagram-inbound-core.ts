@@ -28,7 +28,7 @@ export function instagramRateLimitKey(igsid: string): string {
   return `ig:${igsid}`;
 }
 
-export type InstagramIgnoredReason = "deleted" | "unsupported" | "non_message" | "self" | "malformed";
+export type InstagramIgnoredReason = "deleted" | "unsupported" | "non_message" | "self" | "malformed" | "auto_card";
 
 export type InstagramItem =
   | { kind: "text"; mid: string; igsid: string; text: string; timestamp: number }
@@ -93,6 +93,13 @@ function classify(m: Record<string, unknown>, igUserId: string): InstagramItem {
   }
   const attachments = Array.isArray(message.attachments) ? message.attachments : [];
   if (attachments.length > 0) {
+    // Cartão que o próprio Instagram gera ao detectar telefone (e afins) chega
+    // como mensagem separada só com anexos `template`. Cliente não envia
+    // `template`; tratá-lo como mídia derrubava o texto da rajada no debounce
+    // e respondia "só consigo ler texto".
+    if (attachments.every((a) => isObj(a) && a.type === "template")) {
+      return { kind: "ignored", mid, reason: "auto_card" };
+    }
     const allStory = attachments.every((a) => isObj(a) && a.type === "story_mention");
     return allStory
       ? { kind: "story_mention", mid, igsid: sender, timestamp: ts }
