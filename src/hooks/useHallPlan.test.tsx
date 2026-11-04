@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
   const results: Record<string, { data: unknown; error: unknown }> = {
     halls: { data: null, error: null },
     tables: { data: [], error: null },
+    table_combinations: { data: [], error: null },
   };
   const from = vi.fn((table: string) => {
     const builder: Record<string, unknown> = {};
@@ -42,6 +43,7 @@ afterEach(() => {
   mocks.calls.length = 0;
   mocks.results.halls = { data: null, error: null };
   mocks.results.tables = { data: [], error: null };
+  mocks.results.table_combinations = { data: [], error: null };
   vi.clearAllMocks();
 });
 
@@ -59,6 +61,10 @@ describe("useHallPlanData", () => {
     const tables = [{ id: "t-1", number: 1 }];
     mocks.results.halls = { data: hall, error: null };
     mocks.results.tables = { data: tables, error: null };
+    mocks.results.table_combinations = {
+      data: [{ id: "c-1", unit_id: "unit-a", hall_id: "h-1", min_capacity: 5, max_capacity: 8, active: true, table_combination_members: [{ table_id: "t-1" }, { table_id: "t-2" }] }],
+      error: null,
+    };
     const { result } = renderHook(() => useHallPlanData("unit-a", "h-1"), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -67,10 +73,17 @@ describe("useHallPlanData", () => {
       expect.arrayContaining([["unit_id", "unit-a"], ["hall_id", "h-1"], ["active", true]]),
     );
     const [[cols]] = callsOf("tables", "select") as [[string]];
-    for (const c of ["plan_x", "plan_y", "plan_w", "plan_h", "plan_rotation", "plan_shape"]) {
+    for (const c of ["plan_x", "plan_y", "plan_w", "plan_h", "plan_rotation", "plan_shape", "bookable"]) {
       expect(cols).toContain(c);
     }
-    expect(result.current.data).toEqual({ hall, tables });
+    expect(callsOf("table_combinations", "eq")).toEqual(
+      expect.arrayContaining([["unit_id", "unit-a"], ["hall_id", "h-1"], ["active", true]]),
+    );
+    expect(result.current.data).toEqual({
+      hall,
+      tables,
+      combinations: [{ id: "c-1", unit_id: "unit-a", hall_id: "h-1", min_capacity: 5, max_capacity: 8, active: true, table_ids: ["t-1", "t-2"] }],
+    });
   });
 
   it("erro de leitura vira isError", async () => {
@@ -136,7 +149,10 @@ describe("hallPlanErrorMessage", () => {
       "A planta foi alterada por outra pessoa. Recarregue para ver a versão atual.",
     );
     expect(hallPlanErrorMessage({ code: "42501" })).toBe("Você não tem permissão para editar esta planta.");
-    expect(hallPlanErrorMessage({ code: "22023" })).toBe("Não foi possível salvar a planta. Tente de novo.");
+    expect(hallPlanErrorMessage({ code: "42501", message: "combination_invalid" })).toBe(
+      "Uma combinação tem mesa fora de reserva ou inativa. Revise as combinações.",
+    );
+    expect(hallPlanErrorMessage({ code: "22023" })).toBe("A planta tem dados inválidos. Recarregue e tente de novo.");
     expect(hallPlanErrorMessage(undefined)).toBe("Não foi possível salvar a planta. Tente de novo.");
     expect(hallPlanErrorMessage(new Error("rede"))).toBe("Não foi possível salvar a planta. Tente de novo.");
   });

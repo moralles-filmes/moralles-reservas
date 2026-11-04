@@ -30,6 +30,9 @@ export function hallPlanErrorMessage(err: unknown): string {
   const code = (err as { code?: unknown } | null | undefined)?.code;
   if (typeof code === "string") {
     if (code === "40001") return "A planta foi alterada por outra pessoa. Recarregue para ver a versão atual.";
+    const message = (err as { message?: unknown }).message;
+    if (code === "42501" && typeof message === "string" && message.includes("combination_invalid")) return "Uma combinação tem mesa fora de reserva ou inativa. Revise as combinações.";
+    if (code === "22023") return "A planta tem dados inválidos. Recarregue e tente de novo.";
     if (code === "42501") return "Você não tem permissão para editar esta planta.";
   }
   return "Não foi possível salvar a planta. Tente de novo.";

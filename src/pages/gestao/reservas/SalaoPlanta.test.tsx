@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { hallPlanFrom, resolveTableBoxes, toSavePayload } from "@/lib/hall-plan-core";
-import type { Hall, Mesa } from "@/types/reserva";
+import type { Hall, Mesa, TableCombination } from "@/types/reserva";
 
 // O jsdom não tem PointerEvent: sem isto, clientX/pointerId chegam undefined ao componente.
 if (typeof window.PointerEvent === "undefined") {
@@ -18,11 +18,12 @@ if (typeof window.PointerEvent === "undefined") {
 
 const mutate = vi.fn();
 const refetch = vi.fn();
-const state: { isGerente: boolean; isError: boolean; error: Error | null; tables: ReturnType<typeof mesa>[] } = {
+const state: { isGerente: boolean; isError: boolean; error: Error | null; tables: ReturnType<typeof mesa>[]; combinations: TableCombination[] } = {
   isGerente: true,
   isError: false,
   error: null,
   tables: [],
+  combinations: [],
 };
 
 const hall = {
@@ -41,6 +42,7 @@ function mesa(id: string, number: number, x: number | null) {
   return {
     id,
     number,
+    bookable: true,
     capacity: 2,
     max_capacity: 4,
     plan_x: placed ? x : null,
@@ -54,7 +56,7 @@ function mesa(id: string, number: number, x: number | null) {
 
 vi.mock("@/hooks/useHallPlan", () => ({
   useHallPlanData: () => ({
-    data: state.isError ? undefined : { hall, tables: state.tables },
+    data: state.isError ? undefined : { hall, tables: state.tables, combinations: state.combinations },
     isLoading: false,
     isError: state.isError,
     error: state.error,
@@ -86,6 +88,8 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  state.combinations = [];
+  vi.restoreAllMocks();
   mutate.mockReset();
   refetch.mockReset();
   state.isGerente = true;
@@ -241,4 +245,45 @@ describe("SalaoPlanta", () => {
     const link = screen.getByRole("link", { name: /voltar ao salão/i });
     expect(link.getAttribute("href")).toBe("/g/moralles/reservas/saloes/h1");
   });
+});
+
+it("altera disponibilidade, exibe selo e preserva combinações sem edição", () => {
+  renderPage();
+  fireEvent.click(screen.getByRole("button", { name: "Mesa 1, 4 lugares" }));
+  fireEvent.click(screen.getByRole("switch", { name: "Disponível para reservas" }));
+  expect(screen.getByText("Fora de reserva")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+  expect(mutate.mock.calls[0][0].payload.p_tables[0].bookable).toBe(false);
+  expect(mutate.mock.calls[0][0].payload.p_combinations).toBeNull();
+});
+it("junta mesas e salva o conjunto ativo", () => {
+  renderPage();
+  fireEvent.click(screen.getByRole("button", { name: "Modo juntar" }));
+  fireEvent.click(screen.getByRole("button", { name: "Mesa 1, 4 lugares" }));
+  fireEvent.click(screen.getByRole("button", { name: "Mesa 3, 4 lugares" }));
+  fireEvent.click(screen.getByRole("button", { name: "Juntar 2 mesas" }));
+  fireEvent.click(screen.getByRole("button", { name: "Adicionar" }));
+  fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+  expect(mutate.mock.calls[0][0].payload.p_combinations).toEqual([{ min: 5, max: 8, table_ids: ["t1", "t3"] }]);
+});
+it("confirma antes de tirar de reserva uma mesa combinada", () => {
+  state.combinations = [{ id: "c1", unit_id: "u1", hall_id: "h1", min_capacity: 5, max_capacity: 8, active: true, table_ids: ["t1", "t3"] }];
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  renderPage();
+  fireEvent.click(screen.getByRole("button", { name: "Mesa 1, 4 lugares" }));
+  fireEvent.click(screen.getByRole("switch", { name: "Disponível para reservas" }));
+  expect(confirm).toHaveBeenCalledWith("As combinações com a mesa 1 serão desfeitas. Continuar?");
+  expect(screen.getByRole("button", { name: /Mesas 1 \+ 3/ })).toBeTruthy();
+  confirm.mockReturnValue(true);
+  fireEvent.click(screen.getByRole("switch", { name: "Disponível para reservas" }));
+  expect(screen.queryByRole("button", { name: /Mesas 1 \+ 3/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+  expect(mutate.mock.calls[0][0].payload.p_combinations).toEqual([]);
+});
+it("operador não vê disponibilidade nem combinações", () => {
+  state.isGerente = false;
+  renderPage();
+  fireEvent.click(screen.getByRole("button", { name: "Mesa 1, 4 lugares" }));
+  expect(screen.queryByRole("switch")).toBeNull();
+  expect(screen.queryByText("Juntar mesas")).toBeNull();
 });

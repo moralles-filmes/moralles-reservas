@@ -109,3 +109,14 @@ describe("PlantaEditorCanvas com zoom e pan", () => {
     expect(onMove).not.toHaveBeenCalled();
   });
 });
+
+it("Shift+clique marca múltiplas mesas sem selecionar nem arrastar", () => {
+  const onSelect = vi.fn(); const onToggleMulti = vi.fn(); const onMove = vi.fn();
+  render(<PlantaEditorCanvas plan={plan} boxes={[box]} selectedId={null} onSelect={onSelect} onMove={onMove} onResize={vi.fn()} onEntranceChange={vi.fn()} onToggleMulti={onToggleMulti} />);
+  const mesa = screen.getByRole("button", { name: /^Mesa 1/ });
+  fireEvent.pointerDown(mesa, { shiftKey: true, pointerId: 1 });
+  fireEvent.click(mesa, { shiftKey: true });
+  expect(onToggleMulti).toHaveBeenCalledWith("t1");
+  expect(onSelect).not.toHaveBeenCalled();
+  expect(onMove).not.toHaveBeenCalled();
+});

@@ -22,6 +22,10 @@ interface Props {
   /** Recebe o tamanho final em cm (30–600, de 5 em 5); em mesa não retangular, w = h. */
   onResize: (id: string, wCm: number, hCm: number) => void;
   onEntranceChange: (entrance: NonNullable<HallPlan["entrance"]>) => void;
+  multiSelectedIds?: string[];
+  onToggleMulti?: (id: string) => void;
+  joinMode?: boolean;
+  highlightCombination?: string[] | null;
   readOnly?: boolean;
 }
 
@@ -65,6 +69,7 @@ export function PlantaEditorCanvas({
   onMove,
   onResize,
   onEntranceChange,
+  multiSelectedIds = [], onToggleMulti, joinMode = false, highlightCombination,
   readOnly = false,
 }: Props) {
   const vp = usePlanViewport();
@@ -108,6 +113,7 @@ export function PlantaEditorCanvas({
     e: React.PointerEvent<HTMLButtonElement>,
     box: TableBox,
   ) => {
+    if (!readOnly && (joinMode || e.shiftKey || e.ctrlKey || e.metaKey)) return;
     onSelect(box.tableId);
     if (readOnly) return;
     e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -349,12 +355,15 @@ export function PlantaEditorCanvas({
                 data-y={box.y}
                 data-positioned={box.positioned ? "true" : "false"}
                 aria-label={`Mesa ${box.number}, ${box.capacity} lugares${box.positioned ? "" : ", sem posição"}`}
-                aria-pressed={selected}
+                aria-pressed={selected || multiSelectedIds.includes(box.tableId)}
                 onPointerDown={(e) => onPointerDown(e, box)}
                 onPointerMove={onPointerMove}
                 onPointerUp={(e) => endDrag(e, true)}
                 onPointerCancel={(e) => endDrag(e, false)}
-                onClick={() => onSelect(box.tableId)}
+                onClick={(e) => {
+                  if (!readOnly && (joinMode || e.shiftKey || e.ctrlKey || e.metaKey)) onToggleMulti?.(box.tableId);
+                  else onSelect(box.tableId);
+                }}
                 className={cn(
                   "absolute inset-0 flex flex-col items-center justify-center border-2 bg-[hsl(var(--status-free)/0.15)] border-[hsl(var(--status-free))] text-xs font-semibold leading-none text-foreground",
                   "select-none",
@@ -365,12 +374,15 @@ export function PlantaEditorCanvas({
                   box.shape === "round" ? "rounded-full" : "rounded-md",
                   !box.positioned && "border-dashed",
                   selected && "ring-2 ring-ring",
+                  highlightCombination?.includes(box.tableId) && "ring-2 ring-accent",
+                  multiSelectedIds.includes(box.tableId) && "ring-2 ring-primary",
                   !readOnly && "cursor-grab",
                   dragging && "cursor-grabbing",
                 )}
                 style={{ touchAction: "none" }}
               >
                 <span>{box.number}</span>
+                {box.bookable === false && <span className="surface rounded px-1 text-xs text-muted-foreground">Fora de reserva</span>}
                 {showCapacity && (
                   <span
                     aria-hidden="true"
