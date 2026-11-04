@@ -152,7 +152,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
   const calls = { sendText: 0, sendTemplate: 0, enqueueAutomation: 0, llm: 0 };
   const sdk: { constructors: unknown[]; requests: { input: unknown; options: unknown }[] } = { constructors: [], requests: [] };
   const controls = { sendStatus: 200, sdkResponses: [chatSdkMessage()] as unknown[], voucherInsertError: null as string | null, unitSelectError: null as string | null,
-    beforeQuery: async (_query: ChatQuery) => {}, beforeSdk: async (_input: unknown, _options: unknown) => {} };
+    claimError: false, beforeQuery: async (_query: ChatQuery) => {}, beforeSdk: async (_input: unknown, _options: unknown) => {} };
   const processed = new Map<string, string>();
   const fail = (reason: string): never => { unexpected.push(reason); throw new Error(`unexpected_chat_io:${reason}`); };
   const assertColumn = (table: string, column: string) => {
@@ -273,6 +273,27 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
           const message = structuredClone(args.p_message) as ChatRow, messages = conversation.messages as ChatRow[];
           if (!messages.some(row => row.event_id === message.event_id)) messages.push(message);
           return { data: true, error: null };
+        }
+        // Emulação mínima das RPCs do aviso de mídia (semântica da migration 20261105120000).
+        case 'record_conversation_media': {
+          if (args.p_conversation_id !== ids.conversation) return fail('media_arguments');
+          const message = structuredClone(args.p_message) as ChatRow, messages = conversation.messages as ChatRow[];
+          if (message.event_id && messages.some(row => row.event_id === message.event_id)) return { data: { decision: 'duplicate', variant: false }, error: null };
+          const lastReply = messages.map(row => row.role as unknown).reduce<number>((acc: number, role: unknown, i: number) => role === 'assistant' || role === 'human' ? i : acc, -1);
+          const hasText = messages.slice(lastReply + 1).some(row => row.role === 'user' && !row.media_kind && String(row.content ?? '').trim());
+          const decision = conversation.status !== 'ai_active' || args.p_notice_allowed === false ? 'suppressed' : hasText ? 'deferred' : 'notice_now';
+          messages.push({ ...message, media_notice: decision === 'deferred' ? 'deferred' : 'none' });
+          return { data: { decision, variant: decision === 'deferred' }, error: null };
+        }
+        case 'claim_conversation_media_notices': {
+          if (controls.claimError) return { data: null, error: { code: 'synthetic_claim' } };
+          const since = Date.parse(String(args.p_since));
+          const claimed: string[] = [];
+          for (const row of conversation.messages as ChatRow[]) {
+            const arrival = Date.parse(String(row.received_at ?? row.timestamp));
+            if (row.media_notice === 'deferred' && arrival >= since) { row.media_notice = 'claimed'; claimed.push(String(row.media_kind)); }
+          }
+          return { data: claimed, error: null };
         }
         case 'record_whatsapp_human_message': {
           if (args.p_conversation_id !== ids.conversation || args.p_unit_id !== ids.unit) return fail('human_arguments');

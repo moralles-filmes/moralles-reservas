@@ -67,6 +67,12 @@ import {
   type IngestionSource,
 } from "../whatsapp-inbound-queue-core.ts";
 import { jsonLog } from "../security.ts";
+import {
+  MEDIA_NOTICE_MAX_AGE_SECONDS,
+  MEDIA_NOTICE_TEXTS,
+  mediaNoticeText,
+} from "../media-reply-text.ts";
+import { claimDeferredMediaNotices } from "../adapters/conversation-media-notice.ts";
 
 /**
  * Campos de log de um erro de claim/CAS: só a classe e o `code`, como o
@@ -651,7 +657,9 @@ export function createAgentTurn(io: AgentTurnIO) {
       // deno-lint-ignore no-explicit-any
       const newestUserTs = latestMsgs.reduce((acc: string, m: any) => {
         const arrival = m?.received_at ?? m?.timestamp;
-        if (m && m.role === "user" && typeof arrival === "string" && arrival > acc) return arrival;
+        // Mídia (só pelo `media_kind`, nunca pelo texto do placeholder) não
+        // supera o turno de texto: o aviso dela sai depois da resposta.
+        if (m && m.role === "user" && !m.media_kind && typeof arrival === "string" && arrival > acc) return arrival;
         return acc;
       }, "");
       if (newestUserTs && newestUserTs > myInboundTs) {
@@ -765,6 +773,9 @@ export function createAgentTurn(io: AgentTurnIO) {
       // polui o histórico das invocações seguintes e ensina o modelo que
       // "atendimento interrompido" é o padrão.
       ...AI_BUDGET_HARDCODED_TEXTS,
+      // Avisos variantes de mídia (texto + mídia na rajada): mesmo motivo de
+      // MEDIA_REPLY_TEXT, entram pela lista.
+      ...MEDIA_NOTICE_TEXTS,
     ]);
     const HISTORY_WINDOW_MS = 72 * 60 * 60 * 1000;
     const cutoffMs = Date.now() - HISTORY_WINDOW_MS;
@@ -785,7 +796,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       .slice(lastReplyIdx + 1)
       // deno-lint-ignore no-explicit-any
       .filter((m: any) =>
-        m && m.role === "user" && typeof m.content === "string"
+        m && m.role === "user" && typeof m.content === "string" && !m.media_kind
         && !HARDCODED_AGENT_NOISE.has(m.content.trim()) && m.content.trim());
     const priorMsgs = allMsgs.slice(0, lastReplyIdx + 1);
 
@@ -1629,6 +1640,33 @@ export function createAgentTurn(io: AgentTurnIO) {
       finalTextForChannel,
       { author: "ai" },
     );
+
+    // Aviso adiado de mídia da rajada: só depois da resposta entregue (desfecho
+    // success/success_history_degraded). Falha aqui nunca muda o desfecho.
+    try {
+      const firstPending = pendingUserMsgs[0];
+      const sinceFloor = Date.now() - MEDIA_NOTICE_MAX_AGE_SECONDS * 1000;
+      const arrivalMs = Date.parse(String(firstPending?.received_at ?? firstPending?.timestamp ?? myInboundTs));
+      const sinceMs = Number.isFinite(arrivalMs) ? Math.max(arrivalMs, sinceFloor) : sinceFloor;
+      let kinds: string[] | null = null;
+      try {
+        kinds = await claimDeferredMediaNotices(supabase, conv.id, new Date(sinceMs).toISOString());
+      } catch (claimErr) {
+        jsonLog("warn", { requestId, evt: "media_notice_failed", convId: conv.id, stage: "claim", ...errorLogFields(claimErr) });
+      }
+      if (kinds && kinds.length > 0) {
+        const noticeText = mediaNoticeText(kinds);
+        const noticeSend = await sendAutomatic(noticeText);
+        if (noticeSend.ok) {
+          await appendToConversation(conv.id, conv.messages || [], "assistant", noticeText, { author: "automation" });
+          jsonLog("info", { requestId, evt: "media_notice_sent", convId: conv.id, count: kinds.length });
+        } else {
+          jsonLog("warn", { requestId, evt: "media_notice_failed", convId: conv.id, stage: "send" });
+        }
+      }
+    } catch (noticeErr) {
+      jsonLog("warn", { requestId, evt: "media_notice_failed", convId: conv.id, stage: "send", ...errorLogFields(noticeErr) });
+    }
 
     // Fim do turno: liquida o custo real e devolve a diferença ao disponível.
     // Os marcos (70/80/90/100%) saem daqui porque é aqui que o liquidado do
