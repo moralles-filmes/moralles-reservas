@@ -83,7 +83,7 @@
   - `parseDataAccessExpiry(json: unknown): string | null`: lê `data.data_access_expires_at` da resposta do `debug_token`. Inteiro positivo em segundos vira ISO (`new Date(s * 1000).toISOString()`); 0, ausente, não inteiro ou corpo inválido dão `null`.
 - Saem: `INSTAGRAM_SCOPES`, `parseLongLived`, `parseMe`. Ficam: `classifyGraphError`, `redactSecrets`, `stripOAuthCodeSuffix`, `parseGraphErrorBody`, `isGraphOutcomeUnknown` e `INSTAGRAM_SUBSCRIBED_FIELDS = ["messages"]`.
 
-- [ ] **Passo 1: trocar os testes do authorize e dos parsers por estes casos:**
+- [x] **Passo 1: trocar os testes do authorize e dos parsers por estes casos:**
   - `buildAuthorizeUrl` gera origem+caminho `https://www.facebook.com/v26.0/dialog/oauth`, com `client_id`, `redirect_uri`, `state`, `config_id`, `response_type=code` e `override_default_response_type=true`, e **sem** `scope`;
   - `parsePages` com `{ data: [{ id: "111", name: "Moralles Films", tasks: ["MODERATE","MESSAGING"], access_token: "PAGE-T", instagram_business_account: { id: "17841470263374765", username: "morallesfilmes" } }] }` devolve um candidato com esses valores;
   - id numérico inseguro (`17841470263374765` como number) descarta o item, e inteiro seguro vira string;
@@ -92,10 +92,10 @@
   - `choosePage([])` dá `{ kind:"none", reason:"no_instagram" }`; um candidato com `tasks: ["ADVERTISE"]` dá `insufficient_task`; dois válidos dão `{ kind:"many", usernames:["a","b"] }`; um válido dá `one`;
   - `parseUserLongLived({ access_token: "U-LONG", token_type: "bearer" })` dá `{ token: "U-LONG" }`, mesmo sem `expires_in`;
   - `parseDataAccessExpiry({ data: { data_access_expires_at: 1801579536 } })` dá `"2027-02-02T14:45:36.000Z"`; com `0`, `"1801579536"` (string), `-5`, `1.5`, `{}` ou `null` dá `null`.
-- [ ] **Passo 2:** `npx vitest run src/lib/instagram-graph-core.test.ts`. Esperado: FAIL nos casos novos.
-- [ ] **Passo 3:** implementar as assinaturas acima. O comentário de topo passa a dizer "Login do Facebook para Empresas com a Página".
-- [ ] **Passo 4:** `npx vitest run src/lib/instagram-graph-core.test.ts`. Esperado: PASS.
-- [ ] **Passo 5:** commit `feat(instagram): núcleo do Graph para o login pela Página`.
+- [x] **Passo 2:** `npx vitest run src/lib/instagram-graph-core.test.ts`. Esperado: FAIL nos casos novos.
+- [x] **Passo 3:** implementar as assinaturas acima. O comentário de topo passa a dizer "Login do Facebook para Empresas com a Página".
+- [x] **Passo 4:** `npx vitest run src/lib/instagram-graph-core.test.ts`. Esperado: PASS.
+- [x] **Passo 5:** commit `feat(instagram): núcleo do Graph para o login pela Página`.
 
 ### Task 2: migration `20261104130000_instagram_page_login.sql`
 
