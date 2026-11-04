@@ -143,12 +143,23 @@ export default {
           from: { transform: "scaleY(0)" },
           to: { transform: "scaleY(1)" },
         },
+        settle: {
+          // Sem opacity: opacidade < 1 no invólucro preserve-3d achataria a cena 3D.
+          from: { transform: "translateY(-16px) scale(0.96)" },
+          to: { transform: "translateY(0) scale(1)" },
+        },
+        halo: {
+          "0%": { transform: "scale(1)", opacity: "0.55" },
+          "100%": { transform: "scale(1.5)", opacity: "0" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "fade-up": "fade-up 0.4s ease-out",
         rise: "rise 1.2s cubic-bezier(0.16, 1, 0.3, 1) both",
+        settle: "settle 1.2s cubic-bezier(0.16, 1, 0.3, 1) both",
+        halo: "halo 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite",
       },
     },
   },

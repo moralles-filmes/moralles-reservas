@@ -19,7 +19,8 @@ export function useWalkIns(unitId: string, onlyActive = true) {
         .order("arrived_at", { ascending: true });
 
       if (onlyActive) {
-        query = query.in("status", ["waiting", "seated"]);
+        // Liberados seguem `seated` para sempre: sem este filtro a lista ativa cresce sem limite (PostgREST trunca em 1000).
+        query = query.in("status", ["waiting", "seated"]).is("released_at", null);
       }
 
       const { data, error } = await query;
@@ -39,18 +40,23 @@ export function useCreateWalkIn(unitId: string) {
       customer_phone?: string | null;
       party_size: number;
       notes?: string | null;
+      table_id?: string | null;
+      /** Já nasce sentado na mesa: status, seated_at e table_id numa linha só. */
+      seated?: boolean;
     }) => {
+      const { seated, ...fields } = payload;
       const { error } = await supabase.from("walk_ins").insert({
         unit_id: unitId,
-        ...payload,
+        ...fields,
+        ...(seated ? { status: "seated", seated_at: new Date().toISOString() } : {}),
       });
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] });
-      toast.success("Walk-in registrado.");
+      toast.success("Passante registrado.");
     },
-    onError: () => toast.error("Erro ao registrar walk-in."),
+    onError: () => toast.error("Erro ao registrar passante."),
   });
 }
 

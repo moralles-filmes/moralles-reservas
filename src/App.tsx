@@ -43,6 +43,7 @@ const GMarketing = lazy(() => import("./pages/gestao/Marketing"));
 // ── Gestão > Reservas (sub-abas) ──────────────────────────────────────────────
 const GSaloes = lazy(() => import("./pages/gestao/reservas/Saloes"));
 const GSalaoDetalhe = lazy(() => import("./pages/gestao/reservas/SalaoDetalhe"));
+const GSalaoPlanta = lazy(() => import("./pages/gestao/reservas/SalaoPlanta"));
 const GDatasEspeciais = lazy(() => import("./pages/gestao/reservas/DatasEspeciais"));
 const GBloqueios = lazy(() => import("./pages/gestao/reservas/Bloqueios"));
 const GWidget = lazy(() => import("./pages/gestao/reservas/Widget"));
@@ -80,6 +81,7 @@ const OPassantes   = lazy(() => import("./pages/operacional/Passantes"));
 const OConversas   = lazy(() => import("./pages/operacional/Conversas"));
 const OGiftback    = lazy(() => import("./pages/operacional/Giftback"));
 const OEntregas    = lazy(() => import("./pages/operacional/Entregas"));
+const OSalaoAoVivo = lazy(() => import("./pages/operacional/SalaoAoVivo"));
 
 // ── Platform ──────────────────────────────────────────────────────────────────
 const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
@@ -227,6 +229,7 @@ export default function App() {
               <Route path="/g/:unitSlug/reservas/calendario" element={<GestaoGuard><GCalendario /></GestaoGuard>} />
               <Route path="/g/:unitSlug/reservas/saloes" element={<GestaoGuard><GSaloes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/reservas/saloes/:hallId" element={<GestaoGuard><GSalaoDetalhe /></GestaoGuard>} />
+              <Route path="/g/:unitSlug/reservas/saloes/:hallId/planta" element={<GestaoGuard><GSalaoPlanta /></GestaoGuard>} />
               <Route path="/g/:unitSlug/reservas/datas-especiais" element={<GestaoGuard><GDatasEspeciais /></GestaoGuard>} />
               <Route path="/g/:unitSlug/reservas/bloqueios" element={<GestaoGuard><GBloqueios /></GestaoGuard>} />
               <Route path="/g/:unitSlug/reservas/widget" element={<GestaoGuard><GWidget /></GestaoGuard>} />
@@ -274,6 +277,7 @@ export default function App() {
               {/* ── Operacional /o/:unitSlug ────────────────────────────── */}
               <Route path="/o/:unitSlug" element={<OperacionalGuard><OReservasDia /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/reservas" element={<OperacionalGuard><OReservasDia /></OperacionalGuard>} />
+              <Route path="/o/:unitSlug/salao" element={<OperacionalGuard><OSalaoAoVivo /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/agenda" element={<OperacionalGuard><OAgenda /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/fila" element={<OperacionalGuard><OFila /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/passantes" element={<OperacionalGuard><OPassantes /></OperacionalGuard>} />

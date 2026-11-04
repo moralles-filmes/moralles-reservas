@@ -2,9 +2,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useUpdateReservaStatus } from "@/hooks/useReservas";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
-import { cn, formatDateBR, formatPhone } from "@/lib/utils";
+import { useReservationPresence } from "@/hooks/useMesaAcoes";
+import { brtNow } from "@/lib/table-situation-core";
+import { formatDateBR, formatPhone } from "@/lib/utils";
 import type { Reserva } from "@/types/reserva";
-import { STATUS_COLORS, STATUS_LABELS } from "@/types/reserva";
+import { ReservaStatusPills } from "./ReservaStatusPills";
 import {
   deriveDeliveryState,
   deliveryTooltip,
@@ -30,6 +32,16 @@ export function ReservaCard({ reserva, showActions = false, unitId, confirmation
   // (isGerente cobre owner+gerente; platform_admin entra via pseudo-role "owner".)
   const unit = useCurrentUnit();
   const canCancel = unit?.isGerente ?? false;
+  const presence = useReservationPresence(effectiveUnitId);
+  const isToday = reserva.date === brtNow(new Date()).date;
+  const canArrive =
+    showActions &&
+    isToday &&
+    (reserva.status === "pending" || reserva.status === "confirmed") &&
+    !reserva.arrived_at;
+  // Mesma janela da regra de chegada no banco: hoje ou ontem (BRT).
+  const inPresenceWindow = isToday || reserva.date === brtNow(new Date()).yesterday;
+  const canRelease = showActions && inPresenceWindow && !!reserva.arrived_at && !reserva.released_at;
 
   const handleStatus = async (status: "confirmed" | "cancelled" | "no_show") => {
     try {
@@ -51,9 +63,7 @@ export function ReservaCard({ reserva, showActions = false, unitId, confirmation
             <span className="font-semibold truncate">
               {reserva.customer?.name || "—"}
             </span>
-            <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium shrink-0", STATUS_COLORS[reserva.status])}>
-              {STATUS_LABELS[reserva.status]}
-            </span>
+            <ReservaStatusPills reserva={reserva} unitId={effectiveUnitId} />
             {reserva.customer?.vip_notes && (
               <Badge className="text-[11px] gap-1 bg-gold/10 text-gold border-gold/20 hover:bg-gold/10">
                 <Sparkles className="h-2.5 w-2.5" />
@@ -173,6 +183,41 @@ export function ReservaCard({ reserva, showActions = false, unitId, confirmation
                 >
                   Cancelar
                 </Button>
+              )}
+            </div>
+          )}
+
+          {(canArrive || canRelease) && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              {canArrive && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => presence.mutate({ reservationId: reserva.id, action: "arrive" })}
+                  disabled={presence.isPending}
+                >
+                  Chegou
+                </Button>
+              )}
+              {canRelease && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => presence.mutate({ reservationId: reserva.id, action: "release" })}
+                    disabled={presence.isPending}
+                  >
+                    Liberar mesa
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => presence.mutate({ reservationId: reserva.id, action: "undo_arrive" })}
+                    disabled={presence.isPending}
+                  >
+                    Desfazer chegada
+                  </Button>
+                </>
               )}
             </div>
           )}

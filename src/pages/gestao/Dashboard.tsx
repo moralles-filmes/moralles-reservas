@@ -104,7 +104,7 @@ export default function Dashboard() {
         <ManualReservaDialog open={manualOpen} onOpenChange={setManualOpen} unitId={unitId} organizationId={unit?.organization_id ?? ""} />
       )}
 
-      {/* Operação ao vivo: conversas, fila e walk-ins */}
+      {/* Operação ao vivo: conversas, fila e passantes */}
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <ConversationsWaitingPanel unitId={unitId} unitSlug={unitSlug} />
         <div className="surface rounded-card p-5">
@@ -125,7 +125,7 @@ export default function Dashboard() {
         <div className="surface rounded-card p-5">
           <div className="flex items-center justify-between gap-3">
             <div className="flex-1 min-w-0">
-              <p className="text-xs text-muted-foreground">Walk-ins hoje</p>
+              <p className="text-xs text-muted-foreground">Passantes hoje</p>
               <p className="text-2xl font-bold mt-1">{walkInStats?.total ?? "—"}</p>
               {walkInStats && walkInStats.total > 0 && (
                 <p className="text-xs text-muted-foreground mt-1">

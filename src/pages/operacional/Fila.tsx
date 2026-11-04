@@ -16,11 +16,7 @@ import {
   deliveryTooltip,
 } from "@/hooks/useNotificationDeliveries";
 import { DeliveryBadge } from "@/components/notifications/DeliveryBadge";
-import {
-  WAITLIST_TEMPLATES,
-  renderWaitlistTemplate,
-  useWaitlistTemplates,
-} from "@/hooks/useWaitlistTemplates";
+import { useWaitlistTemplates } from "@/hooks/useWaitlistTemplates";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -45,6 +41,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { buildWaitlistMessage } from "@/lib/waitlist-message";
 import { cn, formatPhone } from "@/lib/utils";
 import { validateBrPhone } from "@/lib/phone";
 import type {
@@ -52,14 +49,15 @@ import type {
   WaitlistPriorityCategory,
   WaitlistStatus,
 } from "@/types/reserva";
+import { StatusPill, type StatusTone } from "@/components/ui/status-pill";
 import { Accessibility, AlertCircle, Baby, Bell, Clock, Link2, Pencil, Plus, Send, Trash2, UserCircle2, Users } from "lucide-react";
 import { toast } from "sonner";
 
-const STATUS_CONFIG: Record<WaitlistStatus, { label: string; className: string }> = {
-  waiting:   { label: "Aguardando", className: "bg-warning/10 text-warning border-warning/20" },
-  notified:  { label: "Notificado", className: "bg-info/10 text-info border-info/20" },
-  seated:    { label: "Sentou",     className: "bg-success/10 text-success border-success/20" },
-  cancelled: { label: "Cancelado",  className: "bg-muted text-muted-foreground border-border" },
+const STATUS_CONFIG: Record<WaitlistStatus, { label: string; tone: StatusTone }> = {
+  waiting:   { label: "Aguardando", tone: "pending" },
+  notified:  { label: "Notificado", tone: "arriving" },
+  seated:    { label: "Sentou",     tone: "success" },
+  cancelled: { label: "Cancelado",  tone: "muted" },
 };
 
 const PRIORITY_CONFIG: Record<
@@ -166,24 +164,12 @@ export default function Fila() {
     }
   };
 
-  // Monta a mensagem de um evento de fila (template customizado ou default).
-  // Paridade com as edge functions: `.trim()` + mesmos fallbacks.
-  const buildWaitlistMessage = (
-    entry: WaitlistEntry,
-    event: "entered" | "table_ready",
-  ) => {
-    const tpl = templates?.find((t) => t.event === event);
-    const defaultBody =
-      WAITLIST_TEMPLATES.find((t) => t.event === event)?.defaultBody ?? "";
-    const body = tpl?.customized && tpl.body && tpl.body.trim() ? tpl.body : defaultBody;
-    return renderWaitlistTemplate(body, {
-      cliente_nome: entry.customer_name,
-      unidade_nome: unit?.unit_name || "nosso restaurante",
-      party_size: entry.party_size,
-      codigo_fila: entry.code,
-      link_status: `${window.location.origin}/acompanhar/${entry.id}`,
+  const buildMessage = (entry: WaitlistEntry, event: "entered" | "table_ready") =>
+    buildWaitlistMessage(entry, event, {
+      templates,
+      unitName: unit?.unit_name,
+      origin: window.location.origin,
     });
-  };
 
   const handleNotify = (entry: WaitlistEntry) => {
     if (!entry.customer_phone) {
@@ -192,7 +178,7 @@ export default function Fila() {
     }
     if (notifyingIds.has(entry.id)) return; // evita double-click na mesma entry
 
-    const message = buildWaitlistMessage(entry, "table_ready");
+    const message = buildMessage(entry, "table_ready");
 
     setNotifyingIds((prev) => {
       const next = new Set(prev);
@@ -231,7 +217,7 @@ export default function Fila() {
     resendEntered.mutate({
       id: entry.id,
       phone: entry.customer_phone,
-      message: buildWaitlistMessage(entry, "entered"),
+      message: buildMessage(entry, "entered"),
     });
   };
 
@@ -299,9 +285,7 @@ export default function Fila() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       <p className="font-medium text-sm">{entry.customer_name}</p>
-                      <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium shrink-0", statusCfg.className)}>
-                        {statusCfg.label}
-                      </span>
+                      <StatusPill tone={statusCfg.tone}>{statusCfg.label}</StatusPill>
                       {priorityCfg && PriorityIcon && (
                         <Badge
                           variant="outline"
