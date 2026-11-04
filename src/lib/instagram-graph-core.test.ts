@@ -8,8 +8,6 @@ import {
   isGraphOutcomeUnknown,
   parseCodeExchange,
   parseDataAccessExpiry,
-  parseLongLived,
-  parseMe,
   parsePages,
   parseUserLongLived,
   redactSecrets,
@@ -83,37 +81,11 @@ describe("stripOAuthCodeSuffix", () => {
 });
 
 describe("parsers", () => {
-  it("parseMe usa user_id, nunca id", () => {
-    expect(parseMe({ user_id: "17841", username: "loja", account_type: "Business" })).toEqual({
-      igUserId: "17841",
-      username: "loja",
-      accountType: "Business",
-    });
-    expect(parseMe({ id: "999", username: "x" })).toBeNull();
-    expect(parseMe(null)).toBeNull();
-    expect(parseMe({ user_id: "17841" })).toEqual({ igUserId: "17841", username: null, accountType: null });
-  });
-  it("parseMe recusa user_id numerico inseguro e aceita string intacta", () => {
-    expect(parseMe(JSON.parse('{"user_id":17841400000000001}'))).toBeNull();
-    expect(parseMe({ user_id: 0 })).toBeNull();
-    expect(parseMe({ user_id: -5 })).toBeNull();
-    expect(parseMe({ user_id: 1.5 })).toBeNull();
-    expect(parseMe({ user_id: 12345 })).toMatchObject({ igUserId: "12345" });
-    expect(parseMe(JSON.parse('{"user_id":"17841400000000001"}'))).toMatchObject({ igUserId: "17841400000000001" });
-  });
-  it("parseLongLived exige expires_in inteiro positivo", () => {
-    for (const bad of [0, -1, 1.5]) expect(parseLongLived({ access_token: TOKEN, expires_in: bad })).toBeNull();
-  });
   it("parseCodeExchange aceita só objeto de topo", () => {
     expect(parseCodeExchange({ access_token: SHORT })).toEqual({ shortToken: SHORT });
     expect(parseCodeExchange({ data: [{ access_token: SHORT, user_id: 1 }] })).toBeNull();
     expect(parseCodeExchange({ data: [] })).toBeNull();
     expect(parseCodeExchange("x")).toBeNull();
-  });
-  it("parseLongLived", () => {
-    expect(parseLongLived({ access_token: TOKEN, expires_in: 5184000 })).toEqual({ token: TOKEN, expiresInSec: 5184000 });
-    expect(parseLongLived({ access_token: TOKEN })).toBeNull();
-    expect(parseLongLived({ expires_in: 5 })).toBeNull();
   });
 });
 
@@ -154,10 +126,6 @@ describe("parsePages", () => {
     expect(parsePages({ data: [page({ id: "12/../x" })] })).toEqual([]);
     expect(parsePages({ data: [page({ instagram_business_account: { id: "1e17" } })] })).toEqual([]);
     expect(parsePages({ data: [page({ instagram_business_account: { id: "-5" } })] })).toEqual([]);
-  });
-  it("parseMe recusa user_id string que não é só dígitos", () => {
-    expect(parseMe({ user_id: "abc" })).toBeNull();
-    expect(parseMe({ user_id: "1e17" })).toBeNull();
   });
   it("sem access_token ou sem instagram_business_account sai", () => {
     expect(parsePages({ data: [page({ access_token: undefined }), page({ instagram_business_account: undefined })] })).toEqual([]);
@@ -267,9 +235,6 @@ describe("adapter createInstagramGraph", () => {
     const r = await g.exchangeCode({ appId: "42", appSecret: SECRET, redirectUri: "https://x/cb", code: "c" });
     expect(r).toEqual({ ok: false, errorClass: "transient", httpStatus: null, code: null });
     expect(JSON.stringify(r)).not.toContain(SECRET);
-    const r2 = await g.refresh({ token: TOKEN });
-    expect(r2).toEqual({ ok: false, errorClass: "transient", httpStatus: null, code: null });
-    expect(JSON.stringify(r2)).not.toContain(TOKEN);
   });
 
   it("classifica pelo código do corpo", async () => {
@@ -415,33 +380,6 @@ describe("adapter createInstagramGraph", () => {
       .toMatchObject({ ok: false, errorClass: "invalid_request", httpStatus: 200 });
   });
 
-  it("funções do Login do Instagram (saem na Task 5) seguem no graph.instagram.com", async () => {
-    const { f, calls } = fakeFetch((url) => {
-      if (url.includes("/me?")) return json({ user_id: "17841", username: "loja", account_type: "Business" });
-      if (url.includes("subscribed_apps")) return json({ success: true });
-      return json({ access_token: TOKEN, expires_in: 5184000 });
-    });
-    const g = createInstagramGraph(f);
-    expect(await g.toLongLived({ appSecret: SECRET, shortToken: SHORT })).toEqual({
-      ok: true,
-      value: { token: TOKEN, expiresInSec: 5184000 },
-    });
-    await g.refresh({ token: TOKEN });
-    expect(await g.me({ token: TOKEN })).toEqual({
-      ok: true,
-      value: { igUserId: "17841", username: "loja", accountType: "Business" },
-    });
-    expect(await g.subscribe({ igUserId: "17841", token: TOKEN })).toEqual({ ok: true, value: { success: true } });
-    const u1 = new URL(calls[0].url);
-    expect(u1.origin + u1.pathname).toBe("https://graph.instagram.com/access_token");
-    expect(u1.searchParams.get("grant_type")).toBe("ig_exchange_token");
-    const u2 = new URL(calls[1].url);
-    expect(u2.origin + u2.pathname).toBe("https://graph.instagram.com/refresh_access_token");
-    expect(u2.searchParams.get("grant_type")).toBe("ig_refresh_token");
-    expect(calls[2].url).toBe("https://graph.instagram.com/v26.0/me?fields=user_id,username,account_type");
-    expect(calls[3].url).toBe("https://graph.instagram.com/v26.0/17841/subscribed_apps?subscribed_fields=messages");
-  });
-
   it("profile rejeita corpo array", async () => {
     const { f } = fakeFetch(() => json([{ name: "Ana" }]));
     const r = await createInstagramGraph(f).profile({ igsid: "2", token: TOKEN });
@@ -466,12 +404,5 @@ describe("isGraphOutcomeUnknown", () => {
     expect(isGraphOutcomeUnknown(f(503, "transient"), "GET")).toBe(false);
     expect(isGraphOutcomeUnknown(f(400, "invalid_request"), "POST")).toBe(false);
     expect(isGraphOutcomeUnknown({ ok: true, value: 1 }, "POST")).toBe(false);
-  });
-});
-
-describe("parseLongLived teto", () => {
-  it("rejeita expires_in acima de 90 dias", () => {
-    expect(parseLongLived({ access_token: TOKEN, expires_in: 90 * 86_400 })).not.toBeNull();
-    expect(parseLongLived({ access_token: TOKEN, expires_in: 90 * 86_400 + 1 })).toBeNull();
   });
 });

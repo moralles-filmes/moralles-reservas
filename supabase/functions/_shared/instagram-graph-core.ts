@@ -92,14 +92,6 @@ export function parseCodeExchange(json: unknown): { shortToken: string } | null 
   return t ? { shortToken: t } : null;
 }
 
-export function parseLongLived(json: unknown): { token: string; expiresInSec: number } | null {
-  if (!isObj(json)) return null;
-  const t = str(json.access_token);
-  const e = json.expires_in;
-  if (!t || typeof e !== "number" || !Number.isInteger(e) || e <= 0 || e > 90 * 86_400) return null;
-  return { token: t, expiresInSec: e };
-}
-
 export function parseUserLongLived(json: unknown): { token: string } | null {
   if (!isObj(json)) return null;
   const t = str(json.access_token);
@@ -160,15 +152,6 @@ export function parseDataAccessExpiry(json: unknown): string | null {
   if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) return null;
   const d = new Date(v * 1000);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-export function parseMe(
-  json: unknown,
-): { igUserId: string; username: string | null; accountType: string | null } | null {
-  if (!isObj(json)) return null;
-  const id = parseId(json.user_id);
-  if (!id) return null;
-  return { igUserId: id, username: str(json.username), accountType: str(json.account_type) };
 }
 
 /** Extrai code/subcode de `{error:{code,error_subcode}}` ou `{code,error_message}`. */

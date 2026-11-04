@@ -8,7 +8,7 @@
  * nenhum texto vindo da Meta ou do runtime chega ao resultado, então nenhum
  * token pode vazar por ele. (GETs da Meta que exigem credencial na query levam-na na URL, que
  * nunca sai deste módulo: `exchangeCode`, `toLongLivedUser`, o `input_token` do
- * `debugToken` e as funções antigas `toLongLived`/`refresh`.)
+ * `debugToken`.)
  *
  * Resultado ambíguo: `ok:false` com `httpStatus` 2xx (corpo ilegível após 2xx) ou
  * `httpStatus: null` (timeout/rede), e `transient` em POST, significam "desfecho
@@ -21,10 +21,6 @@
  * para o resultado. Quem acrescentar log deve chamar `redactSecrets` por conta
  * própria, com todas as credenciais da chamada (inclusive o par `appId|appSecret`
  * que o `debugToken` manda no header).
- *
- * `toLongLived`, `refresh`, `me` e `subscribe` são do Login do Instagram (host
- * `graph.instagram.com`): o `instagram-connect` não os chama mais e só o
- * `process-instagram-token-refresh` ainda usa `refresh`. Saem com ele na Task 5.
  */
 import {
   INSTAGRAM_GRAPH_VERSION,
@@ -33,8 +29,6 @@ import {
   parseCodeExchange,
   parseDataAccessExpiry,
   parseGraphErrorBody,
-  parseLongLived,
-  parseMe,
   parsePages,
   parseUserLongLived,
   stripOAuthCodeSuffix,
@@ -48,9 +42,6 @@ export type GraphResult<T> =
 const GRAPH = "https://graph.facebook.com";
 const V = `${GRAPH}/${INSTAGRAM_GRAPH_VERSION}`;
 const PAGES_FIELDS = "id,name,tasks,access_token,instagram_business_account{id,username}";
-/** Host do Login do Instagram, só das funções antigas que saem na Task 5. */
-const IG_GRAPH = "https://graph.instagram.com";
-const IG_V = `${IG_GRAPH}/${INSTAGRAM_GRAPH_VERSION}`;
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 export function createInstagramGraph(fetchImpl: typeof fetch, opts: { timeoutMs?: number } = {}) {
@@ -149,33 +140,6 @@ export function createInstagramGraph(fetchImpl: typeof fetch, opts: { timeoutMs?
     subscribePage(i: { pageId: string; pageToken: string }) {
       const url = `${V}/${encodeURIComponent(i.pageId)}/subscribed_apps?subscribed_fields=${INSTAGRAM_SUBSCRIBED_FIELDS.join(",")}`;
       return call(url, { method: "POST", headers: bearer(i.pageToken) }, successTrue);
-    },
-
-    /** @deprecated Login do Instagram; sai na Task 5. */
-    toLongLived(i: { appSecret: string; shortToken: string }) {
-      const q = new URLSearchParams({
-        grant_type: "ig_exchange_token",
-        client_secret: i.appSecret,
-        access_token: i.shortToken,
-      });
-      return call(`${IG_GRAPH}/access_token?${q}`, { method: "GET" }, parseLongLived);
-    },
-
-    /** @deprecated Login do Instagram; sai com o `process-instagram-token-refresh` na Task 5. */
-    refresh(i: { token: string }) {
-      const q = new URLSearchParams({ grant_type: "ig_refresh_token", access_token: i.token });
-      return call(`${IG_GRAPH}/refresh_access_token?${q}`, { method: "GET" }, parseLongLived);
-    },
-
-    /** @deprecated Login do Instagram; sai na Task 5. */
-    me(i: { token: string }) {
-      return call(`${IG_V}/me?fields=user_id,username,account_type`, get(i.token), parseMe);
-    },
-
-    /** @deprecated Login do Instagram; sai na Task 5 (use `subscribePage`). */
-    subscribe(i: { igUserId: string; token: string }) {
-      const url = `${IG_V}/${encodeURIComponent(i.igUserId)}/subscribed_apps?subscribed_fields=${INSTAGRAM_SUBSCRIBED_FIELDS.join(",")}`;
-      return call(url, { method: "POST", headers: bearer(i.token) }, successTrue);
     },
 
     /** Envio pela Página, com o token da Página. */

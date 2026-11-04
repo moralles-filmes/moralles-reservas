@@ -9,14 +9,14 @@ paths:
   - "src/lib/instagram-*"
 ---
 
-# Instagram (Direct pela Instagram API with Instagram Login)
+# Instagram (Direct pelo Login do Facebook para Empresas, com a Página)
 
 Plano e decisões: [2026-10-20-instagram-fase-1-direct-conversas.md](../../docs/superpowers/plans/2026-10-20-instagram-fase-1-direct-conversas.md) (D1–D9, S1–S7, contrato C1–C6). Spec: [2026-10-19-instagram-modulo-design.md](../../docs/superpowers/specs/2026-10-19-instagram-modulo-design.md). Banco: tabelas FORCE RLS e RPCs em [banco-de-dados.md](banco-de-dados.md); jobs de cron em [edge-functions.md](edge-functions.md).
 
 ## Identidade e tenant
 
-- **A conta é identificada pelo `user_id` de `GET /me?fields=user_id,username,account_type`, que é o `entry[].id` do webhook (S1).** O `user_id` da troca do código é "app-scoped" e nunca é gravado. [instagram-graph-core.ts](../../supabase/functions/_shared/instagram-graph-core.ts) `parseMe`.
-- **`ig_user_id` é string; número só se `Number.isSafeInteger`.** Ids do IG têm 17 dígitos e `String(numero)` grava outro id válido, que quebra o roteamento do webhook em silêncio. `parseMe`.
+- **A conta é identificada pelo `instagram_business_account.id` da Página escolhida em `GET /me/accounts`, que é o `entry[].id` do webhook; o `page_id` fica em `instagram_accounts.page_id` e é a base do envio (`POST /{page_id}/messages`).** [instagram-graph-core.ts](../../supabase/functions/_shared/instagram-graph-core.ts) `parsePages`.
+- **`ig_user_id` e `page_id` são string só de dígitos (`parseId`); número só se `Number.isSafeInteger`.** Ids do IG têm 17 dígitos e `String(numero)` grava outro id válido, que quebra o roteamento do webhook em silêncio.
 - **O webhook resolve unidade e conta no mesmo select de `instagram_accounts` (`status='connected'`), nunca pelo payload (C3).** Um POST mistura várias contas e lojas; cada linha da fila leva o `unit_id` da própria conta. [webhook-instagram/index.ts](../../supabase/functions/webhook-instagram/index.ts).
 - **No `instagram-connect`, a unidade do callback vem só do `state` assinado, e `state.userId` tem de ser o usuário da sessão (C1).** Papel e grant são reconferidos no callback; operador e não membro recebem o mesmo 403 em todas as ações; erro de leitura de papel/admin/grant dá 503. A EF lê papel direto de `unit_members` + `platform_admins` (mesma consulta de `hasUnitAccess`, que não expõe o papel). [instagram-connect/index.ts](../../supabase/functions/instagram-connect/index.ts), [instagram-access-core.ts](../../supabase/functions/_shared/instagram-access-core.ts).
 - **O painel de Conversas lê a conexão pela RPC `get_instagram_account_status` (`readInstagramConnection`), que vale para qualquer membro da unidade, inclusive operador, e não devolve token; a EF `instagram-connect` segue restrita a owner/gerente (C1) e só o cartão de status da página da loja a usa.** O operador atende Direct mas a EF o recusa. Em erro de leitura o envio do IG não é bloqueado (polaridade aberta): o servidor é o gate e responde 409/503. [api.ts](../../src/features/instagram/api.ts), [Conversas.tsx](../../src/pages/gestao/Conversas.tsx).
@@ -29,7 +29,7 @@ Plano e decisões: [2026-10-20-instagram-fase-1-direct-conversas.md](../../docs/
 - **A leitura de `platform_secrets` fica no `index.ts` de cada EF, com `.from("platform_secrets")` literal (D3).** Constante ou indireção para escapar do `check-portabilidade` é proibida; o leitor é criado uma vez por isolate e cacheia só sucesso por 5 min.
 - **`INSTAGRAM_APP_ID` e `INSTAGRAM_OAUTH_STATE_SECRET` (≥32 caracteres) são Edge secrets, lidos só no `index.ts`.** Segredo do `state` curto faz o `start` responder 503. Rotação: [RUNBOOK-ROTACAO-CREDENCIAIS.md](../../docs/RUNBOOK-ROTACAO-CREDENCIAIS.md).
 - **O adapter do Graph não redige: ele nunca devolve texto remoto nem de runtime.** Quem acrescentar log com URL, corpo ou mensagem de erro passa o texto por `redactSecrets` com todas as credenciais da chamada. [instagram-graph.ts](../../supabase/functions/_shared/instagram-graph.ts).
-- **Token só no header `Authorization: Bearer`, exceto nos GETs que a Meta só aceita com query (`toLongLived`, `refresh`, R2-e).** POST nunca leva token na query.
+- **Token só no header `Authorization: Bearer`, exceto nos GETs que a Meta só aceita com query (`exchangeCode`, `toLongLivedUser`, R2-e).** POST nunca leva token na query.
 
 ## Webhook e fila
 
@@ -59,7 +59,6 @@ Plano e decisões: [2026-10-20-instagram-fase-1-direct-conversas.md](../../docs/
 
 ## Token
 
-- **A idade do token é `coalesce(token_refreshed_at, connected_at)`; a renovação começa aos 30 dias e o vencido vira `reauth_required` sem chamar o Graph.** [process-instagram-token-refresh/index.ts](../../supabase/functions/process-instagram-token-refresh/index.ts), [instagram-token-refresh-core.ts](../../supabase/functions/_shared/instagram-token-refresh-core.ts).
-- **O refresh processa as contas devidas mais antigas primeiro, com orçamento de tempo por execução.** Ordem fixa sem orçamento deixaria as mesmas contas do fim sem renovar até vencer.
-- **A renovação continua para conta `connected` de unidade com grant revogado.** A revogação desliga a ingestão (webhook/worker), não a credencial; desconectar é ato do dono ou da plataforma.
-- **`set_instagram_account_status` e `record_instagram_token_refresh` exigem o `connected_at` que o chamador leu e devolvem `false`, sem efeito, se a conta reconectou depois (CAS).** Sem isso, a escrita atrasada de uma leitura antiga derruba a conexão nova para `reauth_required` ou sobrescreve o token novo; quem chama trata `false` como `skipped_stale`/`reauth_stale`, nunca como falha nem sucesso. [migration](../../supabase/migrations/20261103120800_instagram_account_cas_connected_at.sql).
+- **O token da Página não expira e nenhum worker o renova.** O `debug_token` do conectar grava `data_access_expires_at` (90 dias da última atividade do usuário) em `token_expires_at`; o painel avisa "Reconecte até DD/MM/AAAA" e reconectar renova. Token expirado ou revogado é `190` → `reauth_required`. [instagram-connect/index.ts](../../supabase/functions/instagram-connect/index.ts).
+- **`page_id` nulo ou inválido no envio vira `reauth_required` com `page_missing`.** Sem a Página não há endpoint de envio; a conta precisa reconectar. [send-manual-message/index.ts](../../supabase/functions/send-manual-message/index.ts).
+- **`set_instagram_account_status` exige o `connected_at` que o chamador leu e devolve `false`, sem efeito, se a conta reconectou depois (CAS).** Sem isso, a escrita atrasada de uma leitura antiga derruba a conexão nova para `reauth_required`; quem chama trata `false` como `skipped_stale`/`reauth_stale`, nunca como falha nem sucesso. [migration](../../supabase/migrations/20261103120800_instagram_account_cas_connected_at.sql).

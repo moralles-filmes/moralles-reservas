@@ -50,7 +50,6 @@ Padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vaul
 | `whatsapp-template-workers` | `*/5 * * * *` | `trigger_whatsapp_template_workers` → `process-whatsapp-templates`; provisiona/sincroniza catálogo autorizado |
 | `whatsapp-automation-worker` | `* * * * *` | `trigger_whatsapp_automation_worker` → `process-whatsapp-automations`; consome ledger, rechecks/reparo/expiração |
 | `instagram-inbound-sweep` | `*/1 * * * *` | `trigger_instagram_inbound_sweep` → `process-instagram-inbound?sweep=1`; retoma a fila do Direct (gêmeo: `INBOUND_SWEEP_INTERVAL_MS`) |
-| `instagram-token-refresh` | `40 9 * * *` | `trigger_instagram_token_refresh` → `process-instagram-token-refresh`; renova o token longo |
 | `instagram-inbound-purge` | `17 4 * * *` | SQL direto: `purge_instagram_inbound_events()` (done 7d, dead 30d) e `purge_instagram_processed_messages()` (30d) |
 
 - **`verify_jwt=false` obrigatório em `supabase/config.toml`** pra todo worker pg_cron (`process-*`, `expire-*`, `cleanup-*`). CLI ≥2.95 mudou default pra `true` — sem entrada explícita, gateway responde 401 antes do `requireInternalAuth` e cron silencia (pg_net é fire-and-forget). Worker novo = entrada nova antes do deploy.
