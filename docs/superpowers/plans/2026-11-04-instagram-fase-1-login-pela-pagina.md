@@ -191,14 +191,14 @@
   - o worker finaliza o evento como o caminho de `reauth_required` já faz;
   - o envio manual responde como no 190.
 
-- [ ] **Passo 1: testes:**
+- [x] **Passo 1: testes:**
   - nos dois arquivos, `GRAPH`/`SEND_URL` = `https://graph.facebook.com/v26.0/${PAGE}/messages`, com `PAGE ≠ IG_USER`, e o perfil em `https://graph.facebook.com/v26.0/${IGSID}?fields=name,username`;
   - caso novo em cada arquivo: conta `connected` com `page_id` nulo → RPC de status com `p_error_code: "page_missing"`, nenhuma chamada ao Graph e o log acima;
   - o webhook continua casando pela `ig_user_id` (o teste de request do webhook não muda e fica verde).
-- [ ] **Passo 2:** `npx vitest run src/lib/instagram-inbound-request.test.ts src/lib/instagram-manual-message-request.test.ts`. Esperado: FAIL.
-- [ ] **Passo 3:** implementar.
-- [ ] **Passo 4:** os mesmos testes, mais `src/lib/instagram-webhook-request.test.ts`, e `deno check` das duas EFs. Esperado: PASS e exit 0.
-- [ ] **Passo 5:** commit `feat(instagram): envio pelo endpoint da Página`.
+- [x] **Passo 2:** `npx vitest run src/lib/instagram-inbound-request.test.ts src/lib/instagram-manual-message-request.test.ts`. Esperado: FAIL.
+- [x] **Passo 3:** implementar.
+- [x] **Passo 4:** os mesmos testes, mais `src/lib/instagram-webhook-request.test.ts`, e `deno check` das duas EFs. Esperado: PASS e exit 0.
+- [x] **Passo 5:** commit `feat(instagram): envio pelo endpoint da Página`.
 
 ### Task 5: retirar o refresh do token
 
