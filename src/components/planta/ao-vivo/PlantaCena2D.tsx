@@ -1,5 +1,6 @@
 import type { HallPlan, TableBox } from "@/lib/hall-plan-core";
 import type { TableState } from "@/lib/table-situation-core";
+import { PlanViewport } from "../viewport/PlanViewport";
 import { MesaBotao } from "./MesaBotao";
 import { WINDOW_STRIPES, entranceRect, wallRect } from "./scene-geometry";
 import { useContainerWidth } from "./useContainerWidth";
@@ -23,9 +24,9 @@ export function PlantaCena2D({ plan, boxes, states, timeLabels, selectedId, onSe
   const entrance = entranceRect(plan, scale, WALL_PX + 4);
   return (
     <div ref={ref} className="w-full">
-      <div
+      <PlanViewport
         data-testid="planta-2d"
-        className="surface relative w-full overflow-hidden rounded-lg"
+        className="surface w-full rounded-lg"
         style={{ aspectRatio: `${plan.widthCm} / ${plan.depthCm}` }}
       >
         {plan.windowWalls.map((wall) => (
@@ -50,7 +51,7 @@ export function PlantaCena2D({ plan, boxes, states, timeLabels, selectedId, onSe
             now={now}
           />
         ))}
-      </div>
+      </PlanViewport>
     </div>
   );
 }

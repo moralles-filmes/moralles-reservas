@@ -185,6 +185,7 @@ export default function SalaoAoVivo() {
           </p>
         )}
         <Cena
+          key={hall.id}
           plan={plan}
           boxes={boxes}
           states={states}

@@ -39,7 +39,7 @@ Data: 2026-11-04 · Slug: `planta-ao-vivo-v2` · Branch: `feat/planta-ao-vivo-v2
 - Hook `usePlanViewport` com Pointer Events no fundo:
   - um dedo ou o mouse no fundo faz pan;
   - dois dedos fazem pinça;
-  - `wheel` com Ctrl, ou trackpad, dá zoom; `wheel` sozinho faz pan;
+  - `wheel` com Ctrl/Meta (inclui a pinça do trackpad) dá zoom; `wheel` sozinho continua rolando a página, para não prender o cursor sobre a planta;
   - `touch-action: none` só na área da planta.
 - Controles `PlanViewportControls` (+, −, Centralizar), com `aria-label` e alvo de pelo menos 44 px em toque. Teclado: `+`, `-` e `0` com o foco na planta.
 - O gesto começa no **fundo**. Toque em mesa continua sendo seleção (ao vivo) ou arrasto e redimensionamento (editor). No editor, o arrasto da mesa divide o deslocamento em px pela escala efetiva (escala base × zoom), para a mesa seguir o dedo em qualquer zoom.

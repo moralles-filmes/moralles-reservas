@@ -1,5 +1,6 @@
 import { Component, type ReactNode } from "react";
 import type { PlanWall } from "@/lib/hall-plan-core";
+import { PlanViewport } from "../viewport/PlanViewport";
 import { MesaBotao } from "./MesaBotao";
 import { PlantaCena2D, type CenaProps } from "./PlantaCena2D";
 import {
@@ -32,7 +33,13 @@ function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSele
 
   return (
     <div ref={ref} className="w-full">
-      <div data-testid="planta-3d" className="relative w-full" style={{ height, perspective: SCENE_PERSPECTIVE }}>
+      <PlanViewport
+        data-testid="planta-3d"
+        className="w-full"
+        style={{ height }}
+        contentClassName="pointer-events-none"
+      >
+        <div className="pointer-events-none relative h-full w-full" style={{ perspective: SCENE_PERSPECTIVE }}>
         {/* A entrada anima este invólucro: a animação sobrescreve `transform`, então a rotação fica no filho. */}
         <div
           data-testid="planta-3d-entrada"
@@ -97,7 +104,8 @@ function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSele
             ))}
           </div>
         </div>
-      </div>
+        </div>
+      </PlanViewport>
     </div>
   );
 }
