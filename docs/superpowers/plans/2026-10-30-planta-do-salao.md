@@ -839,35 +839,35 @@ export function reservationLiveSituation(r: Pick<Reserva, "date" | "time" | "sta
 
 As listas mostram a pílula gravada e, quando não é `null`, a derivada ao lado, no máximo duas. O relógio é `useNow(60_000)`.
 
-- [ ] **Step 1: Testes que falham:**
+- [x] **Step 1: Testes que falham:**
   - `StatusPill` aplica `bg-status-late/15 text-status-late`, sem cor fixa;
   - `reservationLiveSituation` nos quatro ramos e em `cancelled` → `null`;
   - `ReservaCard` de reserva confirmada às 19:00, agora 19:12 → pílulas "Confirmada" e "Atrasada 12 min".
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implementar e substituir** as três tabelas locais de classes pelas `StatusPill`.
-- [ ] **Step 4:** PASS; os testes existentes das listas verdes.
-- [ ] **Step 5: Commit** `feat(planta): situações Chegando, Atrasada e Sentada nas listas`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3: Implementar e substituir** as três tabelas locais de classes pelas `StatusPill`.
+- [x] **Step 4:** PASS; os testes existentes das listas verdes.
+- [x] **Step 5: Commit** `feat(planta): situações Chegando, Atrasada e Sentada nas listas`.
 
 ### Task 16: Regras e documentação
 
 **Files:**
 - Modify: `.claude/rules/reservas.md`, `.claude/rules/frontend.md`, `.claude/rules/banco-de-dados.md`
 
-- [ ] **Step 1: Acrescentar,** no formato do AGENTS §3, uma frase de regra, uma de porquê e um ponteiro:
+- [x] **Step 1: Acrescentar,** no formato do AGENTS §3, uma frase de regra, uma de porquê e um ponteiro:
   - **reservas.md:** chegada e liberação são carimbos e o `status` não muda; liberar passante nunca usa `left` (métrica de sentados); sentar da fila grava `waitlist.table_id` na mesma linha; o relógio é o do servidor, via trigger.
   - **frontend.md:** a situação da mesa só sai de `table-situation-core.ts`; o link de conversa usa `conversationHref`; a planta ao vivo tem um único `glass`.
   - **banco-de-dados.md:** `plan_*` de `tables`/`halls` são guardadas por `guard_plan_write` (owner/gerente/admin), enquanto o resto da linha continua na policy `unit_member_all_*`; as RPCs de presença são INVOKER por causa do `FORCE RLS`.
-- [ ] **Step 2:** `node scripts/check-padrao.mjs` verde (o AGENTS.md fica abaixo de 200 linhas; nada novo nele).
-- [ ] **Step 3: Commit** `docs(planta): invariantes da planta e da presença`.
+- [x] **Step 2:** `node scripts/check-padrao.mjs` verde (o AGENTS.md fica abaixo de 200 linhas; nada novo nele).
+- [x] **Step 3: Commit** `docs(planta): invariantes da planta e da presença`.
 
 ### Task 17: Lançamento
 
-- [ ] **Step 1: Gates completos** na integração (seção Global Constraints).
-- [ ] **Step 2: Auditores** `saas-shield-br`:
+- [x] **Step 1: Gates completos** na integração (seção Global Constraints).
+- [x] **Step 2: Auditores** `saas-shield-br`:
   - `migration-validator`, `rls-auditor`, `tenant-isolation-auditor` e `identity-access-auditor` sobre a branch inteira contra `main`;
   - corrigir bloqueante em nova task.
-- [ ] **Step 3: Revisão da branch inteira** com `superpowers:requesting-code-review` (modelo mais capaz).
-- [ ] **Step 4: Segredos:** `git diff main...feat/planta-do-salao | grep -nE "sk-|sk-ant-|xai-|AIza|eyJ|Bearer |service_role|whsec_"` sem resultado.
+- [x] **Step 3: Revisão da branch inteira** com `superpowers:requesting-code-review` (modelo mais capaz).
+- [x] **Step 4: Segredos:** `git diff main...feat/planta-do-salao | grep -nE "sk-|sk-ant-|xai-|AIza|eyJ|Bearer |service_role|whsec_"` sem resultado.
 - [ ] **Step 5: Conferência do dono, local:**
   - pelo `npm run dev`, o dono confere na MORALLES o editor, o Salão ao vivo no tablet e as listas;
   - não existe preview da Vercel: está desligado para `feat/planta-do-salao` em `vercel.json` (`git.deploymentEnabled`).
