@@ -218,17 +218,20 @@ export function usePlanViewport() {
     [zoomIn, zoomOut, reset],
   );
 
-  // Wheel com Ctrl/Meta: listener nativo não-passivo (o do React é passivo e não deixa cancelar).
+  // Roda do mouse dá zoom no ponto do cursor (pedido do dono); Ctrl/Meta+roda é a pinça do trackpad,
+  // com deltas pequenos, por isso mais sensível. Listener nativo não-passivo: o do React não deixa cancelar.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
+      // deltaMode 1 = linhas (Firefox): converte para px.
+      const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+      const sensitivity = e.ctrlKey || e.metaKey ? 0.01 : 0.0015;
       const p = localPoint(e.clientX, e.clientY);
       const t = contentRef.current;
       if (t) t.style.transition = "";
-      commit(zoomAt(viewRef.current, Math.exp(-e.deltaY * 0.01), p.x, p.y));
+      commit(zoomAt(viewRef.current, Math.exp(-dy * sensitivity), p.x, p.y));
       schedule();
       setZoom(viewRef.current.zoom);
     };
@@ -246,8 +249,9 @@ export function usePlanViewport() {
   /** true se o último gesto no fundo foi um arrasto (para distinguir de clique). */
   const wasPanning = useCallback(() => didPan.current, []);
 
-  // Sem zoom, o toque vertical rola a página (tablet em retrato, painel embaixo); com zoom, o arrasto é da planta.
-  const touchAction = zoom > 1 ? "none" : "pan-y";
+  // A pinça precisa ser sempre da planta: com pan-y o navegador cancela o gesto de dois dedos.
+  // Para rolar a página no tablet, toque fora da planta.
+  const touchAction = "none" as const;
 
   return {
     containerRef,

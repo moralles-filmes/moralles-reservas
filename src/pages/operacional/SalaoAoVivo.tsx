@@ -363,12 +363,13 @@ export default function SalaoAoVivo() {
       </>
     );
   }
-  // Camada no body: Dialog, Select e Sonner (z-50, também no body) ficam por cima.
+  // Camada no body em z-50, igual ao menu lateral do AdminShell: vem depois do #root no DOM, então cobre o menu;
+  // Dialog, Select e Popover abrem depois (portais posteriores no body) e ficam por cima dela.
   const inset = (side: string) => `max(12px, env(safe-area-inset-${side}))`;
   const layer = createPortal(
     <div
       data-testid="salao-tela-cheia"
-      className="fixed inset-0 z-40 overflow-y-auto bg-background lg:overflow-hidden"
+      className="fixed inset-0 z-50 overflow-y-auto bg-background lg:overflow-hidden"
       style={{
         paddingTop: inset("top"),
         paddingRight: inset("right"),

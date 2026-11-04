@@ -39,8 +39,8 @@ Data: 2026-11-04 · Slug: `planta-ao-vivo-v2` · Branch: `feat/planta-ao-vivo-v2
 - Hook `usePlanViewport` com Pointer Events no fundo:
   - um dedo ou o mouse no fundo faz pan;
   - dois dedos fazem pinça;
-  - `wheel` com Ctrl/Meta (inclui a pinça do trackpad) dá zoom; `wheel` sozinho continua rolando a página, para não prender o cursor sobre a planta;
-  - `touch-action`: `pan-y` com zoom ≤ 1, para o toque vertical rolar a página no tablet em retrato (painel embaixo), e `none` com zoom > 1, quando o arrasto é da planta. Mesa, alça e entrada mantêm `none`.
+  - a roda do mouse dá zoom no ponto do cursor, com ou sem Ctrl (pedido do dono em 2026-11-04); Ctrl/Meta + roda (pinça do trackpad) usa sensibilidade maior;
+  - `touch-action: none` na planta: a pinça é sempre da planta (com `pan-y` o navegador cancelava o gesto de dois dedos). No tablet, a página rola tocando fora da planta.
 - Controles `PlanViewportControls` (+, −, Centralizar), com `aria-label` e alvo de pelo menos 44 px em toque. Teclado: `+`, `-` e `0` com o foco na planta.
 - O gesto começa no **fundo**. Toque em mesa continua sendo seleção (ao vivo) ou arrasto e redimensionamento (editor). No editor, o arrasto da mesa divide o deslocamento em px pela escala efetiva (escala base × zoom), para a mesa seguir o dedo em qualquer zoom.
 - Clique no fundo sem mover (abaixo de 5 px, o mesmo limiar do arrasto) continua desmarcando a mesa no editor.
@@ -59,7 +59,7 @@ Data: 2026-11-04 · Slug: `planta-ao-vivo-v2` · Branch: `feat/planta-ao-vivo-v2
 ### 4. Tela cheia
 
 - Botão "Tela cheia" / "Sair da tela cheia" no cabeçalho da seção.
-- Com ela ligada, a página renderiza o próprio conteúdo em camada `fixed inset-0 z-40 bg-background`, sobre o casco do `AdminShell`, e chama `document.documentElement.requestFullscreen()`. A tela cheia pega o **documento inteiro**: Dialog, Select e Sonner abrem no `body` e precisam continuar visíveis.
+- Com ela ligada, a página renderiza o próprio conteúdo em camada `fixed inset-0 z-50 bg-background` (o menu lateral do AdminShell é z-50; a camada vem depois no body e o cobre), sobre o casco do `AdminShell`, e chama `document.documentElement.requestFullscreen()`. A tela cheia pega o **documento inteiro**: Dialog, Select e Sonner abrem no `body` e precisam continuar visíveis.
 - Sem a API, ou com recusa (iPhone): fica só a camada fixa e a tela continua utilizável.
 - Sair: o botão, `Esc` ou o `fullscreenchange` vindo do navegador desligam a camada. Ao sair da rota, desliga e chama `exitFullscreen` se ainda estiver ativa.
 - Layout em tela cheia: a planta ocupa a altura toda (`h-dvh`), com painel lateral de 372 px e rolagem própria. Abaixo de `lg`, o painel vai para baixo, como hoje. Respeita `env(safe-area-inset-*)`.

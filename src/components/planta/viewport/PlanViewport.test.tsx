@@ -51,12 +51,12 @@ describe("PlanViewport", () => {
     expect(content.style.transform).not.toContain("80px");
   });
 
-  it("Ctrl + roda dá zoom e roda sem Ctrl não é cancelada", () => {
+  it("roda do mouse dá zoom, com e sem Ctrl", () => {
     setup();
     const region = screen.getByRole("region");
     const plain = new WheelEvent("wheel", { deltaY: -100, cancelable: true, bubbles: true });
     region.dispatchEvent(plain);
-    expect(plain.defaultPrevented).toBe(false);
+    expect(plain.defaultPrevented).toBe(true);
     const ctrl = new WheelEvent("wheel", { deltaY: -100, ctrlKey: true, cancelable: true, bubbles: true });
     region.dispatchEvent(ctrl);
     expect(ctrl.defaultPrevented).toBe(true);

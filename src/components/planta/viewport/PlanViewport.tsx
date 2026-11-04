@@ -52,7 +52,7 @@ export function PlanViewport({
       {...vp.handlers}
     >
       <span id={hintId} className="sr-only">
-        Arraste o fundo para mover; pinça ou Ctrl + roda para zoom
+        Arraste o fundo para mover; pinça ou roda do mouse para zoom
       </span>
       <div
         ref={vp.contentRef}
