@@ -138,6 +138,10 @@
     "get_whatsapp_v2_service_route(text,uuid)"
   ],
 
+  "_service_only_escolha_de_mesa": [
+    "insert_reservation_with_tables(jsonb,uuid[])"
+  ],
+
   "_expected_advisor": {
     "_doc": [
       "Total de WARN que o Security Advisor deve reportar para os lints 0028 e",
@@ -231,11 +235,12 @@
       "DELTA MARKETING: quatro RPCs DEFINER authenticated com JWT real, acesso da unidade por papel e nenhuma autoridade de envio: projeção 9/39/48. As escritas exigem owner e CAS.",
       "DELTA serviço v2 self-service: três RPCs DEFINER authenticated (leitura com membership, preferência CAS owner/gerente/admin e rollout global admin): projeção 9/42/51.",
       "DELTA camada global do prompt do agente (20261029120100): duas RPCs DEFINER authenticated com guarda platform_admin (publicar e restaurar versão): projeção 9/44/53.",
+      "DELTA ocupação multi-mesa (20261105120100): duas RPCs DEFINER authenticated da recepção (set_occupant_tables e set_occupant_party_size) com membership ou platform_admin resolvidos pelo ocupante: projeção 9/46/55. insert_reservation_with_tables é só service_role e não conta.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,
-    "0029": 44,
-    "total": 53
+    "0029": 46,
+    "total": 55
   },
 
   "public_anon": [
@@ -690,6 +695,22 @@
       "why": "Planta do salão: senta uma entrada da fila numa mesa, na própria linha de waitlist (status seated pela transição já existente, table_id). Não muda status além disso nem cria linha; carimbo de presença. INVOKER sobre a RLS (waitlist com FORCE RLS); mesa de outra unidade recusada pelo trigger app_private.guard_same_unit_table. Medido no pré-voo 81 (P-8, P-12, P-14).",
       "security_definer": false,
       "advisor_lints": []
+    },
+    {
+      "name": "set_occupant_tables",
+      "args": "p_kind text, p_id uuid, p_table_ids uuid[], p_allow_overlap boolean",
+      "roles": ["authenticated"],
+      "why": "Salão ao vivo: a recepção troca ou junta mesas de uma reserva, passante ou fila sentada. DEFINER porque occupant_tables e occupancy_events não têm escrita direta (FORCE RLS, só SELECT). Unidade resolvida pelo próprio ocupante (FOR UPDATE), caller membro de qualquer papel ou platform_admin pelo JWT real; alheio, inexistente e mesa de outra unidade ou inativa dão o mesmo 42501 seat_forbidden. Não muda status nem cria linha de reserva/passante/fila. Sobreposição com reserva posterior só com p_allow_overlap (overlap_ok); sem ele devolve o conflito sem gravar. Criada na 20261105120100; medido no pré-voo 83 (R-1 a R-15, R-12 contagens por status).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "set_occupant_party_size",
+      "args": "p_kind text, p_id uuid, p_party_size integer",
+      "roles": ["authenticated"],
+      "why": "Salão ao vivo: a recepção ajusta o número de pessoas (1..50) de reserva, passante ou fila, com a mesma resolução de unidade e autorização da set_occupant_tables (42501 seat_forbidden). DEFINER porque grava occupancy_events, sem escrita direta. Guarda original_party_size na primeira mudança; não muda status nem caução. Criada na 20261105120100; medido no pré-voo 83 (R-7, R-9, R-12).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
     },
     {
       "name": "release_waitlist_entry",

@@ -1,4 +1,4 @@
--- 83: escolha de mesa — mesa reservável e combinações (C-*).
+-- 83: escolha de mesa — combinações (C-*), ocupação multi-mesa (S-*, X-*, R-*).
 --
 -- Base: 81a + migrations 20261030120000/120100 + 82a + 20261104120000 + 83a,
 -- no contêiner exclusivo (README §83). Roda como `postgres`. Mesmo motor do
@@ -339,6 +339,335 @@ select pg_temp.caso(8540, 'C-CP2 sem o trigger de desativação, a combinação 
   $s$ || pg_temp.semear_combo() || $s$
      update public.tables set bookable = false where id = '{T11}'; select 'x'$s$, 'ok',
   $c$pg_temp.combos_s1() = '6-8:11+12'$c$);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Task 2 — ocupação multi-mesa (S-*), exclusão (X-*), RPCs da recepção (R-*)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Fixtures novas nascem dentro de cada caso (desfeito). Datas e horas
+-- relativas ao now() da transação em BRT: D1 = amanhã; DN0/TN0 = agora;
+-- DN30/TN30 = agora + 30 min. Reservas de amanhã às 19:00 não cruzam janela
+-- nenhuma de "sentado agora".
+insert into t_ids values
+  ('N1', 'a0d81000-0000-4000-8000-000000000501'), ('N2', 'a0d81000-0000-4000-8000-000000000502'),
+  ('N3', 'a0d81000-0000-4000-8000-000000000503'), ('N4', 'a0d81000-0000-4000-8000-000000000504'),
+  ('N5', 'a0d81000-0000-4000-8000-000000000505'), ('N6', 'a0d81000-0000-4000-8000-000000000506'),
+  ('N7', 'a0d81000-0000-4000-8000-000000000507'),
+  ('WN1', 'a0d81000-0000-4000-8000-000000000601'), ('WN2', 'a0d81000-0000-4000-8000-000000000602'),
+  ('W1', 'a0d81000-0000-4000-8000-000000000201'), ('W4', 'a0d81000-0000-4000-8000-000000000204'),
+  ('P1', 'a0d81000-0000-4000-8000-000000000301'), ('PB', 'a0d81000-0000-4000-8000-0000000003b1'),
+  ('RB', 'a0d81000-0000-4000-8000-0000000001b1'), ('F1', 'a0d81000-0000-4000-8000-0000000000f1'),
+  ('D1', ((now() at time zone 'America/Sao_Paulo')::date + 1)::text),
+  ('DN0', (now() at time zone 'America/Sao_Paulo')::date::text),
+  ('TN0', to_char(now() at time zone 'America/Sao_Paulo', 'HH24:MI:SS')),
+  ('DN30', ((now() + interval '30 minutes') at time zone 'America/Sao_Paulo')::date::text),
+  ('TN30', to_char((now() + interval '30 minutes') at time zone 'America/Sao_Paulo', 'HH24:MI:SS'));
+
+-- Reserva de A, cliente F1, código P83-<token>. Mesa e data são tokens.
+create function pg_temp.res(p_tok text, p_mesa text, p_data text, p_hora text,
+                            p_status text default 'confirmed', p_party int default 4)
+returns text language sql as $f$
+  select format($q$insert into public.reservations (id, customer_id, table_id, date, time, party_size, status, reservation_code, unit_id)
+    values ('{%s}', '{F1}', %s, '{%s}', '%s', %s, '%s', 'P83-%s', '{A}');$q$,
+    p_tok, case when p_mesa is null then 'null' else '''{' || p_mesa || '}''' end,
+    p_data, p_hora, p_party, p_status, p_tok)
+$f$;
+
+-- Passante de A sentado agora na mesa dada.
+create function pg_temp.passante(p_tok text, p_mesa text) returns text language sql as $f$
+  select format($q$insert into public.walk_ins (id, unit_id, customer_name, party_size, status, table_id, seated_at)
+    values ('{%s}', '{A}', 'Passante %s', 2, 'seated', '{%s}', now());$q$, p_tok, p_tok, p_mesa)
+$f$;
+
+-- Mesas (números) do ocupante em occupant_tables, '-' se nenhuma.
+-- plpgsql: o corpo só é resolvido na chamada (o RED roda sem as tabelas).
+create function pg_temp.mesas(p_id uuid) returns text language plpgsql as $f$
+begin
+  return (select coalesce(string_agg(t.number::text, '+' order by t.number), '-')
+            from public.occupant_tables ot join public.tables t on t.id = ot.table_id
+           where p_id in (ot.reservation_id, ot.walk_in_id, ot.waitlist_id));
+end $f$;
+
+-- blocks_slot/overlap_ok por mesa do ocupante: '13:t/f 14:t/f'.
+create function pg_temp.flags(p_id uuid) returns text language plpgsql as $f$
+begin
+  return (select coalesce(string_agg(t.number || ':' || left(ot.blocks_slot::text, 1) || '/'
+                                     || left(ot.overlap_ok::text, 1), ' ' order by t.number), '-')
+            from public.occupant_tables ot join public.tables t on t.id = ot.table_id
+           where p_id in (ot.reservation_id, ot.walk_in_id, ot.waitlist_id));
+end $f$;
+
+-- Contagens por status de reservations, walk_ins e waitlist.
+create function pg_temp.contagens() returns text language plpgsql as $f$
+begin
+  return (select string_agg(x, '|' order by x) from (
+    select 'r:' || string_agg(status || '=' || n, ',' order by status) as x
+      from (select status, count(*) n from public.reservations group by 1) a
+    union all
+    select 'w:' || string_agg(status || '=' || n, ',' order by status)
+      from (select status, count(*) n from public.walk_ins group by 1) b
+    union all
+    select 'q:' || string_agg(status || '=' || n, ',' order by status)
+      from (select status, count(*) n from public.waitlist group by 1) c) s);
+end $f$;
+
+-- Linha para insert_reservation_with_tables (colunas do reserveSlot).
+create function pg_temp.linha(p_tok text, p_hora text, p_extra text default '') returns text language sql as $f$
+  select format($q$jsonb_build_object('customer_id', '{F1}', 'unit_id', '{A}', 'date', '{D1}', 'time', '%s',
+      'party_size', 6, 'reservation_code', 'P83-%s', 'status', 'confirmed', 'table_choice', 'customer'%s)$q$,
+    p_hora, p_tok, p_extra)
+$f$;
+
+-- ═══ S — sincronia a partir do table_id legado ══════════════════════════════
+select pg_temp.caso(8550, 'S-1 INSERT de reserva com mesa cria 1 linha que bloqueia', 'postgres',
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$ select 'x'$s$, 'ok',
+  $c$pg_temp.flags('{N1}') = '13:t/f'
+     and (select lower(slot) = ('{D1}'::date + time '19:00') at time zone 'America/Sao_Paulo'
+                 and upper(slot) - lower(slot) = interval '90 minutes'
+            from public.occupant_tables where reservation_id = '{N1}')$c$);
+select pg_temp.caso(8551, 'S-2 UPDATE de table_id troca a linha', 'postgres',
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$
+  update public.reservations set table_id = '{T14}' where id = '{N1}'; select 'x'$s$, 'ok',
+  $c$pg_temp.mesas('{N1}') = '14'$c$);
+select pg_temp.caso(8552, 'S-3 table_id nulo apaga as linhas', 'postgres',
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$
+  update public.reservations set table_id = null where id = '{N1}'; select 'x'$s$, 'ok',
+  $c$pg_temp.mesas('{N1}') = '-'$c$);
+select pg_temp.caso(8553, 'S-4a seat_waitlist_entry cria a linha da fila', 'OPE',
+  $s$select public.seat_waitlist_entry('{W1}', '{T13}')::text$s$, 'ok',
+  $c$pg_temp.flags('{W1}') = '13:f/f'$c$);
+select pg_temp.caso(8554, 'S-4b passante sentado cria linha sem janela', 'postgres',
+  pg_temp.passante('WN1', 'T13') || $s$ select 'x'$s$, 'ok',
+  $c$pg_temp.flags('{WN1}') = '13:f/f'
+     and (select slot is null from public.occupant_tables where walk_in_id = '{WN1}')$c$);
+select pg_temp.caso(8555, 'S-4c backfill: reservas, passantes e fila do 81a', 'postgres',
+  $s$select 'x'$s$, 'ok',
+  $c$pg_temp.mesas('{R1}') || ',' || pg_temp.mesas('{R2}') || ',' || pg_temp.mesas('{P1}') || ','
+     || pg_temp.mesas('{PB}') || ',' || pg_temp.mesas('{W4}') = '11,12,12,31,-'$c$);
+select pg_temp.caso(8556, 'S-5 cancelar a reserva zera blocks_slot', 'postgres',
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$
+  update public.reservations set status = 'cancelled' where id = '{N1}'; select 'x'$s$, 'ok',
+  $c$pg_temp.flags('{N1}') = '13:f/f'$c$);
+select pg_temp.caso(8557, 'S-6 reserva de A com mesa de B → table_unit_mismatch', 'postgres',
+  pg_temp.res('N1', 'TB1', 'D1', '19:00') || $s$ select 'x'$s$, '42501 table_unit_mismatch');
+select pg_temp.caso(8558, 'S-7 mudar a hora recalcula a janela', 'postgres',
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$
+  update public.reservations set time = '21:00' where id = '{N1}'; select 'x'$s$, 'ok',
+  $c$(select lower(slot) = ('{D1}'::date + time '21:00') at time zone 'America/Sao_Paulo'
+        from public.occupant_tables where reservation_id = '{N1}')$c$);
+select pg_temp.caso(8559, 'S-CP sem o trigger de sincronia, nenhuma linha nasce', 'postgres',
+  $s$alter table public.reservations disable trigger reservations_occupant_sync;
+  $s$ || pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$ select 'x'$s$, 'ok',
+  $c$pg_temp.mesas('{N1}') = '-'$c$);
+
+-- ═══ X — exclusão por janela ════════════════════════════════════════════════
+select pg_temp.caso(8560, 'X-1 mesma mesa 19:00 e 19:30 (90 min) → 23P01', 'postgres',
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || pg_temp.res('N2', 'T13', 'D1', '19:30') || $s$ select 'x'$s$,
+  '23P01 %occupant_tables_no_overlap%');
+select pg_temp.caso(8561, 'X-2 mesma mesa 19:00 e 20:30 → ok', 'postgres',
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || pg_temp.res('N2', 'T13', 'D1', '20:30') || $s$ select 'x'$s$, 'ok',
+  $c$pg_temp.flags('{N1}') = '13:t/f' and pg_temp.flags('{N2}') = '13:t/f'$c$);
+select pg_temp.caso(8562, 'X-3a combinação T13+T14 às 19:00 e T14 sozinha às 19:30 → 23P01', 'service_role',
+  'select public.insert_reservation_with_tables(' || pg_temp.linha('N1', '19:00') || $s$, array['{T13}', '{T14}']::uuid[]);
+   select public.insert_reservation_with_tables($s$ || pg_temp.linha('N2', '19:30') || $s$, array['{T14}']::uuid[])::text$s$,
+  '23P01 %occupant_tables_no_overlap%');
+select pg_temp.caso(8563, 'X-3b a reserva recusada não deixa linha nenhuma', 'service_role',
+  'select public.insert_reservation_with_tables(' || pg_temp.linha('N1', '19:00') || $s$, array['{T13}', '{T14}']::uuid[]);
+   do $d$ begin
+     perform public.insert_reservation_with_tables($s$ || pg_temp.linha('N2', '19:30') || $s$, array['{T14}']::uuid[]);
+   exception when exclusion_violation then perform set_config('t83.x3', 'recusou', true);
+   end $d$;
+   select current_setting('t83.x3', true) || ':' || (select count(*) from public.reservations where reservation_code = 'P83-N2')$s$,
+  'ok', $c$$1 = 'recusou:0'$c$);
+select pg_temp.caso(8564, 'X-4 controle: sem a exclusão, o X-1 grava', 'postgres',
+  $s$alter table public.occupant_tables drop constraint occupant_tables_no_overlap;
+  $s$ || pg_temp.res('N1', 'T13', 'D1', '19:00') || pg_temp.res('N2', 'T13', 'D1', '19:30') || $s$ select 'x'$s$, 'ok',
+  $c$pg_temp.flags('{N2}') = '13:t/f'$c$);
+
+-- ═══ R — RPCs da recepção ═══════════════════════════════════════════════════
+select pg_temp.caso(8570, 'R-1 operador junta T13+T14 para reserva a chegar', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('reservation', '{N3}', array['{T13}', '{T14}']::uuid[])::text$s$, 'ok',
+  $c$$1::jsonb ->> 'status' = 'ok' and pg_temp.flags('{N3}') = '13:t/f 14:t/f'
+     and (select table_id::text || table_choice || status from public.reservations where id = '{N3}') = '{T13}staffconfirmed'
+     and (select count(*) from public.occupancy_events
+           where reservation_id = '{N3}' and kind = 'tables_changed' and unit_id = '{A}'
+             and before -> 'tables' = '[13]' and after -> 'tables' = '[13, 14]'
+             and actor_user_id = '{OPE}') = 1$c$);
+select pg_temp.caso(8571, 'R-2 mesma junção repetida → noop sem evento novo', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('reservation', '{N3}', array['{T13}', '{T14}']::uuid[]);
+  select public.set_occupant_tables('reservation', '{N3}', array['{T14}', '{T13}']::uuid[])::text$s$, 'ok',
+  $c$$1::jsonb ->> 'status' = 'noop'
+     and (select count(*) from public.occupancy_events where reservation_id = '{N3}') = 1$c$);
+select pg_temp.caso(8572, 'R-3 mesa de B → seat_forbidden', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || pg_temp.como('GER') || $s$
+  select public.set_occupant_tables('reservation', '{N3}', array['{T13}', '{TB1}']::uuid[])::text$s$,
+  '42501 seat_forbidden');
+select pg_temp.caso(8573, 'R-4a gerente de A na reserva de B → seat_forbidden', 'GER',
+  $s$select public.set_occupant_tables('reservation', '{RB}', array['{T13}']::uuid[])::text$s$,
+  '42501 seat_forbidden');
+select pg_temp.caso(8574, 'R-4b id inexistente → a mesma mensagem', 'GER',
+  $s$select public.set_occupant_tables('reservation', gen_random_uuid(), array['{T13}']::uuid[])::text$s$,
+  '42501 seat_forbidden');
+select pg_temp.caso(8575, 'R-5a passante sentado para mesa com reserva daqui a 30 min → conflict sem gravar', 'postgres',
+  pg_temp.passante('WN1', 'T13') || pg_temp.res('N4', 'T14', 'DN30', '{TN30}') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('walk_in', '{WN1}', array['{T14}']::uuid[])::text$s$, 'ok',
+  $c$$1::jsonb ->> 'status' = 'conflict'
+     and $1::jsonb -> 'conflicts' -> 0 ->> 'reservation_id' = '{N4}'
+     and $1::jsonb -> 'conflicts' -> 0 ->> 'table_number' = '14'
+     and $1::jsonb -> 'conflicts' -> 0 ->> 'customer_name' = 'Cliente 81'
+     and $1::jsonb -> 'conflicts' -> 0 ->> 'time' = left('{TN30}', 5)
+     and pg_temp.mesas('{WN1}') = '13'
+     and (select count(*) from public.occupancy_events) = 0$c$);
+select pg_temp.caso(8576, 'R-5b o mesmo com p_allow_overlap → grava e marca overlap_ok', 'postgres',
+  pg_temp.passante('WN1', 'T13') || pg_temp.res('N4', 'T14', 'DN30', '{TN30}') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('walk_in', '{WN1}', array['{T14}']::uuid[], true)::text$s$, 'ok',
+  $c$$1::jsonb ->> 'status' = 'ok' and pg_temp.flags('{WN1}') = '14:f/t' and pg_temp.flags('{N4}') = '14:t/f'
+     and (select table_id from public.walk_ins where id = '{WN1}') = '{T14}'
+     and (select (after ->> 'overlap_confirmed')::boolean from public.occupancy_events where walk_in_id = '{WN1}')$c$);
+select pg_temp.caso(8577, 'R-5c reserva a chegar sobreposta com confirmação: a linha dela não bloqueia', 'postgres',
+  pg_temp.res('N5', 'T13', 'D1', '19:00') || pg_temp.res('N6', 'T14', 'D1', '19:30') || pg_temp.como('GER') || $s$
+  select public.set_occupant_tables('reservation', '{N6}', array['{T13}']::uuid[], true)::text$s$, 'ok',
+  $c$$1::jsonb ->> 'status' = 'ok' and pg_temp.flags('{N6}') = '13:f/t' and pg_temp.flags('{N5}') = '13:t/f'$c$);
+select pg_temp.caso(8578, 'R-5d mudar a hora da sobreposta desfaz overlap_ok e a exclusão volta → 23P01', 'postgres',
+  pg_temp.res('N5', 'T13', 'D1', '19:00') || pg_temp.res('N6', 'T14', 'D1', '19:30') || pg_temp.como('GER') || $s$
+  select public.set_occupant_tables('reservation', '{N6}', array['{T13}']::uuid[], true);
+  select set_config('role', 'postgres', true);
+  update public.reservations set time = '19:45' where id = '{N6}'; select 'x'$s$,
+  '23P01 %occupant_tables_no_overlap%');
+select pg_temp.caso(8579, 'R-6 mesa com bloqueio na janela → seat_blocked', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || $s$
+  insert into public.table_blocks (unit_id, table_id, blocked_from, blocked_to, title)
+  values ('{A}', '{T14}', ('{D1}'::date + time '18:00') at time zone 'America/Sao_Paulo',
+          ('{D1}'::date + time '23:00') at time zone 'America/Sao_Paulo', 'Manutenção');
+  $s$ || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('reservation', '{N3}', array['{T14}']::uuid[])::text$s$,
+  '23514 seat_blocked');
+select pg_temp.caso(8580, 'R-7a ajustar pessoas 4 → 8 guarda o original e o evento', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_party_size('reservation', '{N3}', 8)::text$s$, 'ok',
+  $c$$1 = 'true'
+     and (select party_size || '/' || original_party_size || '/' || status from public.reservations where id = '{N3}') = '8/4/confirmed'
+     and (select count(*) from public.occupancy_events where reservation_id = '{N3}' and kind = 'party_size_changed'
+             and before = '{"party_size": 4}' and after = '{"party_size": 8}') = 1$c$);
+select pg_temp.caso(8581, 'R-7b 4 → 8 → 6: original fica 4; 6 → 6 devolve false', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_party_size('reservation', '{N3}', 8);
+  select public.set_occupant_party_size('reservation', '{N3}', 6);
+  select public.set_occupant_party_size('reservation', '{N3}', 6)::text$s$, 'ok',
+  $c$$1 = 'false'
+     and (select party_size || '/' || original_party_size from public.reservations where id = '{N3}') = '6/4'
+     and (select count(*) from public.occupancy_events where reservation_id = '{N3}') = 2$c$);
+select pg_temp.caso(8582, 'R-7c 0 pessoas → 22023', 'OPE',
+  $s$select public.set_occupant_party_size('reservation', '{R1}', 0)::text$s$, '22023 seat_action_invalid');
+select pg_temp.caso(8583, 'R-7d 51 pessoas → 22023', 'OPE',
+  $s$select public.set_occupant_party_size('reservation', '{R1}', 51)::text$s$, '22023 seat_action_invalid');
+select pg_temp.caso(8584, 'R-7e passante: ajustar pessoas 2 → 5', 'postgres',
+  pg_temp.passante('WN1', 'T13') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_party_size('walk_in', '{WN1}', 5)::text$s$, 'ok',
+  $c$$1 = 'true' and (select party_size || '/' || original_party_size || '/' || status
+                        from public.walk_ins where id = '{WN1}') = '5/2/seated'$c$);
+select pg_temp.caso(8585, 'R-8a mesa com passante sentado (P1 do 81a, backfill) → seat_taken', 'postgres',
+  pg_temp.passante('WN2', 'T21') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('walk_in', '{WN2}', array['{T12}']::uuid[])::text$s$,
+  '23514 seat_taken');
+select pg_temp.caso(8586, 'R-8b mesa com reserva que já chegou → seat_taken', 'postgres',
+  pg_temp.res('N7', 'T14', 'DN0', '{TN0}') || $s$
+  update public.reservations set arrived_at = now() where id = '{N7}';
+  $s$ || pg_temp.passante('WN2', 'T21') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('walk_in', '{WN2}', array['{T14}']::uuid[])::text$s$,
+  '23514 seat_taken');
+select pg_temp.caso(8587, 'R-8c passante já liberado não segura a mesa', 'postgres',
+  pg_temp.passante('WN1', 'T13') || $s$
+  update public.walk_ins set released_at = now() where id = '{WN1}';
+  $s$ || pg_temp.passante('WN2', 'T21') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('walk_in', '{WN2}', array['{T13}']::uuid[])::text$s$, 'ok',
+  $c$$1::jsonb ->> 'status' = 'ok' and pg_temp.mesas('{WN2}') = '13'$c$);
+select pg_temp.caso(8588, 'R-8d reserva cancelada não é ocupante → seat_action_invalid', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00', 'cancelled') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('reservation', '{N3}', array['{T14}']::uuid[])::text$s$,
+  '23514 seat_action_invalid');
+select pg_temp.caso(8589, 'R-9a anon sem EXECUTE em set_occupant_tables', 'anon',
+  $s$select public.set_occupant_tables('reservation', '{R1}', array['{T13}']::uuid[])::text$s$,
+  '42501 permission denied%');
+select pg_temp.caso(8590, 'R-9b anon sem EXECUTE em set_occupant_party_size', 'anon',
+  $s$select public.set_occupant_party_size('reservation', '{R1}', 3)::text$s$, '42501 permission denied%');
+select pg_temp.caso(8591, 'R-9c authenticated sem membership → seat_forbidden', 'OUT',
+  $s$select public.set_occupant_tables('reservation', '{R1}', array['{T13}']::uuid[])::text$s$,
+  '42501 seat_forbidden');
+select pg_temp.caso(8592, 'R-9d authenticated sem membership ajustando pessoas → seat_forbidden', 'OUT',
+  $s$select public.set_occupant_party_size('reservation', '{R1}', 3)::text$s$, '42501 seat_forbidden');
+select pg_temp.caso(8593, 'R-10a insert_reservation_with_tables por authenticated → permission denied', 'GER',
+  'select public.insert_reservation_with_tables(' || pg_temp.linha('N1', '19:00') || $s$, array['{T13}']::uuid[])::text$s$,
+  '42501 permission denied%');
+select pg_temp.caso(8594, 'R-10b service_role grava reserva com T13+T14 numa transação', 'service_role',
+  'select public.insert_reservation_with_tables(' || pg_temp.linha('N1', '19:00') || $s$, array['{T13}', '{T14}']::uuid[])::text$s$,
+  'ok',
+  $c$pg_temp.flags($1::uuid) = '13:t/f 14:t/f'
+     and (select table_id::text || table_choice || party_size from public.reservations where id = $1::uuid) = '{T13}customer6'$c$);
+select pg_temp.caso(8595, 'R-10c mesa não reservável no caminho automático → seat_forbidden', 'postgres',
+  $s$update public.tables set bookable = false where id = '{T14}';
+     select set_config('role', 'service_role', true);
+     select public.insert_reservation_with_tables($s$ || pg_temp.linha('N1', '19:00') || $s$, array['{T13}', '{T14}']::uuid[])::text$s$,
+  '42501 seat_forbidden');
+select pg_temp.caso(8596, 'R-10d coluna fora da lista (id) → 22023', 'service_role',
+  'select public.insert_reservation_with_tables(' || pg_temp.linha('N1', '19:00', $x$, 'id', '{N1}'$x$) || $s$, array['{T13}']::uuid[])::text$s$,
+  '22023 reservation_row_invalid');
+select pg_temp.caso(8597, 'R-11 platform_admin sem membership troca a mesa em A', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || pg_temp.como('PA') || $s$
+  select public.set_occupant_tables('reservation', '{N3}', array['{T14}']::uuid[])::text$s$, 'ok',
+  $c$$1::jsonb ->> 'status' = 'ok' and pg_temp.mesas('{N3}') = '14'
+     and (select actor_user_id from public.occupancy_events where reservation_id = '{N3}') = '{PA}'$c$);
+select pg_temp.caso(8598, 'R-12 trocar, juntar e ajustar não mudam contagens por status', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || pg_temp.passante('WN1', 'T21') || $s$
+  select public.seat_waitlist_entry('{W1}', '{T11}');
+  select set_config('t83.antes', pg_temp.contagens(), true);
+  $s$ || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('reservation', '{N3}', array['{T13}', '{T14}']::uuid[]);
+  select public.set_occupant_tables('walk_in', '{WN1}', array['{T21}', '{T13}']::uuid[], true);
+  select public.set_occupant_party_size('reservation', '{N3}', 9);
+  select public.set_occupant_party_size('walk_in', '{WN1}', 3);
+  select public.set_occupant_tables('waitlist', '{W1}', array['{T11}', '{T14}']::uuid[], true);
+  select public.set_occupant_party_size('waitlist', '{W1}', 4)::text$s$, 'ok',
+  $c$$1 = 'true' and pg_temp.contagens() = current_setting('t83.antes')
+     and (select count(*) from public.occupancy_events) = 6$c$);
+select pg_temp.caso(8599, 'R-13 recepção usa mesa não reservável e de outro salão', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || $s$
+  update public.tables set bookable = false where id = '{T14}';
+  $s$ || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('reservation', '{N3}', array['{T14}', '{T21}']::uuid[])::text$s$, 'ok',
+  $c$$1::jsonb ->> 'status' = 'ok' and pg_temp.mesas('{N3}') = '14+21'
+     and (select table_id from public.reservations where id = '{N3}') = '{T14}'$c$);
+select pg_temp.caso(8611, 'R-14a authenticated não escreve occupant_tables direto', 'GER',
+  $s$insert into public.occupant_tables (unit_id, table_id, reservation_id) values ('{A}', '{T13}', '{R1}'); select 'x'$s$,
+  '42501 permission denied%');
+select pg_temp.caso(8612, 'R-14b gerente de B só vê a ocupação de B (RB e PB)', 'GERB',
+  $s$select count(*)::text from public.occupant_tables$s$, 'ok', $c$$1 = '2'$c$);
+select pg_temp.caso(8613, 'R-14c outsider não vê ocupação', 'OUT',
+  $s$select count(*)::text from public.occupant_tables$s$, 'ok', $c$$1 = '0'$c$);
+select pg_temp.caso(8614, 'R-14d anon sem privilégio em occupant_tables', 'anon',
+  $s$select count(*)::text from public.occupant_tables$s$, '42501 permission denied%');
+select pg_temp.caso(8615, 'R-14e anon sem privilégio em occupancy_events', 'anon',
+  $s$select count(*)::text from public.occupancy_events$s$, '42501 permission denied%');
+select pg_temp.caso(8616, 'R-14f operador de A vê ocupação e histórico da unidade', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_party_size('reservation', '{N3}', 5);
+  select (select count(*) from public.occupant_tables) || '/' || (select count(*) from public.occupancy_events)$s$,
+  'ok', $c$$1 = '4/1'$c$);
+select pg_temp.caso(8617, 'R-14g gerente de B não vê o histórico de A', 'postgres',
+  pg_temp.res('N3', 'T13', 'D1', '19:00') || pg_temp.como('OPE') || $s$
+  select public.set_occupant_party_size('reservation', '{N3}', 5);
+  $s$ || pg_temp.como('GERB') || $s$
+  select count(*)::text from public.occupancy_events$s$, 'ok', $c$$1 = '0'$c$);
+select pg_temp.caso(8618, 'R-15a mesa repetida em p_table_ids → 22023', 'OPE',
+  $s$select public.set_occupant_tables('reservation', '{R1}', array['{T13}', '{T13}']::uuid[])::text$s$,
+  '22023 seat_action_invalid');
+select pg_temp.caso(8619, 'R-15b p_kind inválido → 22023', 'OPE',
+  $s$select public.set_occupant_tables('customer', '{R1}', array['{T13}']::uuid[])::text$s$,
+  '22023 seat_action_invalid');
+select pg_temp.caso(8620, 'R-15c p_table_ids vazio → 22023', 'OPE',
+  $s$select public.set_occupant_tables('reservation', '{R1}', array[]::uuid[])::text$s$,
+  '22023 seat_action_invalid');
 
 -- ═══ Resultado ═══════════════════════════════════════════════════════════════
 \o

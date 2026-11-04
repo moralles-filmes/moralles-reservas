@@ -8,4 +8,31 @@
 \set ON_ERROR_STOP on
 begin;
 
+-- ─── settings (Task 2: duração da reserva) ───────────────────────────────────
+-- Forma das migrations 001 + 013 (unit_id not null, FK, único por unidade).
+-- Fora da projeção: RLS, policies e o settings_write_role_guard; as funções
+-- da ocupação são DEFINER e só leem a chave reservation_duration_minutes.
+create table public.settings (
+  id uuid primary key default gen_random_uuid(),
+  unit_id uuid not null,
+  key text not null,
+  value jsonb not null,
+  constraint settings_unit_id_fk foreign key (unit_id) references public.units(id) on delete cascade,
+  constraint settings_unit_key_unique unique (unit_id, key));
+-- A: 90 min como número (forma da 016). B fica sem a chave (padrão 90).
+insert into public.settings (unit_id, key, value) values
+  ('a0d81000-0000-4000-8000-0000000000aa', 'reservation_duration_minutes', '90'::jsonb);
+
+-- ─── table_blocks (Task 2: bloqueio por mesa) ────────────────────────────────
+-- O 82a projetou só o vínculo (unit_id, hall_id). Produção (migrations 007 e
+-- 032): table_id nullable com FK em cascata, blocked_from/blocked_to
+-- NOT NULL com CHECK. Aqui ficam nullable sem o CHECK para o 82 seguir
+-- inserindo só o vínculo; a RPC compara com `<`/`>` e null nunca bloqueia.
+alter table public.table_blocks
+  add column table_id uuid references public.tables(id) on delete cascade,
+  add column blocked_from timestamptz,
+  add column blocked_to timestamptz,
+  add column title text,
+  add column reason text;
+
 commit;

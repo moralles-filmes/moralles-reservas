@@ -2906,14 +2906,28 @@ P  < supabase/migrations/20261030120100_planta_do_salao_presenca.sql
 P  < supabase/tests/local-preflight/82a-planta-endurecimento-bootstrap.sql
 P  < supabase/migrations/20261104120000_planta_endurecimento.sql
 P  < supabase/tests/local-preflight/83a-escolha-de-mesa-bootstrap.sql
-P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED
 P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED da Task 2 (só C-* passam)
+P  < supabase/migrations/20261105120100_ocupacao_multi_mesa.sql
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN
 P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # segue verde
 P  < supabase/tests/local-preflight/82-planta-endurecimento.sql       # segue verde
 P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql   # reaplicar
+P  < supabase/migrations/20261105120100_ocupacao_multi_mesa.sql             # reaplicar
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
 docker rm -f mesa83-pg
+```
+
+Para o RED da Task 1, rode o 83 antes da 20261105120000 (só os C-* contam).
+
+**Backfill** (contêiner próprio: a semente fica gravada e mudaria as contagens
+do 81/82/83). Mesma base até o 83a, então:
+
+```bash
+P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql
+P  < supabase/tests/local-preflight/83b-backfill-semente.sql
+P  < supabase/migrations/20261105120100_ocupacao_multi_mesa.sql   # NOTICE com as contagens
+P  < supabase/tests/local-preflight/83c-backfill-confere.sql      # "83c: PASS"
 ```
 
 - **C-1 (8501–8505):** gerente salva combinações pela `save_hall_plan`; salvar
@@ -2946,3 +2960,51 @@ docker rm -f mesa83-pg
 **Resultados observados em 05/11/2026** (imagem `supabase/postgres:17.11.0.004`,
 sem rede, contêiner novo): **0/42 antes da migration**, **42/42** depois e
 42/42 com a migration reaplicada; 81 em 83/83 e 82 em 52/52 com ela aplicada.
+
+Task 2 (migration `20261105120100_ocupacao_multi_mesa.sql`). O 83a projeta
+`settings` (duração 90 em A, B sem a chave) e as colunas de bloqueio por mesa
+de `table_blocks` (nullable só aqui, para o 82 seguir inserindo só o vínculo).
+Horários relativos ao `now()` da transação em BRT (tokens D1, DN0/TN0,
+DN30/TN30), então o resultado não depende do relógio do contêiner.
+
+- **S-1…S-7, S-CP (8550–8559), sincronia:** INSERT com mesa cria a linha que
+  bloqueia com janela [data+hora BRT, +90 min); trocar `table_id` troca a linha;
+  nulo apaga; `seat_waitlist_entry` e passante sentado criam linha sem janela;
+  backfill das reservas, passantes e fila do 81a; cancelar zera `blocks_slot`;
+  mesa de outra unidade na reserva → `42501 table_unit_mismatch`; mudar a hora
+  recalcula a janela. Controle: sem o trigger de sincronia, nenhuma linha nasce.
+- **X-1…X-4 (8560–8564), exclusão:** 19:00 e 19:30 na mesma mesa → `23P01
+  occupant_tables_no_overlap`; 19:00 e 20:30 passam; combinação T13+T14 e T14
+  sozinha sobrepostas via `insert_reservation_with_tables` → `23P01` sem deixar
+  linha da segunda (X-3b). Controle: sem a exclusão, o X-1 grava.
+- **R-1…R-15 (8570–8599, 8611–8620), RPCs da recepção:** operador junta
+  mesas (`table_choice='staff'`, evento com números antes/depois, `status`
+  igual); repetir é `noop` sem evento; mesa ou reserva de B e id inexistente no
+  mesmo `42501 seat_forbidden`; reserva de outro na janela → `conflict` sem
+  gravar, e com `p_allow_overlap` grava com `overlap_ok` só na mesa em
+  conflito; mudar a hora da sobreposta desfaz o `overlap_ok` e a exclusão volta
+  (R-5d); bloqueio da mesa → `seat_blocked`; ajuste de pessoas guarda o
+  original na primeira mudança e devolve `false` quando igual; mesa com
+  passante sentado ou reserva que já chegou → `seat_taken`, passante liberado
+  não segura; reserva cancelada → `seat_action_invalid`; anon sem EXECUTE,
+  outsider `seat_forbidden`; `insert_reservation_with_tables` só service_role,
+  recusa mesa não reservável e coluna fora da lista; platform_admin sem
+  membership age; R-12 contagens por status idênticas depois de trocar, juntar
+  e ajustar reserva, passante e fila; a recepção usa mesa não reservável e de
+  outro salão; `occupant_tables`/`occupancy_events` sem escrita direta, sem
+  leitura para anon e outsider, e só da própria unidade.
+- **Backfill (83b/83c):** sobreposição por duração já existente vira
+  `overlap_ok` na reserva pedida depois; cancelada entra sem bloquear; mesa de
+  outra unidade, reserva de antes de ontem e passante esquecido sentado há
+  dias ficam de fora.
+
+**Resultados observados em 05/11/2026** (mesma imagem, contêiner novo): **42/97
+com só a 20261105120000** (os 55 FAIL são os casos da Task 2), **97/97** com a
+20261105120100 e 97/97 com as duas reaplicadas; 81 em 83/83 e 82 em 52/52 nas
+duas rodadas; backfill `7 reservas, 1 com overlap_ok, 1 com mesa de outra
+unidade ignoradas` e 83c PASS.
+
+O que NÃO prova: PostgREST/JWT real e concorrência de duas sessões (a exclusão
+`gist` e o `FOR NO KEY UPDATE` das mesas na `set_occupant_tables` não têm caso
+de duas conexões). O caminho legado sentar passante pela tela não confere
+`seat_taken`: só a RPC da recepção confere.
