@@ -51,7 +51,7 @@ function deadlineOf(value: string | null | undefined, now: number): Deadline {
 const PREREQUISITES = [
   "O Instagram da loja precisa ser profissional e estar ligado a uma Página do Facebook.",
   "Você precisa administrar ou moderar essa Página.",
-  "No app do Instagram, ligue Configurações › Mensagens e respostas ao story › Controles de mensagens › Ferramentas conectadas › Permitir acesso às mensagens.",
+  "No app do Instagram, abra o menu ☰ › Como as outras pessoas podem interagir com você › Mensagens e respostas ao story › Solicitações de mensagem e ligue \"Permitir acesso às mensagens\".",
 ];
 
 const START_ERROR = "Não foi possível iniciar a conexão com o Facebook. Tente novamente.";
