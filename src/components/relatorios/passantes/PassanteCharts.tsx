@@ -16,6 +16,7 @@ import type {
   PassanteHour,
   PassantePartySize,
 } from "@/lib/relatorio-passantes";
+import { bucketLabel } from "./format";
 
 const TOOLTIP_STYLE = {
   background: "hsl(var(--popover))",
@@ -84,7 +85,7 @@ export function DowBarChart({ data, metric }: { data: PassanteDow[]; metric: Met
 }
 
 export function PartySizeBars({ data }: { data: PassantePartySize[] }) {
-  const series = data.map((d) => ({ label: d.bucket, groups: d.groups }));
+  const series = data.map((d) => ({ label: bucketLabel(d.bucket), groups: d.groups }));
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart data={series} margin={MARGIN}>
@@ -100,7 +101,7 @@ export function PartySizeBars({ data }: { data: PassantePartySize[] }) {
 
 export function PartySizeTableTime({ data }: { data: PassantePartySize[] }) {
   const series = data.map((d) => ({
-    label: d.bucket,
+    label: bucketLabel(d.bucket),
     minutes: d.avgTableSec == null ? 0 : Math.round(d.avgTableSec / 60),
   }));
   return (

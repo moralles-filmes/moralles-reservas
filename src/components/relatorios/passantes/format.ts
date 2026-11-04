@@ -1,12 +1,19 @@
 import type { KpiDelta } from "@/lib/relatorio-passantes";
 
-/** Segundos -> "h:mm" (ex.: 4980 -> "1:23"). */
+/** Segundos -> "<1 min", "23 min" ou "1h 05min" ("0:02" se lia como segundos). */
 export function formatHM(seconds: number | null | undefined): string {
   if (seconds == null || !Number.isFinite(seconds)) return "—";
-  const totalMin = Math.max(0, Math.round(seconds / 60));
+  if (seconds < 60) return "<1 min";
+  const totalMin = Math.round(seconds / 60);
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
-  return `${h}:${String(m).padStart(2, "0")}`;
+  return h === 0 ? `${m} min` : `${h}h ${String(m).padStart(2, "0")}min`;
+}
+
+/** Bucket "03-04" -> "3–4"; "20+" fica. */
+export function bucketLabel(bucket: string): string {
+  const m = /^(\d+)-(\d+)$/.exec(bucket);
+  return m ? `${Number(m[1])}–${Number(m[2])}` : bucket;
 }
 
 export function formatBRL(cents: number): string {

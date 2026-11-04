@@ -31,7 +31,7 @@ export function PassantePlaceTable({
               <td className="py-2 px-2 text-right tabular">{r.groups}</td>
               <td className="py-2 px-2 text-right tabular">{r.people}</td>
               <td className="py-2 px-2 text-right tabular">{formatHM(r.avgTableSec)}</td>
-              <td className="py-2 pl-2 text-right tabular">{formatDecimal(r.turnover, 1)}</td>
+              <td className="py-2 pl-2 text-right tabular">{formatDecimal(r.turnover, 2)}</td>
             </tr>
           ))}
         </tbody>
