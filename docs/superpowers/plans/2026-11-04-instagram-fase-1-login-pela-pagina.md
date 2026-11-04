@@ -94,10 +94,10 @@
 - [ ] **Passo 4:** `npx vitest run src/lib/instagram-graph-core.test.ts`. Esperado: PASS.
 - [ ] **Passo 5:** commit `feat(instagram): núcleo do Graph para o login pela Página`.
 
-### Task 2: migration `20261104120000_instagram_page_login.sql`
+### Task 2: migration `20261104130000_instagram_page_login.sql`
 
 **Files:**
-- Create: `supabase/migrations/20261104120000_instagram_page_login.sql`
+- Create: `supabase/migrations/20261104130000_instagram_page_login.sql`
 - Modify:
   - `supabase/tests/local-preflight/79-instagram-module.sql` (14 chamadas de `store_…` ganham `p_page_id`);
   - `supabase/tests/local-preflight/README.md` (a seção 79 aplica a migration nova depois da `120900`);
@@ -243,7 +243,7 @@
   - descrição do PR #66 (o texto fica no scratchpad `pr-body.md` até a autorização do push).
 
 - [ ] **Passo 1: Tasks 6.2 e 6.3 do plano original:**
-  - `db push` só da `20261104120000`, depois de conferir a lista do remoto;
+  - `db push` só da `20261104130000`, depois de conferir a lista do remoto;
   - `secrets set INSTAGRAM_APP_ID=1435590504737997 INSTAGRAM_OAUTH_STATE_SECRET=… INSTAGRAM_LOGIN_CONFIG_ID=<da Task 0>`;
   - `instagram_app_secret` = chave secreta do app Moralles Reservas;
   - a matriz perde `process-instagram-token-refresh`;
