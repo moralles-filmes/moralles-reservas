@@ -214,10 +214,10 @@
   - `.claude/rules/instagram.md`: título e linhas 32, 62, 63 e 65, para refletir login pela Página, token sem renovação e CAS só no `set_instagram_account_status`.
 - **Ficam:** as RPCs `record_instagram_token_refresh` e `trigger_instagram_token_refresh()`, com a remoção em follow-up, e o caso do 79 que as cobre.
 
-- [ ] **Passo 1:** `git rm` dos quatro caminhos, com caminho explícito.
-- [ ] **Passo 2:** `grep -rn "process-instagram-token-refresh\|instagram-token-refresh-core" src supabase scripts .github .claude`. Esperado: só o comentário histórico da `20261103120500` e o gêmeo da Task 2.
-- [ ] **Passo 3:** `npm run typecheck`, `npx vitest run src/lib/instagram` e `node scripts/ef-import-graph.mjs --all`. Esperado: 0 erros, PASS e nenhuma EF órfã.
-- [ ] **Passo 4:** commit `chore(instagram): remove o refresh do token (token da Página não expira)`.
+- [x] **Passo 1:** `git rm` dos quatro caminhos, com caminho explícito.
+- [x] **Passo 2:** `grep -rn "process-instagram-token-refresh\|instagram-token-refresh-core" src supabase scripts .github .claude`. Esperado: só o comentário histórico da `20261103120500` e o gêmeo da Task 2.
+- [x] **Passo 3:** `npm run typecheck`, `npx vitest run src/lib/instagram` e `node scripts/ef-import-graph.mjs --all`. Esperado: 0 erros, PASS e nenhuma EF órfã.
+- [x] **Passo 4:** commit `chore(instagram): remove o refresh do token (token da Página não expira)`.
 
 ### Task 6: painel
 
