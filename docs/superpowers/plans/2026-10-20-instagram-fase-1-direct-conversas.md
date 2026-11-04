@@ -1051,48 +1051,63 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 - [x] Faça a review da branch inteira com a skill `superpowers:requesting-code-review` no Opus. Rode `saas-shield-br:pre-deploy` e `saas-shield-br:secret-scan`.
 - [x] Faça `git status`, `git diff --cached` integral, a varredura de segredos das linhas staged (AGENTS §5) e `git add` explícito.
 
+> **Reescrito para o plano B (login pela Página do Facebook), 2026-11-04.** Spec e plano: `2026-11-04-instagram-fase-1-login-pela-pagina-*`. Vale no lugar das versões do Login do Instagram (a Meta não oferece esse login ao app novo).
+
 ### Task 6.2: PR e banco (cada passo com autorização)
 
-- [ ] Push e PR, com a descrição contendo:
+- [ ] Push e PR (o PR #66 já existe, em rascunho), com a descrição contendo:
   - as decisões D1–D9 (D9 = Task 4.5) e os desvios S1–S7;
+  - a seção "Plano B (login pela Página)": o que mudou, a migration `20261104130000`, a ordem e o acoplamento do deploy, a matriz, o prazo de 90 dias, as decisões do piloto e os follow-ups;
   - a matriz de redeploy;
   - as mudanças deliberadas de comportamento do WhatsApp: CAS no handoff, filtro de canal nas RPCs e no dead-letter, guarda `invalid_channel_context`;
   - o diff do snapshot (3.1).
+- [ ] **Decisão em aberto do responsável, antes do push:** o `vercel.json` da `main` (`fd453e9`) tem `deploymentEnabled {"main": true, "**": false}`, então o PR #66 não ganha prévia da Vercel, e os testes manuais do responsável eram na prévia. Escolher: exceção temporária para esta branch no `vercel.json` (sai antes do merge) ou deploy manual de prévia com `vercel`. Sem decisão, não há onde testar antes do merge.
 - [ ] Confira o `acl-estatico` na aba Checks.
-- [ ] Antes do `db push`, confira a lista de migrations do remoto (nenhuma posterior a `20261103120000`, senão novo renome), rode `saas-shield-br:schema-diff` contra o remoto e duas leituras só de consulta (Bloco 1): `select rolname, rolbypassrls from pg_roles where rolname in ('postgres','service_role')` (o dono das funções DEFINER precisa de BYPASSRLS sobre as tabelas FORCE RLS) e `select has_schema_privilege('authenticated','auth','USAGE')` (as policies chamam `auth.uid()`).
-- [ ] `npx -y supabase@2.121.0 db push --project-ref gbabxcrntkwgblgqsiit` (autorização própria). Confira `schema_migrations` e o `cron.job` dos três jobs.
+- [ ] Antes do `db push`:
+  - `supabase migration list` do remoto: só a `20261104130000` pendente (`20261103120000`–`120900` e `20261104120000` da planta já aplicadas). Qualquer outra pendente ou posterior: parar e reavaliar;
+  - `saas-shield-br:schema-diff` contra o remoto;
+  - duas leituras só de consulta (Bloco 1): `select rolname, rolbypassrls from pg_roles where rolname in ('postgres','service_role')` (o dono das funções DEFINER precisa de BYPASSRLS sobre as tabelas FORCE RLS) e `select has_schema_privilege('authenticated','auth','USAGE')` (as policies chamam `auth.uid()`);
+  - `supabase functions list`: confirmar que `instagram-connect` **não** está publicada (a EF atual chama a store de 7 argumentos, que a migration dropa; ver Task 6.3).
+- [ ] `npx -y supabase@2.121.0 db push --project-ref gbabxcrntkwgblgqsiit` (autorização própria; só a `20261104130000`). Depois, conferir `schema_migrations` e as consultas do fim da migration:
+  - `cron.job` só com `instagram-inbound-sweep` e `instagram-inbound-purge` (o `instagram-token-refresh` sai);
+  - `proacl` da `store_instagram_account_connection` de 8 argumentos só para `service_role`;
+  - o CHECK de `page_id` com `convalidated = true`.
 
-### Task 6.3: segredos, EFs e frontend (ordem obrigatória: banco → `manage-platform-secrets` → segredos → demais EFs → frontend)
+### Task 6.3: segredos, EFs e frontend (ordem obrigatória: banco → segredos → EFs → frontend)
 
-- [ ] Deploy de `manage-platform-secrets` primeiro (autorização própria): a versão em produção não conhece as chaves do Instagram e recusa a gravação pelo painel (constatado em 2026-11-03; nenhuma migration toca `platform_secrets`).
-- [ ] O responsável grava em `/platform/integracoes` `instagram_app_secret` e `instagram_verify_token` (gerado localmente, ≥32 caracteres, nunca commitado). `meta_app_secret` fica para depois, só se o piloto mostrar assinatura que não casa. **Não criar env de mesmo nome (S5).**
-- [ ] `npx -y supabase@2.121.0 secrets set INSTAGRAM_APP_ID=1435590504737997 INSTAGRAM_OAUTH_STATE_SECRET=… --project-ref gbabxcrntkwgblgqsiit` (autorização própria).
-- [ ] Deploy da matriz (autorização própria), conferindo `verify_jwt` de cada uma depois:
-  1. novas: `webhook-instagram`, `instagram-connect`, `process-instagram-inbound`, `process-instagram-token-refresh`;
-  2. alteradas: `webhook-whatsapp`, `create-reservation`, `update-reservation`, `create-manual-reservation`, `send-manual-message`, `send-scheduled-whatsapp` (junto da 120700, Task 4.5) e `manage-platform-secrets` (já feita no primeiro passo).
+- [ ] `manage-platform-secrets` **fica na v27, sem redeploy** (escolha 3 da spec do plano B): já conhece as chaves do Instagram; só o rótulo do campo no painel ainda diz "Instagram Login".
+- [ ] O responsável grava em `/platform/integracoes` `instagram_app_secret` = **chave secreta do app Moralles Reservas** (Configurações do app › Básico, não a do produto Instagram) e `instagram_verify_token` (gerado localmente, ≥32 caracteres, nunca commitado). `meta_app_secret` fica para depois, só se o piloto mostrar assinatura que não casa. **Não criar env de mesmo nome (S5).**
+- [ ] `npx -y supabase@2.121.0 secrets set INSTAGRAM_APP_ID=1435590504737997 INSTAGRAM_OAUTH_STATE_SECRET=… INSTAGRAM_LOGIN_CONFIG_ID=950774527855623 --project-ref gbabxcrntkwgblgqsiit` (autorização própria; o valor do state vem do responsável, nunca do repositório).
+- [ ] Deploy da matriz (autorização própria **para cada EF**), conferindo `verify_jwt` de cada uma depois. Ordem:
+  1. `instagram-connect`, **logo depois da migration** (a migration dropa a store de 7 argumentos; a EF antiga quebraria a conexão, e a nova exige a de 8);
+  2. `process-instagram-inbound`, `send-manual-message` e `webhook-instagram`;
+  3. as do lado WhatsApp, já na matriz: `webhook-whatsapp`, `create-reservation`, `update-reservation`, `create-manual-reservation` e `send-scheduled-whatsapp` (junto da 120700, Task 4.5).
+  - `process-instagram-token-refresh` **sai da matriz**: o plano B removeu o refresh e a função nunca foi publicada (o cron dava 404).
   - Reconfirme com `node scripts/ef-import-graph.mjs --all` no momento do deploy.
+  - O grant do módulo Instagram fica **desligado para toda unidade, exceto a Moralles**, até as EFs estarem publicadas.
 - [ ] Confira o WhatsApp depois do deploy: turnos `success`, nenhum `invalid_channel_context`, nenhum `tool_error` novo (rollback: versões anteriores a partir do merge-base). Inclua um handoff com auto-resolve (CAS), um envio manual WhatsApp (o select de `send-manual-message` mudou), uma confirmação gerenciada de reserva `web` e um turno com ferramenta em cada provider de IA ativo por BYOK (o schema de `notes` ganhou `maxLength`).
 - [ ] Merge do PR (autorização própria) → Vercel `READY`.
 
-### Task 6.4: operação Meta (responsável) e piloto Moralles
+### Task 6.4: operação Meta (responsável) e piloto Moralles (plano B)
 
-Checklist do responsável. Antes de cada passo que conecte conta, **confirmar comigo o `@` da Moralles pelo nome**.
+Checklist do responsável. Antes de cada passo que conecte conta, **confirmar comigo o `@` da Moralles pelo nome**. O app é o Moralles Reservas (`1435590504737997`).
 
-- [ ] Criar o app Meta do tipo Business, com o caso de uso "Manage messaging and content on Instagram" → "API setup with Instagram login". Anotar o **Instagram app ID** e o **Instagram app secret**, que são diferentes dos do app Meta.
-- [ ] Em "Business login settings":
-  - Redirect URL: `https://reservas.moralles.com.br/instagram/callback`, exata e sem barra final (a Meta pode acrescentar uma; confira);
-  - Data deletion request URL: `https://reservas.moralles.com.br/privacidade/exclusao-de-dados`;
-  - Deauthorize callback: deixar vazio se o painel permitir, porque a Fase 1 não o consome e o 190 marca `reauth_required`. Se o painel exigir, **avisar antes de publicar**.
-- [ ] Em "App settings": política de privacidade `https://reservas.moralles.com.br/privacidade`, ícone e categoria.
-- [ ] Webhooks: Callback `https://gbabxcrntkwgblgqsiit.supabase.co/functions/v1/webhook-instagram`, Verify token igual ao `instagram_verify_token` → "Verify and save" (depende da Task 6.3) → assinar o campo `messages`.
-- [ ] Papéis: dar papel no app à pessoa que administra a conta IG da Moralles, e confirmar que a conta é Profissional (Business ou Creator).
-- [ ] No app do Instagram da Moralles: Configurações → Mensagens e respostas a stories → Controles de mensagens → Ferramentas conectadas → **Permitir acesso às mensagens**. Esse caminho tem só evidência secundária: confirmar na tela.
+- [ ] **Configuração de login** (Task 0 do plano B): "Moralles Reservas — Página", config_id `950774527855623`, token de acesso do usuário, permissões `business_management`, `instagram_basic`, `instagram_manage_messages`, `pages_read_engagement` e `pages_show_list`. Conferir que continua como está.
+- [ ] URI de redirecionamento (modo estrito): `https://reservas.moralles.com.br/instagram/callback`, exata e sem barra final. Data deletion request URL: `https://reservas.moralles.com.br/privacidade/exclusao-de-dados`. Política de privacidade `https://reservas.moralles.com.br/privacidade`, ícone e categoria.
+- [ ] Webhooks › objeto **Instagram** › Callback `https://gbabxcrntkwgblgqsiit.supabase.co/functions/v1/webhook-instagram`, Verify token igual ao `instagram_verify_token` → "Verify and save" (depende da Task 6.3) → assinar o campo `messages`.
+- [ ] Papel no app para o testador (quem administra a conta IG da Moralles); a conta precisa ser Profissional.
+- [ ] No Instagram da Moralles: Configurações → Mensagens e respostas a stories → Controles de mensagens → Ferramentas conectadas → **Permitir acesso às mensagens**. Caminho com evidência só secundária: confirmar na tela.
 - [ ] Publicar o app (Live). A doc diz que webhooks exigem app publicado.
-- [ ] Gravar `INSTAGRAM_APP_ID` e `instagram_app_secret` (Task 6.3), se ainda não estiverem.
-- [ ] Faixa paralela, fora da saída da Fase 1: Business Verification, App Review e Advanced Access para lojas além da piloto.
+- [ ] **Contingência:** se o webhook não chegar com a Página inscrita, usar o "Instagram setup tool" (Messenger › Configurações do Instagram). É configuração no painel, não código.
+- [ ] **Standard Access** só responde a quem tem papel no app. App Review e Advanced Access correm em paralelo, fora da saída da Fase 1 (junto da Business Verification).
+- [ ] Remover os usuários do sistema de teste nas BMs Moralles e Aldeia da Serra 2.
+- [ ] Gravar `instagram_app_secret` e `INSTAGRAM_APP_ID`/`INSTAGRAM_LOGIN_CONFIG_ID` (Task 6.3), se ainda não estiverem.
 
 Piloto, depois que o responsável disser "pode liberar":
-- [ ] O `platform_admin` concede o módulo à Moralles na aba Instagram. O gerente conecta a conta, confere o `@` e liga o Direct.
+- [ ] O `platform_admin` concede o módulo à Moralles na aba Instagram. O gerente conecta pelo Facebook, escolhe a Página, confere o `@` **pelo nome com o responsável** e liga o Direct.
+- [ ] **Depois de conectar:**
+  - confirmar que `token_expires_at` ficou preenchido (o `debug_token` com o app token no header só está provado contra a Meta real; se falhar, a conexão segue sem prazo e o log avisa);
+  - ler o `graphCode` do primeiro `instagram_connect_subscribe_failed` e decidir, **antes de mostrar o painel à loja**: (a) um caso de uso que ofereça `pages_manage_metadata` ou (b) registrar a inscrição no primeiro webhook válido, ou esconder a linha "inativo" e o botão "Assinar de novo" (hoje o botão sempre falharia sem essa permissão).
 - [ ] Rodar o E2E de saída, registrando cada passo nas Evidências:
   1. DM de teste;
   2. a IA pede o WhatsApp;
@@ -1109,7 +1124,8 @@ Piloto, depois que o responsável disser "pode liberar":
   - ecos `echo_own` × `echo_unknown`, enviando uma mensagem pelo app e outra pela API;
   - latência do ACK;
   - `get_instagram_diagnostics` sem `dead`.
-- [ ] **Rollback:** revogar o grant corta a ingestão na hora, e desligar o Direct também. As EFs voltam às versões anteriores. As migrations são aditivas e não precisam voltar.
+- [ ] **Prazo de 90 dias:** o `data_access_expires_at` do token da Página vem a 90 dias (smoke: 2027-02-02). Ele vai para `token_expires_at` e o painel avisa "Reconecte até". Sem worker nem alerta. O efeito real no Direct só se vê em 2027-02-02; anotar a data e reconectar antes.
+- [ ] **Rollback:** revogar o grant corta a ingestão na hora, e desligar o Direct também. As EFs voltam às versões anteriores (a `instagram-connect` antiga não funciona depois da migration; ela nunca foi publicada). As migrations são aditivas e não precisam voltar.
 - [ ] Atualizar a memória do módulo, a seção Evidências e as regras com o que o piloto mediu.
 
 ---
@@ -1483,3 +1499,6 @@ Execução por tarefa: implementador Sonnet; revisão Opus em 5.1, 5.3 (callback
 - 8 Edge Functions (Sonnet): PASS_WITH_WARNINGS; `verify_jwt` das 4 novas confere com o desenho. P2: CORS `*` em `send-manual-message` (anterior; Bearer sem cookie). P3: o worker não revalida o HMAC (a regra `instagram.md` dizia que sim; texto corrigido), sem rate limit próprio no webhook e no worker, identidade declarada (desenho D4).
 
 **Follow-ups do Bloco 6 (P2/P3, nenhum bloqueia):** 429 da Meta com retry quando a parte 1 não saiu; dead do Direct promovendo a conversa a `awaiting_human`; `raw_body` na anonimização ou na política de privacidade; `search_path = ''` na `get_or_create_whatsapp_conversation`; CORS por lista em `send-manual-message`; sweep do inbound sem `net.http_post` quando não há fila devida; `maxLength` de `notes` provado por provider (smoke da 6.3); `Instagram.tsx` com `PageHeader`; mensagem quando o callback chega sem login; canal no `ConversationsWaitingPanel`; fixture do 08 com `customer_id`; `.gitignore` com os padrões do AGENTS §5; Node 22/24 no CI e Vite major (dependências).
+
+
+**Plano B (2026-11-04).** As Tasks 6.2, 6.3 e 6.4 foram reescritas para o login pela Página do Facebook (a migration `20261104130000` substitui as anteriores como única pendente, o `process-instagram-token-refresh` saiu da matriz). Gates, review da branch, pré-deploy, rulings e follow-ups do plano B: `docs/superpowers/plans/2026-11-04-instagram-fase-1-login-pela-pagina.md`, seção "Evidências".

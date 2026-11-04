@@ -1,5 +1,7 @@
 # Módulo Instagram — IA no Direct, Stories e Comentários
 
+> **Aviso (2026-11-04):** o login desta spec (Login do Instagram, `graph.instagram.com`) foi substituído pelo Login do Facebook para Empresas com a Página ligada ao Instagram, porque o app novo da Meta não oferece o Login do Instagram. Login, token, assinatura do webhook e chamadas ao Graph passam a valer pela spec `2026-11-04-instagram-fase-1-login-pela-pagina-design.md`; o resto desta spec continua.
+
 **Estado:** abordagem aprovada pelo responsável em 2026-10-19 (plano de produto/arquitetura, com as quatro decisões abaixo). O aceite autoriza o plano e a implementação **local** da Fase 0. Cada fase seguinte tem plano próprio. `supabase db push`, deploy de Edge Function, secrets, criação do app Meta e liberação para lojas exigem autorização própria.
 
 ## Objetivo
