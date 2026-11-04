@@ -49,14 +49,15 @@ import type {
   WaitlistPriorityCategory,
   WaitlistStatus,
 } from "@/types/reserva";
+import { StatusPill, type StatusTone } from "@/components/ui/status-pill";
 import { Accessibility, AlertCircle, Baby, Bell, Clock, Link2, Pencil, Plus, Send, Trash2, UserCircle2, Users } from "lucide-react";
 import { toast } from "sonner";
 
-const STATUS_CONFIG: Record<WaitlistStatus, { label: string; className: string }> = {
-  waiting:   { label: "Aguardando", className: "bg-warning/10 text-warning border-warning/20" },
-  notified:  { label: "Notificado", className: "bg-info/10 text-info border-info/20" },
-  seated:    { label: "Sentou",     className: "bg-success/10 text-success border-success/20" },
-  cancelled: { label: "Cancelado",  className: "bg-muted text-muted-foreground border-border" },
+const STATUS_CONFIG: Record<WaitlistStatus, { label: string; tone: StatusTone }> = {
+  waiting:   { label: "Aguardando", tone: "pending" },
+  notified:  { label: "Notificado", tone: "arriving" },
+  seated:    { label: "Sentou",     tone: "success" },
+  cancelled: { label: "Cancelado",  tone: "muted" },
 };
 
 const PRIORITY_CONFIG: Record<
@@ -284,9 +285,7 @@ export default function Fila() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       <p className="font-medium text-sm">{entry.customer_name}</p>
-                      <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium shrink-0", statusCfg.className)}>
-                        {statusCfg.label}
-                      </span>
+                      <StatusPill tone={statusCfg.tone}>{statusCfg.label}</StatusPill>
                       {priorityCfg && PriorityIcon && (
                         <Badge
                           variant="outline"

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   brtNow,
   deriveTableStates,
+  reservationLiveSituation,
   type BlockWindow,
   type SituationInput,
 } from "./table-situation-core";
@@ -309,5 +310,47 @@ describe("deriveTableStates", () => {
       }),
     );
     expect(s.occupant?.id).toBe("f1");
+  });
+});
+
+describe("reservationLiveSituation", () => {
+  const base = { date: "2026-10-30", time: "19:00:00", status: "confirmed" as const, arrived_at: null, released_at: null };
+
+  it("chegada sem liberação é Sentada", () => {
+    expect(reservationLiveSituation({ ...base, arrived_at: "2026-10-30T22:00:00Z" }, NOW, 90)).toEqual({
+      tone: "seated",
+      label: "Sentada",
+    });
+  });
+
+  it("Sentada passou do tempo depois de horário + duração", () => {
+    const later = new Date("2026-10-31T00:31:00Z"); // 21:31 BRT
+    expect(reservationLiveSituation({ ...base, arrived_at: "2026-10-30T22:00:00Z" }, later, 90)).toEqual({
+      tone: "seated",
+      label: "Sentada · passou do tempo",
+    });
+  });
+
+  it("de hoje, sem chegada e horário passado é Atrasada N min", () => {
+    expect(reservationLiveSituation(base, NOW, 90)).toEqual({ tone: "late", label: "Atrasada 20 min" });
+    expect(reservationLiveSituation({ ...base, status: "pending" }, NOW, 90)).toEqual({
+      tone: "late",
+      label: "Atrasada 20 min",
+    });
+  });
+
+  it("confirmada a até 15 min é Chega em N min; pendente não", () => {
+    const r = { ...base, time: "19:30:00" };
+    expect(reservationLiveSituation(r, NOW, 90)).toEqual({ tone: "arriving", label: "Chega em 10 min" });
+    expect(reservationLiveSituation({ ...r, status: "pending" }, NOW, 90)).toBeNull();
+  });
+
+  it("longe do horário, outro dia, liberada ou cancelada é null", () => {
+    expect(reservationLiveSituation({ ...base, time: "21:00:00" }, NOW, 90)).toBeNull();
+    expect(reservationLiveSituation({ ...base, date: "2026-10-31" }, NOW, 90)).toBeNull();
+    expect(
+      reservationLiveSituation({ ...base, arrived_at: "2026-10-30T22:00:00Z", released_at: "2026-10-30T22:10:00Z" }, NOW, 90),
+    ).toBeNull();
+    expect(reservationLiveSituation({ ...base, status: "cancelled" }, NOW, 90)).toBeNull();
   });
 });

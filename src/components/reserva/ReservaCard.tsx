@@ -4,9 +4,9 @@ import { useUpdateReservaStatus } from "@/hooks/useReservas";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useReservationPresence } from "@/hooks/useMesaAcoes";
 import { brtNow } from "@/lib/table-situation-core";
-import { cn, formatDateBR, formatPhone } from "@/lib/utils";
+import { formatDateBR, formatPhone } from "@/lib/utils";
 import type { Reserva } from "@/types/reserva";
-import { STATUS_COLORS, STATUS_LABELS } from "@/types/reserva";
+import { ReservaStatusPills } from "./ReservaStatusPills";
 import {
   deriveDeliveryState,
   deliveryTooltip,
@@ -63,9 +63,7 @@ export function ReservaCard({ reserva, showActions = false, unitId, confirmation
             <span className="font-semibold truncate">
               {reserva.customer?.name || "—"}
             </span>
-            <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium shrink-0", STATUS_COLORS[reserva.status])}>
-              {STATUS_LABELS[reserva.status]}
-            </span>
+            <ReservaStatusPills reserva={reserva} unitId={effectiveUnitId} />
             {reserva.customer?.vip_notes && (
               <Badge className="text-[11px] gap-1 bg-gold/10 text-gold border-gold/20 hover:bg-gold/10">
                 <Sparkles className="h-2.5 w-2.5" />

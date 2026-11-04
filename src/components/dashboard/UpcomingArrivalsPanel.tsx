@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { upcomingArrivals } from "@/lib/arrivals-today";
-import { cn } from "@/lib/utils";
-import { STATUS_COLORS, STATUS_LABELS, type Reserva } from "@/types/reserva";
+import { ReservaStatusPills } from "@/components/reserva/ReservaStatusPills";
+import type { Reserva } from "@/types/reserva";
 
 function currentHHMM(): string {
   const now = new Date();
@@ -46,7 +46,9 @@ export function UpcomingArrivalsPanel({ reservas, isLoading, isError, onRetry }:
         <div key={reserva.id} className="surface rounded-block p-4 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="tabular text-2xl font-semibold">{reserva.time.slice(0, 5)}</span>
-            <span className={cn("rounded-full border px-2 py-1 text-xs", STATUS_COLORS[reserva.status])}>{STATUS_LABELS[reserva.status]}</span>
+            <span className="flex flex-wrap items-center justify-end gap-1">
+              <ReservaStatusPills reserva={reserva} unitId={reserva.unit_id} />
+            </span>
           </div>
           <p className="truncate font-medium">{reserva.customer?.name || "—"}</p>
           <p className="text-sm text-muted-foreground">{reserva.party_size} {reserva.party_size === 1 ? "pessoa" : "pessoas"}</p>

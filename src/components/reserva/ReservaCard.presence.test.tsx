@@ -13,6 +13,7 @@ vi.mock("@/hooks/useReservas", () => ({
 vi.mock("@/hooks/useMesaAcoes", () => ({
   useReservationPresence: () => ({ mutate: mock.presence, isPending: false }),
 }));
+vi.mock("@/hooks/useReservationDuration", () => ({ useReservationDuration: () => 90 }));
 vi.mock("@/hooks/useCurrentUnit", () => ({
   useCurrentUnit: () => ({ unit_id: "u1", isGerente: mock.isGerente }),
 }));
