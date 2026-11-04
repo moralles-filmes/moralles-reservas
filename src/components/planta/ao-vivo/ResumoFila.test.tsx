@@ -64,4 +64,22 @@ describe("ResumoFila", () => {
     render(<ResumoFila now={NOW} entries={[b]} onCall={onCall} />);
     expect(screen.getByRole("button", { name: "Sem WhatsApp cadastrado" })).toBeDisabled();
   });
+
+  it("Adicionar à fila aparece só com onAdd e chama onAdd", () => {
+    const onAdd = vi.fn();
+    const { unmount } = render(<ResumoFila now={NOW} entries={[entry("a", "2026-11-03T17:00:00Z", "Ana")]} />);
+    expect(screen.queryByRole("button", { name: "Adicionar à fila" })).toBeNull();
+    unmount();
+    render(<ResumoFila now={NOW} entries={[entry("a", "2026-11-03T17:00:00Z", "Ana")]} onAdd={onAdd} />);
+    fireEvent.click(screen.getByRole("button", { name: "Adicionar à fila" }));
+    expect(onAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("Adicionar à fila também aparece com a fila vazia", () => {
+    const onAdd = vi.fn();
+    render(<ResumoFila now={NOW} entries={[]} onAdd={onAdd} />);
+    expect(screen.getByTestId("resumo-fila")).toHaveTextContent("Ninguém aguardando");
+    fireEvent.click(screen.getByRole("button", { name: "Adicionar à fila" }));
+    expect(onAdd).toHaveBeenCalledTimes(1);
+  });
 });

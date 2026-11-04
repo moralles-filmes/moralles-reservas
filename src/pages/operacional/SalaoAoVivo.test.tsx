@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { cleanup, render, screen, within, fireEvent } from "@testing-library/react";
+import { act, cleanup, render, screen, within, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import SalaoAoVivo from "./SalaoAoVivo";
 
@@ -48,7 +48,11 @@ vi.mock("@/hooks/useWalkIns", () => ({
   useCreateWalkIn: () => ({ mutate: vi.fn(), isPending: false }),
   useUpdateWalkInStatus: () => ({ mutate: vi.fn(), isPending: false }),
 }));
-vi.mock("@/hooks/useWaitlist", () => ({ useNotifyWaitlist: () => ({ mutate: vi.fn(), isPending: false }) }));
+vi.mock("@/hooks/useWaitlist", () => ({
+  useNotifyWaitlist: () => ({ mutate: vi.fn(), isPending: false }),
+  useAddToWaitlist: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateWaitlistEntry: () => ({ mutate: vi.fn(), isPending: false }),
+}));
 vi.mock("@/hooks/useWaitlistTemplates", () => ({ useWaitlistTemplates: () => ({ data: [] }) }));
 let currentUnitId = "u1";
 let currentSlug: string | undefined = "moralles";
@@ -191,12 +195,140 @@ describe("SalaoAoVivo", () => {
     expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 6");
   });
 
+  describe("modo Todos", () => {
+    const hall2 = { ...hall, id: "h2", name: "Varanda", sort_order: 1, plan_width_cm: null, plan_depth_cm: null };
+    const t6 = { ...mk("t6", 6), hall_id: "h2" };
+    const twoHalls = () => ({
+      ...hookData,
+      halls: [hall, hall2],
+      tables: [...tables, t6],
+      reservations: [...hookData.reservations, res("r6", "t6", "18:00")],
+    });
+
+    it("com 1 salão não há botão Todos", () => {
+      renderPage();
+      expect(screen.queryByRole("button", { name: "Todos" })).toBeNull();
+    });
+
+    it("abre no salão individual, sem etiquetas", () => {
+      current = twoHalls();
+      renderPage();
+      expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.queryByRole("button", { name: /^Mesa 6,/ })).toBeNull();
+    });
+
+    it("Todos mostra as mesas dos dois salões, os nomes, soma a legenda e grava a preferência", () => {
+      current = twoHalls();
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Todos" }));
+      expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: /^Mesa 3,/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^Mesa 6,/ })).toBeInTheDocument();
+      expect(screen.getByTestId("planta-3d")).toHaveTextContent("Varanda");
+      expect(screen.getByTestId("planta-3d")).toHaveTextContent("Varanda · grade automática");
+      expect(screen.getByText("6 mesas")).toBeInTheDocument();
+      const legend = screen.getByRole("list", { name: "Situação das mesas" });
+      expect(within(legend).getByText("Reservada").closest("li")).toHaveTextContent("2");
+      expect(localStorage.getItem("salao-ao-vivo:hall:u1")).toBe("all");
+      expect(screen.queryByText(/Planta ainda não desenhada/)).toBeNull();
+    });
+
+    it("recarregar com all salvo abre em Todos", () => {
+      current = twoHalls();
+      localStorage.setItem("salao-ao-vivo:hall:u1", "all");
+      renderPage();
+      expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: /^Mesa 6,/ })).toBeInTheDocument();
+    });
+
+    it("próxima chegada em Todos não sai do modo Todos e seleciona a mesa", () => {
+      current = twoHalls();
+      localStorage.setItem("salao-ao-vivo:hall:u1", "all");
+      renderPage();
+      fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r6").closest("button")!);
+      expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 6");
+      expect(localStorage.getItem("salao-ao-vivo:hall:u1")).toBe("all");
+    });
+  });
+
   it("o painel só anuncia a troca de mesa, não o conteúdo que muda por minuto", () => {
     renderPage();
     const painel = screen.getByTestId("painel-mesa");
     expect(painel).not.toHaveAttribute("aria-live");
     fireEvent.click(screen.getByRole("button", { name: /^Mesa 3,/ }));
     expect(within(painel).getByRole("status")).toHaveTextContent("Mesa 3 selecionada");
+  });
+
+  it("Fila de espera: Adicionar à fila abre o diálogo no modo adicionar", () => {
+    renderPage();
+    fireEvent.click(within(screen.getByTestId("resumo-fila")).getByRole("button", { name: "Adicionar à fila" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Adicionar à fila" })).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/Nome do cliente/)).toHaveValue("");
+  });
+
+  describe("tela cheia", () => {
+    const request = vi.fn(() => Promise.resolve());
+    const exitFs = vi.fn(() => Promise.resolve());
+    afterEach(() => {
+      delete document.documentElement.requestFullscreen;
+      Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => null });
+    });
+    const withApi = () => {
+      request.mockClear();
+      Object.defineProperty(document.documentElement, "requestFullscreen", {
+        configurable: true,
+        writable: true,
+        value: request,
+      });
+      Object.defineProperty(document, "exitFullscreen", { configurable: true, writable: true, value: exitFs });
+    };
+
+    it("liga com a API: pede no documentElement, usa a camada fixed e o botão vira Sair", () => {
+      withApi();
+      renderPage();
+      expect(screen.queryByTestId("salao-tela-cheia")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Tela cheia" }));
+      expect(request).toHaveBeenCalledTimes(1);
+      const camada = screen.getByTestId("salao-tela-cheia");
+      expect(camada.parentElement).toBe(document.body);
+      expect(camada.className).toContain("fixed");
+      expect(within(camada).getByTestId("painel-mesa")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Sair da tela cheia" })).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(screen.getByRole("button", { name: "Sair da tela cheia" }));
+      expect(screen.queryByTestId("salao-tela-cheia")).toBeNull();
+      expect(screen.getByRole("button", { name: "Tela cheia" })).toBeInTheDocument();
+    });
+
+    it("sem a API a camada liga mesmo assim", () => {
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Tela cheia" }));
+      expect(screen.getByTestId("salao-tela-cheia")).toBeInTheDocument();
+    });
+
+    it("sair pela tela cheia do navegador (Esc) com o diálogo aberto mantém o que foi digitado", () => {
+      withApi();
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Tela cheia" }));
+      fireEvent.click(within(screen.getByTestId("resumo-fila")).getByRole("button", { name: "Adicionar à fila" }));
+      fireEvent.change(within(screen.getByRole("dialog")).getByLabelText(/Nome do cliente/), {
+        target: { value: "Maria" },
+      });
+      // O navegador sai da tela cheia: fullscreenElement já é null e o evento chega.
+      act(() => {
+        document.dispatchEvent(new Event("fullscreenchange"));
+      });
+      expect(screen.queryByTestId("salao-tela-cheia")).toBeNull();
+      expect(within(screen.getByRole("dialog")).getByLabelText(/Nome do cliente/)).toHaveValue("Maria");
+    });
+
+    it("em tela cheia, Adicionar à fila abre o diálogo", () => {
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Tela cheia" }));
+      fireEvent.click(within(screen.getByTestId("resumo-fila")).getByRole("button", { name: "Adicionar à fila" }));
+      expect(within(screen.getByRole("dialog")).getByRole("heading", { name: "Adicionar à fila" })).toBeInTheDocument();
+    });
   });
 
   it("o plano girado do 3D não carrega a animação de entrada, que sobrescreveria o transform", () => {

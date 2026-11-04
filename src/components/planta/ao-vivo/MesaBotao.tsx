@@ -54,6 +54,7 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
       <div className={cn("absolute inset-0", is3d && "pointer-events-none")} style={lift(16)}>
         <button
           type="button"
+          data-table-id={box.tableId}
           aria-label={mesaAriaLabel(box, state, now)}
           aria-pressed={selected}
           onClick={() => onSelect(box.tableId)}

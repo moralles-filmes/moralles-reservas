@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { ENTRANCE_CM, GRID_CM, clampBox, entranceAt, resizedSize, snap } from "@/lib/hall-plan-core";
+import { PlanViewportControls } from "@/components/planta/viewport/PlanViewportControls";
+import { usePlanViewport } from "@/components/planta/viewport/usePlanViewport";
+import {
+  ENTRANCE_CM,
+  GRID_CM,
+  clampBox,
+  entranceAt,
+  resizedSize,
+  snap,
+} from "@/lib/hall-plan-core";
 import type { HallPlan, PlanWall, TableBox } from "@/lib/hall-plan-core";
 
 interface Props {
@@ -58,13 +67,23 @@ export function PlantaEditorCanvas({
   onEntranceChange,
   readOnly = false,
 }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const vp = usePlanViewport();
+  const containerRef = vp.containerRef;
   const [scale, setScale] = useState(1);
-  const [drag, setDrag] = useState<{ id: string; dx: number; dy: number } | null>(null);
+  const [drag, setDrag] = useState<{
+    id: string;
+    dx: number;
+    dy: number;
+  } | null>(null);
   const dragRef = useRef<DragState | null>(null);
-  const [resize, setResize] = useState<{ id: string; w: number; h: number } | null>(null);
+  const [resize, setResize] = useState<{
+    id: string;
+    w: number;
+    h: number;
+  } | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
-  const [entranceDraft, setEntranceDraft] = useState<HallPlan["entrance"]>(null);
+  const [entranceDraft, setEntranceDraft] =
+    useState<HallPlan["entrance"]>(null);
   const entrancePointerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -79,11 +98,16 @@ export function PlantaEditorCanvas({
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [plan.widthCm]);
+  }, [plan.widthCm, containerRef]);
 
+  // Escala efetiva em px de tela por cm: ajuste à largura vezes o zoom do viewport.
+  const eff = scale * vp.zoom;
   const gridPx = GRID_CM * scale;
 
-  const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>, box: TableBox) => {
+  const onPointerDown = (
+    e: React.PointerEvent<HTMLButtonElement>,
+    box: TableBox,
+  ) => {
     onSelect(box.tableId);
     if (readOnly) return;
     e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -99,12 +123,24 @@ export function PlantaEditorCanvas({
   const onPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
     const d = dragRef.current;
     if (!d || d.pointerId !== e.pointerId) return;
-    if (!d.moved && Math.hypot(e.clientX - d.startClientX, e.clientY - d.startClientY) < DRAG_THRESHOLD_PX) return;
+    if (
+      !d.moved &&
+      Math.hypot(e.clientX - d.startClientX, e.clientY - d.startClientY) <
+        DRAG_THRESHOLD_PX
+    )
+      return;
     d.moved = true;
-    setDrag({ id: d.id, dx: e.clientX - d.startClientX, dy: e.clientY - d.startClientY });
+    setDrag({
+      id: d.id,
+      dx: (e.clientX - d.startClientX) / vp.zoom,
+      dy: (e.clientY - d.startClientY) / vp.zoom,
+    });
   };
 
-  const endDrag = (e: React.PointerEvent<HTMLButtonElement>, commit: boolean) => {
+  const endDrag = (
+    e: React.PointerEvent<HTMLButtonElement>,
+    commit: boolean,
+  ) => {
     const d = dragRef.current;
     if (!d || d.pointerId !== e.pointerId) return;
     dragRef.current = null;
@@ -112,16 +148,27 @@ export function PlantaEditorCanvas({
     if (!commit || !d.moved) return;
     const box = boxes.find((b) => b.tableId === d.id);
     if (!box) return;
-    const dxCm = (e.clientX - d.startClientX) / scale;
-    const dyCm = (e.clientY - d.startClientY) / scale;
-    const next = clampBox({ ...box, x: snap(box.x + dxCm), y: snap(box.y + dyCm) }, plan);
+    const dxCm = (e.clientX - d.startClientX) / eff;
+    const dyCm = (e.clientY - d.startClientY) / eff;
+    const next = clampBox(
+      { ...box, x: snap(box.x + dxCm), y: snap(box.y + dyCm) },
+      plan,
+    );
     onMove(box.tableId, next.x, next.y);
   };
 
-  const onResizeDown = (e: React.PointerEvent<HTMLSpanElement>, box: TableBox) => {
+  const onResizeDown = (
+    e: React.PointerEvent<HTMLSpanElement>,
+    box: TableBox,
+  ) => {
     e.stopPropagation();
     e.currentTarget.setPointerCapture?.(e.pointerId);
-    resizeRef.current = { id: box.tableId, pointerId: e.pointerId, startClientX: e.clientX, startClientY: e.clientY };
+    resizeRef.current = {
+      id: box.tableId,
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+    };
   };
 
   const resizeFor = (e: React.PointerEvent<HTMLSpanElement>) => {
@@ -129,7 +176,15 @@ export function PlantaEditorCanvas({
     if (!r || r.pointerId !== e.pointerId) return null;
     const box = boxes.find((b) => b.tableId === r.id);
     if (!box) return null;
-    return { box, ...resizedSize(box, e.clientX - r.startClientX, e.clientY - r.startClientY, scale) };
+    return {
+      box,
+      ...resizedSize(
+        box,
+        e.clientX - r.startClientX,
+        e.clientY - r.startClientY,
+        eff,
+      ),
+    };
   };
 
   const onResizeMove = (e: React.PointerEvent<HTMLSpanElement>) => {
@@ -137,17 +192,25 @@ export function PlantaEditorCanvas({
     if (next) setResize({ id: next.box.tableId, w: next.w, h: next.h });
   };
 
-  const endResize = (e: React.PointerEvent<HTMLSpanElement>, commit: boolean) => {
+  const endResize = (
+    e: React.PointerEvent<HTMLSpanElement>,
+    commit: boolean,
+  ) => {
     const next = resizeFor(e);
     resizeRef.current = null;
     setResize(null);
-    if (commit && next && (next.w !== next.box.w || next.h !== next.box.h)) onResize(next.box.tableId, next.w, next.h);
+    if (commit && next && (next.w !== next.box.w || next.h !== next.box.h))
+      onResize(next.box.tableId, next.w, next.h);
   };
 
   const entranceFromPointer = (e: React.PointerEvent<HTMLElement>) => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect || scale <= 0) return null;
-    return entranceAt((e.clientX - rect.left) / scale, (e.clientY - rect.top) / scale, plan);
+    const rect = vp.contentRef.current?.getBoundingClientRect();
+    if (!rect || eff <= 0) return null;
+    return entranceAt(
+      (e.clientX - rect.left) / eff,
+      (e.clientY - rect.top) / eff,
+      plan,
+    );
   };
 
   const onEntranceDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -163,12 +226,20 @@ export function PlantaEditorCanvas({
     if (next) setEntranceDraft(next);
   };
 
-  const endEntrance = (e: React.PointerEvent<HTMLDivElement>, commit: boolean) => {
+  const endEntrance = (
+    e: React.PointerEvent<HTMLDivElement>,
+    commit: boolean,
+  ) => {
     if (entrancePointerRef.current !== e.pointerId) return;
     entrancePointerRef.current = null;
     const next = entranceDraft;
     setEntranceDraft(null);
-    if (commit && next && (next.wall !== plan.entrance?.wall || next.offsetCm !== plan.entrance?.offsetCm)) {
+    if (
+      commit &&
+      next &&
+      (next.wall !== plan.entrance?.wall ||
+        next.offsetCm !== plan.entrance?.offsetCm)
+    ) {
       onEntranceChange(next);
     }
   };
@@ -195,120 +266,146 @@ export function PlantaEditorCanvas({
       ref={containerRef}
       data-testid="planta-canvas"
       data-planta-canvas=""
+      role="region"
+      aria-label="Planta do salão"
+      tabIndex={0}
       className="surface relative w-full overflow-hidden rounded-lg border border-border bg-background"
       style={{
         aspectRatio: `${plan.widthCm} / ${plan.depthCm}`,
-        backgroundImage:
-          "linear-gradient(to right, hsl(var(--border)) 1px, transparent 1px), linear-gradient(to bottom, hsl(var(--border)) 1px, transparent 1px)",
-        backgroundSize: `${gridPx}px ${gridPx}px`,
+        touchAction: vp.touchAction,
       }}
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget) onSelect(null);
-      }}
+      {...vp.handlers}
     >
-      {plan.windowWalls.map((wall) => (
-        <div
-          key={wall}
-          aria-hidden="true"
-          className="absolute bg-primary/60"
-          style={wallStyle(wall)}
-          title="Janela"
-        />
-      ))}
-      {entranceStyle && (
-        // Arrastável; o seletor e o campo de deslocamento no painel são a alternativa por teclado.
-        <div
-          aria-hidden="true"
-          data-testid="planta-entrada"
-          className={cn(
-            "absolute z-10 rounded-sm bg-muted-foreground",
-            // Área de pega maior que o traço, sem mudar o desenho.
-            "after:absolute after:-inset-2 after:content-[''] coarse:after:-inset-5",
-            !readOnly && "cursor-move",
-          )}
-          style={{ ...entranceStyle, touchAction: "none" }}
-          title={readOnly ? "Entrada" : "Entrada (arraste para mudar de lugar)"}
-          onPointerDown={onEntranceDown}
-          onPointerMove={onEntranceMove}
-          onPointerUp={(e) => endEntrance(e, true)}
-          onPointerCancel={(e) => endEntrance(e, false)}
-        />
-      )}
-      {boxes.map((box) => {
-        const selected = box.tableId === selectedId;
-        const dragging = drag?.id === box.tableId;
-        const dx = dragging ? drag.dx : 0;
-        const dy = dragging ? drag.dy : 0;
-        const size = resize?.id === box.tableId ? resize : box;
-        const wPx = size.w * scale;
-        const hPx = size.h * scale;
-        // A lotação só cabe abaixo do número quando a mesa desenhada tem altura para duas linhas.
-        const showCapacity = Math.min(wPx, hPx) >= 34;
-        return (
+      <div
+        ref={vp.contentRef}
+        data-testid="planta-canvas-conteudo"
+        className="absolute inset-0"
+        style={{
+          transformOrigin: "0 0",
+          willChange: "transform",
+          backgroundImage:
+            "linear-gradient(to right, hsl(var(--border)) 1px, transparent 1px), linear-gradient(to bottom, hsl(var(--border)) 1px, transparent 1px)",
+          backgroundSize: `${gridPx}px ${gridPx}px`,
+        }}
+        onClick={(e) => {
+          if (e.target === e.currentTarget && !vp.wasPanning()) onSelect(null);
+        }}
+      >
+        {plan.windowWalls.map((wall) => (
           <div
-            key={box.tableId}
-            className="absolute"
-            style={{
-              left: (box.x - size.w / 2) * scale,
-              top: (box.y - size.h / 2) * scale,
-              width: wPx,
-              height: hPx,
-              transform: `translate(${dx}px, ${dy}px) rotate(${box.rotation}deg)`,
-            }}
-          >
-            <button
-              type="button"
-              data-x={box.x}
-              data-y={box.y}
-              data-positioned={box.positioned ? "true" : "false"}
-              aria-label={`Mesa ${box.number}, ${box.capacity} lugares${box.positioned ? "" : ", sem posição"}`}
-              aria-pressed={selected}
-              onPointerDown={(e) => onPointerDown(e, box)}
-              onPointerMove={onPointerMove}
-              onPointerUp={(e) => endDrag(e, true)}
-              onPointerCancel={(e) => endDrag(e, false)}
-              onClick={() => onSelect(box.tableId)}
-              className={cn(
-                "absolute inset-0 flex flex-col items-center justify-center border-2 bg-[hsl(var(--status-free)/0.15)] border-[hsl(var(--status-free))] text-xs font-semibold leading-none text-foreground",
-                "select-none",
-                // Alvo de toque de 44 px em ponteiro grosso sem mudar o desenho nem o centro.
-                "after:absolute after:left-1/2 after:top-1/2 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
-                "coarse:after:h-11 coarse:after:w-11",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                box.shape === "round" ? "rounded-full" : "rounded-md",
-                !box.positioned && "border-dashed",
-                selected && "ring-2 ring-ring",
-                !readOnly && "cursor-grab",
-                dragging && "cursor-grabbing",
-              )}
-              style={{ touchAction: "none" }}
+            key={wall}
+            aria-hidden="true"
+            className="absolute bg-primary/60"
+            style={wallStyle(wall)}
+            title="Janela"
+          />
+        ))}
+        {entranceStyle && (
+          // Arrastável; o seletor e o campo de deslocamento no painel são a alternativa por teclado.
+          <div
+            aria-hidden="true"
+            data-testid="planta-entrada"
+            className={cn(
+              "absolute z-10 rounded-sm bg-muted-foreground",
+              // Área de pega maior que o traço, sem mudar o desenho.
+              "after:absolute after:-inset-2 after:content-[''] coarse:after:-inset-5",
+              !readOnly && "cursor-move",
+            )}
+            style={{ ...entranceStyle, touchAction: "none" }}
+            title={
+              readOnly ? "Entrada" : "Entrada (arraste para mudar de lugar)"
+            }
+            onPointerDown={onEntranceDown}
+            onPointerMove={onEntranceMove}
+            onPointerUp={(e) => endEntrance(e, true)}
+            onPointerCancel={(e) => endEntrance(e, false)}
+          />
+        )}
+        {boxes.map((box) => {
+          const selected = box.tableId === selectedId;
+          const dragging = drag?.id === box.tableId;
+          const dx = dragging ? drag.dx : 0;
+          const dy = dragging ? drag.dy : 0;
+          const size = resize?.id === box.tableId ? resize : box;
+          const wPx = size.w * scale;
+          const hPx = size.h * scale;
+          // A lotação só cabe abaixo do número quando a mesa desenhada tem altura para duas linhas.
+          const showCapacity = Math.min(wPx, hPx) >= 34;
+          return (
+            <div
+              key={box.tableId}
+              className="absolute"
+              style={{
+                left: (box.x - size.w / 2) * scale,
+                top: (box.y - size.h / 2) * scale,
+                width: wPx,
+                height: hPx,
+                transform: `translate(${dx}px, ${dy}px) rotate(${box.rotation}deg)`,
+              }}
             >
-              <span>{box.number}</span>
-              {showCapacity && (
-                <span aria-hidden="true" className="mt-0.5 text-[10px] font-normal text-muted-foreground">
-                  {`${box.capacity} lug.`}
-                </span>
-              )}
-            </button>
-            {selected && !readOnly && (
-              // Alça de tamanho; largura e profundidade no painel são a alternativa por teclado.
-              <span
-                aria-hidden="true"
-                data-testid="planta-alca-tamanho"
+              <button
+                type="button"
+                data-x={box.x}
+                data-y={box.y}
+                data-positioned={box.positioned ? "true" : "false"}
+                aria-label={`Mesa ${box.number}, ${box.capacity} lugares${box.positioned ? "" : ", sem posição"}`}
+                aria-pressed={selected}
+                onPointerDown={(e) => onPointerDown(e, box)}
+                onPointerMove={onPointerMove}
+                onPointerUp={(e) => endDrag(e, true)}
+                onPointerCancel={(e) => endDrag(e, false)}
+                onClick={() => onSelect(box.tableId)}
                 className={cn(
-                  "absolute -bottom-1.5 -right-1.5 z-10 h-3 w-3 cursor-nwse-resize rounded-sm border border-background bg-primary",
-                  "after:absolute after:-inset-1.5 after:content-[''] coarse:after:-inset-4",
+                  "absolute inset-0 flex flex-col items-center justify-center border-2 bg-[hsl(var(--status-free)/0.15)] border-[hsl(var(--status-free))] text-xs font-semibold leading-none text-foreground",
+                  "select-none",
+                  // Alvo de toque de 44 px em ponteiro grosso sem mudar o desenho nem o centro.
+                  "after:absolute after:left-1/2 after:top-1/2 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
+                  "coarse:after:h-11 coarse:after:w-11",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  box.shape === "round" ? "rounded-full" : "rounded-md",
+                  !box.positioned && "border-dashed",
+                  selected && "ring-2 ring-ring",
+                  !readOnly && "cursor-grab",
+                  dragging && "cursor-grabbing",
                 )}
                 style={{ touchAction: "none" }}
-                onPointerDown={(e) => onResizeDown(e, box)}
-                onPointerMove={onResizeMove}
-                onPointerUp={(e) => endResize(e, true)}
-                onPointerCancel={(e) => endResize(e, false)}
-              />
-            )}
-          </div>
-        );
-      })}
+              >
+                <span>{box.number}</span>
+                {showCapacity && (
+                  <span
+                    aria-hidden="true"
+                    className="mt-0.5 text-[10px] font-normal text-muted-foreground"
+                  >
+                    {`${box.capacity} lug.`}
+                  </span>
+                )}
+              </button>
+              {selected && !readOnly && (
+                // Alça de tamanho; largura e profundidade no painel são a alternativa por teclado.
+                <span
+                  aria-hidden="true"
+                  data-testid="planta-alca-tamanho"
+                  className={cn(
+                    "absolute -bottom-1.5 -right-1.5 z-10 h-3 w-3 cursor-nwse-resize rounded-sm border border-background bg-primary",
+                    "after:absolute after:-inset-1.5 after:content-[''] coarse:after:-inset-4",
+                  )}
+                  style={{ touchAction: "none" }}
+                  onPointerDown={(e) => onResizeDown(e, box)}
+                  onPointerMove={onResizeMove}
+                  onPointerUp={(e) => endResize(e, true)}
+                  onPointerCancel={(e) => endResize(e, false)}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <PlanViewportControls
+        zoom={vp.zoom}
+        onZoomIn={vp.zoomIn}
+        onZoomOut={vp.zoomOut}
+        onReset={vp.reset}
+      />
     </div>
   );
 }
