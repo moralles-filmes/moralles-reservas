@@ -777,7 +777,7 @@ select pg_temp.caso(8632, 'X-5 controle: com a janela antes da sincronia, o mesm
   $s$ || pg_temp.res('N1', 'T13', 'D1', '19:00') || pg_temp.res('N2', 'T13', 'D1', '21:00') || $s$
   update public.reservations set table_id = '{T14}', time = '21:00' where id = '{N1}'; select 'x'$s$,
   '23P01%occupant_tables_no_overlap%');
--- A-1…A-3: com a 20261105120300, anon não grava reservations de jeito nenhum
+-- A-1…A-3: com a 20261105130300, anon não grava reservations de jeito nenhum
 -- (sem INSERT, nem chega à RLS). A-4…A-6 reabrem as trancas uma a uma dentro
 -- do subbloco desfeito para provar que cada uma segura sozinha.
 create function pg_temp.reabrir_anon(p_policy boolean) returns text language sql as $f$
@@ -821,7 +821,7 @@ select pg_temp.caso(8639, 'K-4b controle: o mesmo salão sem link muda de unidad
   $s$ || pg_temp.como('PA') || $s$
   update public.halls set unit_id = '{B}' where id = '{SV}'; select 'x'$s$, 'ok');
 
--- ═══ Anon fora de reservations (migration 20261105120300) ═══════════════════
+-- ═══ Anon fora de reservations (migration 20261105130300) ═══════════════════
 select pg_temp.caso(8640, 'A-4 controle: com INSERT e policy de volta, anon sem mesa grava', 'postgres',
   pg_temp.reabrir_anon(true) || pg_temp.res('N1', null, 'D1', '19:00') || $s$ select 'x'$s$, 'ok');
 select pg_temp.caso(8641, 'A-5 só o INSERT de volta (sem policy): a RLS recusa', 'postgres',
@@ -836,7 +836,7 @@ select pg_temp.caso(8643, 'A-7 catálogo: sem a policy anon_insert_reservations 
      || '/' || (not has_table_privilege('anon', 'public.reservations', 'INSERT'))$s$,
   'ok', $c$$1 = 'true/true'$c$);
 
--- ═══ IG-M — reserva do Instagram com mesas juntas (migration 20261105120400) ═══
+-- ═══ IG-M — reserva do Instagram com mesas juntas (migration 20261105130400) ═══
 -- Contato IGC de A ligado a F1. Linha = a que o reserveSlot manda ao hook.
 insert into t_ids values ('IGC', 'a0d81000-0000-4000-8000-000000000ac1');
 insert into public.instagram_contacts (id, organization_id, unit_id, customer_id) values

@@ -1,8 +1,8 @@
--- 83b: semente do backfill da 20261105120100 (ocupação multi-mesa).
+-- 83b: semente do backfill da 20261105130100 (ocupação multi-mesa).
 --
 -- Contêiner PRÓPRIO (as linhas ficam gravadas e mudariam as contagens do
 -- 81/82/83): 81a + migrations da planta + 82a + 20261104120000 + 83a +
--- 20261105120000, depois este arquivo, depois a 20261105120100 e o 83c
+-- 20261105130000, depois este arquivo, depois a 20261105130100 e o 83c
 -- (README §83, "Backfill"). Simula o que o db push encontra em produção:
 -- reservas que já se sobrepõem por duração (o índice antigo só barrava o
 -- mesmo horário), reserva com mesa de outra unidade, passado e passante

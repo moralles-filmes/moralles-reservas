@@ -79,7 +79,7 @@ create trigger seat_choice_links_guard
   for each row execute function app_private.guard_seat_choice_link();
 
 -- Salão com link de escolha também não muda de unidade (o link apontaria para
--- outro tenant). Mesmo corpo da 20261105120000 com a perna de seat_choice_links.
+-- outro tenant). Mesmo corpo da 20261105130000 com a perna de seat_choice_links.
 create or replace function app_private.guard_table_hall_unit()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin

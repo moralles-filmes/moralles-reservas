@@ -3393,36 +3393,36 @@ P  < supabase/migrations/20261030120100_planta_do_salao_presenca.sql
 P  < supabase/tests/local-preflight/82a-planta-endurecimento-bootstrap.sql
 P  < supabase/migrations/20261104120000_planta_endurecimento.sql
 P  < supabase/tests/local-preflight/83a-escolha-de-mesa-bootstrap.sql
-P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql
+P  < supabase/migrations/20261105130000_mesas_reservaveis_combinacoes.sql
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED da Task 2 (só C-* passam)
-P  < supabase/migrations/20261105120100_ocupacao_multi_mesa.sql
+P  < supabase/migrations/20261105130100_ocupacao_multi_mesa.sql
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED da Task 3 (só K-* falham)
-P  < supabase/migrations/20261105120200_links_escolha_mesa.sql
+P  < supabase/migrations/20261105130200_links_escolha_mesa.sql
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN
 P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # segue verde
 P  < supabase/tests/local-preflight/82-planta-endurecimento.sql       # segue verde
-P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql   # reaplicar
-P  < supabase/migrations/20261105120100_ocupacao_multi_mesa.sql             # reaplicar
-P  < supabase/migrations/20261105120200_links_escolha_mesa.sql              # reaplicar
+P  < supabase/migrations/20261105130000_mesas_reservaveis_combinacoes.sql   # reaplicar
+P  < supabase/migrations/20261105130100_ocupacao_multi_mesa.sql             # reaplicar
+P  < supabase/migrations/20261105130200_links_escolha_mesa.sql              # reaplicar
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
 # E1 (anon) e E2 (Instagram com mesas juntas): sem a 120400 só os IG-M-* falham (42883).
-P  < supabase/migrations/20261105120300_fechar_anon_insert_reservations.sql
-P  < supabase/migrations/20261105120400_instagram_reserva_multi_mesa.sql
+P  < supabase/migrations/20261105130300_fechar_anon_insert_reservations.sql
+P  < supabase/migrations/20261105130400_instagram_reserva_multi_mesa.sql
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN (inclui A-* e IG-M-*)
-P  < supabase/migrations/20261105120400_instagram_reserva_multi_mesa.sql    # reaplicar
+P  < supabase/migrations/20261105130400_instagram_reserva_multi_mesa.sql    # reaplicar
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
 docker rm -f mesa83-pg
 ```
 
-Para o RED da Task 1, rode o 83 antes da 20261105120000 (só os C-* contam).
+Para o RED da Task 1, rode o 83 antes da 20261105130000 (só os C-* contam).
 
 **Backfill** (contêiner próprio: a semente fica gravada e mudaria as contagens
 do 81/82/83). Mesma base até o 83a, então:
 
 ```bash
-P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql
+P  < supabase/migrations/20261105130000_mesas_reservaveis_combinacoes.sql
 P  < supabase/tests/local-preflight/83b-backfill-semente.sql
-P  < supabase/migrations/20261105120100_ocupacao_multi_mesa.sql   # NOTICE com as contagens
+P  < supabase/migrations/20261105130100_ocupacao_multi_mesa.sql   # NOTICE com as contagens
 P  < supabase/tests/local-preflight/83c-backfill-confere.sql      # "83c: PASS"
 ```
 
@@ -3457,7 +3457,7 @@ P  < supabase/tests/local-preflight/83c-backfill-confere.sql      # "83c: PASS"
 sem rede, contêiner novo): **0/42 antes da migration**, **42/42** depois e
 42/42 com a migration reaplicada; 81 em 83/83 e 82 em 52/52 com ela aplicada.
 
-Task 2 (migration `20261105120100_ocupacao_multi_mesa.sql`). O 83a projeta
+Task 2 (migration `20261105130100_ocupacao_multi_mesa.sql`). O 83a projeta
 `settings` (duração 90 em A, B sem a chave) e as colunas de bloqueio por mesa
 de `table_blocks` (nullable só aqui, para o 82 seguir inserindo só o vínculo).
 Horários relativos ao `now()` da transação em BRT (tokens D1, DN0/TN0,
@@ -3495,8 +3495,8 @@ DN30/TN30), então o resultado não depende do relógio do contêiner.
   dias ficam de fora.
 
 **Resultados observados em 05/11/2026** (mesma imagem, contêiner novo): **42/97
-com só a 20261105120000** (os 55 FAIL são os casos da Task 2), **97/97** com a
-20261105120100 e 97/97 com as duas reaplicadas; 81 em 83/83 e 82 em 52/52 nas
+com só a 20261105130000** (os 55 FAIL são os casos da Task 2), **97/97** com a
+20261105130100 e 97/97 com as duas reaplicadas; 81 em 83/83 e 82 em 52/52 nas
 duas rodadas; backfill `7 reservas, 1 com overlap_ok, 1 com mesa de outra
 unidade ignoradas` e 83c PASS.
 
@@ -3505,7 +3505,7 @@ O que NÃO prova: PostgREST/JWT real e concorrência de duas sessões (a exclus�
 de duas conexões). O caminho legado sentar passante pela tela não confere
 `seat_taken`: só a RPC da recepção confere.
 
-Task 3 (migration `20261105120200_links_escolha_mesa.sql`). O 83a projeta
+Task 3 (migration `20261105130200_links_escolha_mesa.sql`). O 83a projeta
 `whatsapp_channels` mínimo (id, unit_id, display_phone), alvo da FK do link;
 os canais de A e B nascem dentro da transação desfeita do 83.
 
@@ -3524,7 +3524,7 @@ os canais de A e B nascem dentro da transação desfeita do 83.
 
 **Resultados observados em 05/11/2026** (mesma imagem, contêiner novo):
 **97/117 com as duas primeiras** (os 20 FAIL são os K-*), **117/117** com a
-20261105120200 e 117/117 com as três reaplicadas; 81 em 83/83 e 82 em 52/52.
+20261105130200 e 117/117 com as três reaplicadas; 81 em 83/83 e 82 em 52/52.
 
 O que NÃO prova: o advisory lock do limite contra duas sessões simultâneas
 (mesmo desenho da `check_public_waitlist_rate_limit`) e a leitura do link pela
@@ -3538,7 +3538,7 @@ aplicadas em lugar nenhum):
   `reservations_occupant_sync_slot` e roda depois da sincronia). Controle: com
   a janela antes da sincronia, o mesmo UPDATE dá `23P01`.
 - **A-1…A-3 (8633–8635):** anon não grava em `reservations` com ou sem mesa
-  (`42501 permission denied`, migration `20261105120300`; antes dela, o guard
+  (`42501 permission denied`, migration `20261105130300`; antes dela, o guard
   da 120100 barrava só `table_id`/`table_choice`).
 - **R-16, R-17 (8636–8637):** o conflito da `set_occupant_tables` não mostra
   nome de cliente de outra organização; `insert_reservation_with_tables` com
@@ -3551,7 +3551,7 @@ três migrations e 126/126 com as três reaplicadas; 81 em 83/83 e 82 em 52/52;
 backfill `7 reservas, 1 com overlap_ok, 1 com mesa de outra unidade ignoradas`
 e 83c PASS.
 
-Migration `20261105120300_fechar_anon_insert_reservations.sql` (drop da policy
+Migration `20261105130300_fechar_anon_insert_reservations.sql` (drop da policy
 `anon_insert_reservations` da 023b + `revoke insert` de anon em
 `reservations`). Aplicar depois das três acima e rodar o 83, 81 e 82 de novo.
 O P-13a do 81 (8238) passou a usar `service_role`: o trigger

@@ -6,7 +6,7 @@
 -- create-manual-reservation, o agente e o Instagram também por service role.
 -- A tela não insere em reservations. A policy só deixava a anon key do bundle
 -- criar reserva crua pela REST, sem disponibilidade, sem duração, sem
--- rate-limit e, com a exclusão por duração da 20261105120100, trancando a
+-- rate-limit e, com a exclusão por duração da 20261105130100, trancando a
 -- janela de quem reservasse depois.
 --
 -- Duas trancas, cada uma suficiente (pré-voo 83, A-1…A-7):

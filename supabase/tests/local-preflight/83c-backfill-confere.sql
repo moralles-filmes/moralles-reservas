@@ -1,4 +1,4 @@
--- 83c: confere o backfill da 20261105120100 sobre a semente do 83b (README §83).
+-- 83c: confere o backfill da 20261105130100 sobre a semente do 83b (README §83).
 -- Termina com erro se o estado diverge.
 \set ON_ERROR_STOP on
 do $$

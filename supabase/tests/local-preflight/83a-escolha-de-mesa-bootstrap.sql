@@ -45,7 +45,7 @@ create table public.whatsapp_channels (
   unit_id uuid not null references public.units(id) on delete cascade,
   display_phone text);
 
--- ─── Instagram (E2: reserva do contato com mesas juntas, migration 20261105120400) ─
+-- ─── Instagram (E2: reserva do contato com mesas juntas, migration 20261105130400) ─
 -- Só o que create_instagram_contact_reservation lê e grava (forma das 20261103*):
 -- contato (organização, unidade, cliente ligado, anonimização), ledger e o
 -- soft delete do cliente. Fora da projeção: RLS, grants, contador de trocas e

@@ -282,7 +282,7 @@ create trigger reservations_occupant_sync_slot
 -- do produto grava reservations como anon (a reserva pública vai pela EF com
 -- service role), mas com a exclusão por duração uma linha anon com mesa
 -- trancaria a janela inteira e pularia bookable e combinações. A policy e o
--- INSERT de anon caem na 20261105120300; este guard fica como terceira tranca.
+-- INSERT de anon caem na 20261105130300; este guard fica como terceira tranca.
 create or replace function app_private.guard_anon_reservation_table()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin

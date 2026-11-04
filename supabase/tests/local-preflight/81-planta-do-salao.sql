@@ -442,7 +442,7 @@ select pg_temp.caso(8237, 'P-12 invariante de métricas: contagens por status e 
         'w:waiting', (snap ->> 'w:waiting')::int - 1,
         'w:seated', (snap ->> 'w:seated')::int + 1) from t_snap)$c$);
 -- Ator service_role: é quem grava a reserva pública (EF create-reservation);
--- anon perdeu o INSERT em reservations na 20261105120300.
+-- anon perdeu o INSERT em reservations na 20261105130300.
 select pg_temp.caso(8238, 'P-13a service_role cria reserva já com chegada', 'service_role',
   $s$insert into public.reservations (customer_id, date, time, party_size, reservation_code, unit_id, arrived_at)
      values ('{CUST}', current_date, '20:00', 2, 'P81-X1', '{A}', now()); select 'x'$s$,
