@@ -127,7 +127,7 @@ type ClaimedRow = {
   claim_id: string;
 };
 
-type Account = { id: string; unit_id: string; organization_id: string; ig_user_id: string; status: string; connected_at: string };
+type Account = { id: string; unit_id: string; organization_id: string; ig_user_id: string; page_id: string | null; status: string; connected_at: string };
 
 type Contact = {
   id: string;
@@ -198,11 +198,13 @@ type GateResult =
   | { kind: "discard"; reason: string }
   | { kind: "retry"; reason: string };
 
+const isValidPageId = (v: unknown): v is string => typeof v === "string" && /^[0-9]{1,64}$/.test(v);
+
 async function readGates(row: ClaimedRow): Promise<GateResult> {
   // Conta da PRÓPRIA linha (id e unidade): nunca do payload.
   const { data: acc, error: accError } = await supabase
     .from("instagram_accounts")
-    .select("id, unit_id, organization_id, ig_user_id, status, connected_at")
+    .select("id, unit_id, organization_id, ig_user_id, page_id, status, connected_at")
     .eq("id", row.instagram_account_id)
     .eq("unit_id", row.unit_id)
     .maybeSingle();
@@ -213,6 +215,20 @@ async function readGates(row: ClaimedRow): Promise<GateResult> {
     typeof account.organization_id !== "string" || typeof account.connected_at !== "string"
   ) {
     return { kind: "discard", reason: "account_not_connected" };
+  }
+  if (!isValidPageId(account.page_id)) {
+    // Conta sem Página (ou id inválido): fecha sem Graph e pede nova conexão.
+    // Falha de escrita não bloqueia o descarte: o evento fecha do mesmo jeito.
+    const { data, error } = await supabase.rpc("set_instagram_account_status", {
+      p_account_id: account.id,
+      p_status: "reauth_required",
+      p_error_code: "page_missing",
+      p_expected_connected_at: account.connected_at,
+    });
+    jsonLog(error || data !== true ? "error" : "warn", {
+      evt: "instagram_account_page_missing", accountId: account.id, code: pgCode(error) ?? (data === true ? undefined : "stale_or_unexpected"),
+    });
+    return { kind: "discard", reason: "page_missing" };
   }
 
   const { data: grants, error: grantError } = await supabase
@@ -619,7 +635,7 @@ function createEventWorker(a: {
         return { ok: false, error: "token_unavailable" };
       }
       const out = await sendInstagramParts(text, (part) =>
-        graph.sendText({ igUserId: account.ig_user_id, token: accessToken, igsid: item.igsid, text: part }));
+        graph.sendText({ pageId: account.page_id as string, token: accessToken, igsid: item.igsid, text: part }));
       if (out.reauthRequired) {
         try {
           await markReauth();

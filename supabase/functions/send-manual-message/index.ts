@@ -99,7 +99,7 @@ async function sendInstagramManual(
   // nunca do caller), e só `connected` envia.
   const { data: account, error: accountErr } = await supabase
     .from("instagram_accounts")
-    .select("id, unit_id, ig_user_id, status, connected_at")
+    .select("id, unit_id, ig_user_id, page_id, status, connected_at")
     .eq("id", accountId)
     .eq("unit_id", conv.unit_id)
     .maybeSingle();
@@ -112,6 +112,20 @@ async function sendInstagramManual(
     typeof account.ig_user_id !== "string" || account.ig_user_id === "" || typeof account.connected_at !== "string"
   ) {
     return json(409, { error: "INSTAGRAM_NOT_CONNECTED" });
+  }
+  if (typeof account.page_id !== "string" || !/^[0-9]{1,64}$/.test(account.page_id)) {
+    // Sem Página (ou id inválido) não há endpoint de envio: pede nova conexão, sem Graph.
+    const { data: marked, error: markErr } = await supabase.rpc("set_instagram_account_status", {
+      p_account_id: account.id,
+      p_status: "reauth_required",
+      p_error_code: "page_missing",
+      p_expected_connected_at: account.connected_at,
+    });
+    jsonLog(markErr || marked !== true ? "error" : "warn", {
+      evt: "instagram_account_page_missing", accountId: account.id,
+      code: markErr?.code ?? (marked === true ? null : "stale_or_unexpected"),
+    });
+    return json(409, { error: marked === false && !markErr ? "INSTAGRAM_ACCOUNT_RECONNECTED" : "INSTAGRAM_REAUTH_REQUIRED" });
   }
 
   const { data: history, error: historyErr } = await supabase
@@ -148,7 +162,7 @@ async function sendInstagramManual(
     }
     let r: GraphResult<{ messageId: string }>;
     try {
-      r = await graph.sendText({ igUserId: account.ig_user_id, token, igsid, text: part });
+      r = await graph.sendText({ pageId: account.page_id, token, igsid, text: part });
     } catch {
       // O adapter não lança; se lançar, a parte pode ter saído.
       r = { ok: false, errorClass: "transient", httpStatus: null, code: null };

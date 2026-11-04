@@ -36,8 +36,9 @@ const env = {
   APP_BASE_URL: "https://app.fixture.invalid",
 };
 const WORKER_URL = `${env.SUPABASE_URL}/functions/v1/process-instagram-inbound`;
-const GRAPH = "https://graph.instagram.com/v26.0";
-const SEND_URL_A = `${GRAPH}/${IG_A}/messages`;
+const PAGE_A = "104500000000001";
+const GRAPH = "https://graph.facebook.com/v26.0";
+const SEND_URL_A = `${GRAPH}/${PAGE_A}/messages`;
 
 const harnesses: { dispose(): void }[] = [];
 afterEach(() => harnesses.splice(0).forEach((h) => h.dispose()));
@@ -63,7 +64,7 @@ function world() {
       { id: UNIT_B, organization_id: ORG_B, name: "Loja B", slug: "loja-b", timezone: "America/Sao_Paulo", address: null, price_range_max: null },
     ],
     instagram_accounts: [
-      { id: ACC_A, unit_id: UNIT_A, organization_id: ORG_A, ig_user_id: IG_A, status: "connected", connected_at: CONNECTED_AT },
+      { id: ACC_A, unit_id: UNIT_A, organization_id: ORG_A, ig_user_id: IG_A, page_id: PAGE_A, status: "connected", connected_at: CONNECTED_AT },
       { id: ACC_B, unit_id: UNIT_B, organization_id: ORG_B, ig_user_id: IG_B, status: "connected", connected_at: CONNECTED_AT },
     ],
     unit_module_grants: [
@@ -852,6 +853,22 @@ describe("process-instagram-inbound: envio", () => {
     await w.kick();
     expect(w.tables.instagram_processed_messages[0].meta as Row).not.toHaveProperty("sent_message_ids");
   });
+
+  for (const [nome, pageId] of [["nulo", null], ["não numérico", "12ab"]] as const) {
+    it(`page_id ${nome}: marca reauth_required (page_missing), sem Graph, e finaliza o evento`, async () => {
+      const w = world();
+      w.tables.instagram_accounts[0].page_id = pageId;
+      w.enqueue(igBody(entry(IG_A, textMsg("m1", "oi"))));
+      await w.kick();
+      expectCleanIo(w);
+      expect(w.graphCalls).toHaveLength(0);
+      expect(w.sdkRequests).toHaveLength(0);
+      expect(w.trace.find((t) => t.op === "rpc:set_instagram_account_status")?.value)
+        .toEqual({ p_account_id: ACC_A, p_status: "reauth_required", p_error_code: "page_missing", p_expected_connected_at: CONNECTED_AT });
+      expect(w.tables.instagram_inbound_events[0]).toMatchObject({ status: "done", outcome: "discarded_page_missing" });
+      expect(w.harness.logs.join(" | ")).toContain("instagram_account_page_missing");
+    });
+  }
 
   it("erro 190 no envio marca reauth_required", async () => {
     const w = world();

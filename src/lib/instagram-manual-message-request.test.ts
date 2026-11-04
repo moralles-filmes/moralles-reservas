@@ -19,7 +19,8 @@ const IGSID = "6600000000000001";
 const TOKEN = "synthetic-ig-token-manual";
 const CONNECTED_AT = "2026-10-01T12:00:00.123456+00:00";
 const CALLER = "eeeeeeee-0000-4000-8000-000000000001";
-const SEND_URL = `https://graph.instagram.com/v26.0/${IG_USER}/messages`;
+const PAGE = "104500000000001";
+const SEND_URL = `https://graph.facebook.com/v26.0/${PAGE}/messages`;
 const WA_SEND_URL = "https://cloud.datafyapi.com.br/v1/synthetic-phone-id/messages";
 const RECENT_INBOUND = [{ role: "user", timestamp: "2026-10-16T14:00:00.000Z", content: "oi" }];
 
@@ -37,6 +38,7 @@ function setup(options: {
   accountStatus?: string;
   accountUnit?: string;
   accountReadError?: boolean;
+  pageId?: string | null;
   messages?: unknown;
   message?: string;
   replies?: GraphReply[];
@@ -64,6 +66,7 @@ function setup(options: {
   };
   const account = {
     id: ACCOUNT, unit_id: options.accountUnit ?? UNIT, ig_user_id: IG_USER,
+    page_id: options.pageId === undefined ? PAGE : options.pageId,
     status: options.accountStatus ?? "connected", connected_at: CONNECTED_AT,
   };
   const client = {
@@ -321,6 +324,21 @@ describe("send-manual-message pelo Instagram", () => {
     expect((await x.request()).status).toBe(200);
     expect(x.posts).toHaveLength(1);
     expect(x.reads.some((read) => read.startsWith("instagram_settings:"))).toBe(false);
+  });
+
+  it("page_id nulo ou inválido marca reauth_required (page_missing), sem Graph, e dá 409 INSTAGRAM_REAUTH_REQUIRED", async () => {
+    for (const pageId of [null, "12ab"]) {
+      const x = setup({ pageId });
+      const response = await x.request();
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: "INSTAGRAM_REAUTH_REQUIRED" });
+      expect(x.posts).toHaveLength(0);
+      expect(x.rpcs.find((call) => call.name === "set_instagram_account_status")?.args).toEqual({
+        p_account_id: ACCOUNT, p_status: "reauth_required", p_error_code: "page_missing", p_expected_connected_at: CONNECTED_AT,
+      });
+      expect(x.recorded()).toHaveLength(0);
+      expect(x.harness.logs.join(" | ")).toContain("instagram_account_page_missing");
+    }
   });
 
   it("código 190 marca reauth_required e dá 409 INSTAGRAM_REAUTH_REQUIRED", async () => {
