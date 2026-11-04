@@ -24,6 +24,7 @@ import {
   readFailed,
   unitHasActiveHall,
 } from "./adapters/hall-seating.ts";
+import { calendarDayDiff, todayBrtIso } from "./brt-date-core.ts";
 
 export type { SeatChoice } from "./availability-core.ts";
 
@@ -288,10 +289,9 @@ export async function checkAvailability(
 
   // ── 0. Janela de reserva (booking_window_days) ──────────────────────────────
   if (bookingWindowDays != null) {
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const target = new Date(`${date}T00:00:00Z`);
-    const diffDays = Math.floor((target.getTime() - today.getTime()) / 86_400_000);
+    // "Hoje" é o dia civil de Brasília: com setUTCHours, das 21h à meia-noite BRT
+    // a janela ganhava um dia a mais.
+    const diffDays = calendarDayDiff(todayBrtIso(), date);
     if (diffDays > bookingWindowDays) {
       return {
         available: false,

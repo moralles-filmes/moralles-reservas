@@ -777,7 +777,8 @@ function createReservationProducerIO(base: {
         is(key: string, value: null) { filters[key] = value; return q; },
         in(key: string, value: unknown[]) { if (!['key','id','customer_id','status'].includes(key) || !Array.isArray(value)) fail('in'); extra.push(row => value.includes(row[key])); return q; },
         not(key: string, op: string, value: unknown) { if (op !== 'is' || value !== null) fail('not'); extra.push(row => row[key] !== null); return q; },
-        gt(key: string, value: string) { extra.push(row => typeof row[key] === 'string' && Date.parse(row[key]) > Date.parse(value)); return q; },
+        gt(key: string, value: string) { if (key === 'id') { extra.push(row => typeof row.id === 'string' && row.id > value); return q; } // cursor keyset
+          extra.push(row => typeof row[key] === 'string' && Date.parse(row[key]) > Date.parse(value)); return q; },
         gte(key: string, value: string) { extra.push(row => typeof row[key] === 'string' && Date.parse(row[key]) >= Date.parse(value)); return q; },
         lte(key: string, value: unknown) { if (!['next_attempt_at','starts_at','date'].includes(key) || typeof value !== 'string' || !Number.isFinite(Date.parse(value))) fail('lte');
           extra.push(row => typeof row[key] === 'string' && Date.parse(row[key]) <= Date.parse(String(value))); return q; },
@@ -785,7 +786,7 @@ function createReservationProducerIO(base: {
         or(value: string) { const prefix = 'ends_at.is.null,ends_at.gt.';
           if (table !== 'organization_entitlement_overrides' || !value.startsWith(prefix) || !Number.isFinite(Date.parse(value.slice(prefix.length)))) fail('or');
           extra.push(row => row.ends_at === null || typeof row.ends_at === 'string' && Date.parse(row.ends_at) > Date.parse(value.slice(prefix.length))); return q; },
-        order(key: string, options: { ascending: boolean }) { if (!['revision','due_date'].includes(key) || typeof options.ascending !== 'boolean') fail('order'); sort = { key, ascending: options.ascending }; return q; },
+        order(key: string, options: { ascending: boolean }) { if (!['revision','due_date','id'].includes(key) || typeof options.ascending !== 'boolean') fail('order'); sort = { key, ascending: options.ascending }; return q; },
         limit(value: number) { limit = value; return q; },
         update(value: Record<string, unknown>) { patch = value; return q; }, insert(value: Record<string, unknown>) { insert = value; return q; },
         single: () => execute(true), maybeSingle: () => execute(true),
