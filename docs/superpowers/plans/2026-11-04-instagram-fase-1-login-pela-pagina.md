@@ -276,7 +276,7 @@
   - pré-voo 79a, 79, 08, 38 e 67d;
   - review da branch inteira (`superpowers:requesting-code-review`), `saas-shield-br:pre-deploy` e `saas-shield-br:secret-scan`.
 - [x] **Passo 4:** atualizar as caixas deste plano, as Evidências e a memória do módulo. Commit `docs(instagram): release do login pela Página`.
-- [ ] **Passo 5:** parar e pedir autorização para o push. Daí em diante vale o Bloco 6 do plano original, um passo autorizado por vez.
+- [x] **Passo 5:** parar e pedir autorização para o push. Daí em diante vale o Bloco 6 do plano original, um passo autorizado por vez.
 
 ## Evidências
 
@@ -334,6 +334,26 @@
 - 6 Migration `20261104130000`: PASS_WITH_WARNINGS, 0 bloqueante. P3: `NOT VALID` + `VALIDATE` na mesma transação sem ganho; rollback comentado perde `page_id`.
 - 7 Vercel: o `vercel.json` só muda pela main (`fd453e9`: `deploymentEnabled {"main": true, "**": false}`); a prévia do PR #66 não builda (decisão em aberto na Task 6.2 do plano original).
 - 8 Edge Functions: `instagram-connect` e `send-manual-message` PASS_WITH_WARNINGS, `process-instagram-inbound` e `_shared` PASS, 0 P0/P1. P2 anteriores: `cors.ts` aceita qualquer `*.vercel.app`; CORS `*` em `send-manual-message`; `appendErr.message` sem redact no caminho WhatsApp. P3 novos: `page_missing` grava o status antes do gate de grant no worker; operador aciona a marcação `page_missing` no envio manual (o CAS limita).
+
+**Bloco 6, release (2026-11-04).** Cada passo foi autorizado pelo responsável, um por vez.
+- **Push** de `8915fe0` e corpo do PR #66 atualizado.
+- **Antes do `db push`:** o remoto era igual ao local, menos a `20261104130000`. Não havia migration só no remoto nem EF `instagram-*` publicada, e havia 0 contas.
+- **`db push`** rodado pelo responsável. Conferido depois:
+  - só restam os crons `instagram-inbound-sweep` e `-purge`;
+  - existe uma única store, a de 8 argumentos, só para `postgres` e `service_role`;
+  - o CHECK do `page_id` foi validado.
+- **`secrets set`** rodado pelo responsável: `INSTAGRAM_APP_ID`, `INSTAGRAM_LOGIN_CONFIG_ID` e `INSTAGRAM_OAUTH_STATE_SECRET`. Isso reiniciou todas as EFs, que ganharam +1 na versão com o mesmo código.
+- **Deploys,** na ordem: `instagram-connect` (v1, `verify_jwt` true), `process-instagram-inbound` + `webhook-instagram`, `send-manual-message`, `webhook-whatsapp`, depois `send-scheduled-whatsapp`, `create-reservation`, `update-reservation` e `create-manual-reservation`. Depois disso, o sweep só devolve 200 (o 404 acabou).
+- **Testes de fumaça em produção,** feitos pelo responsável:
+  - o envio manual chegou ao celular;
+  - o agente respondeu, sem erro nos logs;
+  - a reserva foi criada e a confirmação chegou no WhatsApp;
+  - `update-reservation` não foi chamada, porque a edição só existe pelo agente.
+- **Prévia manual da Vercel** (`dpl_B7am4Wj9xBU42GF9QeN2wuLWx2hB`, commit `8915fe0`):
+  - o responsável gravou o `instagram_app_secret` (chave do app Moralles Reservas);
+  - as telas compartilhadas ficaram como antes.
+  - O `meta_app_secret` já guardava a mesma chave desde 03/11. Isso é inofensivo, porque o WhatsApp oficial não lê esse segredo. A nota da spec foi corrigida.
+- **Pendente:** o merge e o piloto na Moralles (módulo, webhook da Meta, app Live, conexão e E2E).
 
 **Rulings (controller e responsável) e custo se errado.**
 - Remoção de `parseLongLived`/`parseMe` e das funções antigas do adapter na Task 5, não nas 1/3: cada task fica verde e o refresh morre junto. Custo: código morto por duas tasks.
