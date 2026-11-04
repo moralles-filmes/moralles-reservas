@@ -755,6 +755,58 @@ select pg_temp.caso(8630, 'K-CP controle: sem o guard, salão de B entra num lin
   $s$drop trigger seat_choice_links_guard on public.seat_choice_links; $s$ || pg_temp.link('{SB}'),
   'ok');
 
+-- ═══ Correções dos gates da E1 (X-5, A-*, R-16/17, K-4) ═════════════════════
+-- Cliente FZ de outra organização (OZ) e salão vazio SV de A, criados só nos
+-- casos que os usam.
+insert into t_ids values
+  ('OZ', 'a0d81000-0000-4000-8000-0000000000c9'), ('FZ', 'a0d81000-0000-4000-8000-0000000000f9'),
+  ('SV', 'a0d81000-0000-4000-8000-0000000000d9'), ('N9', 'a0d81000-0000-4000-8000-000000000709');
+create function pg_temp.cliente_fz() returns text language sql as $f$
+  select $q$insert into public.organizations (id, name) values ('{OZ}', 'Outra org');
+    insert into public.customers (id, organization_id, name) values ('{FZ}', '{OZ}', 'Cliente de fora');$q$
+$f$;
+
+select pg_temp.caso(8631, 'X-5 UPDATE legado troca hora e mesa com a mesa antiga ocupada na hora nova', 'postgres',
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || pg_temp.res('N2', 'T13', 'D1', '21:00') || $s$
+  update public.reservations set table_id = '{T14}', time = '21:00' where id = '{N1}'; select 'x'$s$, 'ok',
+  $c$pg_temp.flags('{N1}') = '14:t/f' and pg_temp.flags('{N2}') = '13:t/f'$c$);
+select pg_temp.caso(8632, 'X-5 controle: com a janela antes da sincronia, o mesmo UPDATE dá 23P01', 'postgres',
+  $s$drop trigger reservations_occupant_sync_slot on public.reservations;
+  create trigger reservations_occupant_aslot after update of date, time, status, released_at on public.reservations
+    for each row execute function app_private.refresh_occupant_slot();
+  $s$ || pg_temp.res('N1', 'T13', 'D1', '19:00') || pg_temp.res('N2', 'T13', 'D1', '21:00') || $s$
+  update public.reservations set table_id = '{T14}', time = '21:00' where id = '{N1}'; select 'x'$s$,
+  '23P01%occupant_tables_no_overlap%');
+select pg_temp.caso(8633, 'A-1 anon insere reserva com mesa', 'anon',
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$ select 'x'$s$, '42501 reservation_table_forbidden');
+select pg_temp.caso(8634, 'A-2 anon insere reserva sem mesa com table_choice', 'anon',
+  $s$insert into public.reservations (id, customer_id, date, time, party_size, status, reservation_code, unit_id, table_choice)
+    values ('{N1}', '{F1}', '{D1}', '19:00', 4, 'pending', 'P83-N1', '{A}', 'customer'); select 'x'$s$,
+  '42501 reservation_table_forbidden');
+select pg_temp.caso(8635, 'A-3 anon sem mesa segue gravando (caminho anon legado intacto)', 'anon',
+  pg_temp.res('N1', null, 'D1', '19:00') || $s$ select 'x'$s$, 'ok');
+select pg_temp.caso(8636, 'R-16 conflito não mostra nome de cliente de outra organização', 'postgres',
+  pg_temp.cliente_fz() || pg_temp.res('N1', 'T14', 'D1', '19:00') || $s$
+  insert into public.reservations (id, customer_id, table_id, date, time, party_size, status, reservation_code, unit_id)
+    values ('{N9}', '{FZ}', '{T13}', '{D1}', '19:30', 2, 'confirmed', 'P83-N9', '{A}');
+  $s$ || pg_temp.como('OPE') || $s$
+  select public.set_occupant_tables('reservation', '{N1}', array['{T13}']::uuid[])::text$s$,
+  'ok', $c$$1 like '%"status": "conflict"%' and $1 like '%"customer_name": null%' and $1 not like '%Cliente de fora%'$c$);
+select pg_temp.caso(8637, 'R-17 insert_reservation_with_tables com cliente de outra organização', 'postgres',
+  pg_temp.cliente_fz() || $s$ select set_config('role', 'service_role', true);
+  select public.insert_reservation_with_tables($s$ || pg_temp.linha('N1', '19:00', ', ''customer_id'', ''{FZ}''')
+    || $s$, array['{T13}']::uuid[])::text$s$,
+  '22023 reservation_row_invalid');
+select pg_temp.caso(8638, 'K-4a salão com link de escolha não muda de unidade', 'postgres',
+  $s$insert into public.halls (id, unit_id, name) values ('{SV}', '{A}', 'Vazio 83');
+  $s$ || pg_temp.link('{SV}') || $s$;
+  $s$ || pg_temp.como('PA') || $s$
+  update public.halls set unit_id = '{B}' where id = '{SV}'; select 'x'$s$, '42501 hall_unit_mismatch');
+select pg_temp.caso(8639, 'K-4b controle: o mesmo salão sem link muda de unidade', 'postgres',
+  $s$insert into public.halls (id, unit_id, name) values ('{SV}', '{A}', 'Vazio 83');
+  $s$ || pg_temp.como('PA') || $s$
+  update public.halls set unit_id = '{B}' where id = '{SV}'; select 'x'$s$, 'ok');
+
 -- ═══ Resultado ═══════════════════════════════════════════════════════════════
 \o
 \pset footer off

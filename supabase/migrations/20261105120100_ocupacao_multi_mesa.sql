@@ -28,8 +28,9 @@
 --
 -- Rollback (migration nova, nunca edição desta): drop das RPCs
 -- set_occupant_tables, set_occupant_party_size e
--- insert_reservation_with_tables; drop dos triggers *_occupant_* e
--- reservations_table_unit_guard e das funções app_private desta migration;
+-- insert_reservation_with_tables; drop dos triggers *_occupant_*,
+-- reservations_table_unit_guard e reservations_anon_table_guard e das funções
+-- app_private desta migration;
 -- drop de occupancy_events e occupant_tables. As colunas table_choice e
 -- original_party_size podem ficar (inertes).
 -- Pré-voo: supabase/tests/local-preflight/83-escolha-de-mesa.sql (README §83).
@@ -266,10 +267,40 @@ comment on function app_private.refresh_occupant_slot() is
   'Recalcula janela e blocks_slot das linhas da reserva quando data, hora, status ou liberação mudam; mudar data ou hora desfaz overlap_ok. Pode levantar 23P01.';
 revoke all on function app_private.refresh_occupant_slot() from public, anon, authenticated, service_role;
 
+-- O nome ordena DEPOIS de reservations_occupant_sync (triggers do mesmo evento
+-- disparam por nome): num UPDATE que troca mesa e hora juntas, o sync troca as
+-- linhas já com a janela nova; se esta rodasse antes, gravaria a janela nova
+-- na mesa antiga e daria 23P01 falso contra quem ocupa a mesa antiga.
 drop trigger if exists reservations_occupant_slot on public.reservations;
-create trigger reservations_occupant_slot
+drop trigger if exists reservations_occupant_sync_slot on public.reservations;
+create trigger reservations_occupant_sync_slot
   after update of date, time, status, released_at on public.reservations
   for each row execute function app_private.refresh_occupant_slot();
+
+-- ─── Anon não escolhe mesa por escrita direta ────────────────────────────────
+-- A policy anon_insert_reservations (023b) segue viva e não restringe coluna.
+-- Nenhum caminho do produto grava reservations como anon (a reserva pública
+-- vai pela EF com service role), mas com a exclusão por duração uma linha anon
+-- com mesa trancaria a janela inteira e pularia bookable e combinações.
+-- Fechar a policy inteira é decisão à parte; aqui só a mesa.
+create or replace function app_private.guard_anon_reservation_table()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.role() = 'anon'
+     and (new.table_id is not null or new.table_choice is not null or new.original_party_size is not null) then
+    raise exception 'reservation_table_forbidden' using errcode = '42501';
+  end if;
+  return new;
+end
+$$;
+comment on function app_private.guard_anon_reservation_table() is
+  'reservations: anon não grava table_id, table_choice nem original_party_size (42501 reservation_table_forbidden). A mesa do cliente vem só pela EF (service role).';
+revoke all on function app_private.guard_anon_reservation_table() from public, anon, authenticated, service_role;
+
+drop trigger if exists reservations_anon_table_guard on public.reservations;
+create trigger reservations_anon_table_guard
+  before insert or update of table_id, table_choice, original_party_size on public.reservations
+  for each row execute function app_private.guard_anon_reservation_table();
 
 -- ─── Backfill ────────────────────────────────────────────────────────────────
 -- Reservas com mesa de ontem (BRT) em diante, em ordem de chegada do pedido:
@@ -525,10 +556,11 @@ begin
     into v_conflicts, v_conflict_tables
     from (select r.id, r.date, r.time, cu.name as customer_name, t.number, ot.table_id
             from public.occupant_tables ot
-            join public.reservations r on r.id = ot.reservation_id
+            join public.reservations r on r.id = ot.reservation_id and r.unit_id = v_unit
             join public.tables t on t.id = ot.table_id
             left join public.customers cu on cu.id = r.customer_id
-           where ot.table_id = any (p_table_ids)
+                  and cu.organization_id = (select u.organization_id from public.units u where u.id = v_unit)
+           where ot.unit_id = v_unit and ot.table_id = any (p_table_ids)
              and not (v_is_res and r.id = p_id)
              and r.status in ('pending', 'confirmed') and r.released_at is null
              and ot.slot && v_window) c;
@@ -661,6 +693,13 @@ begin
     raise exception 'reservation_row_invalid' using errcode = '22023';
   end if;
   v_unit := (p_row ->> 'unit_id')::uuid;
+
+  -- Cliente da organização da unidade (o service role não passa por RLS).
+  if not exists (select 1 from public.customers c
+                   join public.units u on u.organization_id = c.organization_id
+                  where c.id = (p_row ->> 'customer_id')::uuid and u.id = v_unit) then
+    raise exception 'reservation_row_invalid' using errcode = '22023';
+  end if;
 
   if (select count(*) from public.tables t
        where t.id = any (p_table_ids) and t.unit_id = v_unit and t.active and t.bookable) <> v_n then

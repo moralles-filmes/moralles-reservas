@@ -3036,3 +3036,24 @@ os canais de A e B nascem dentro da transação desfeita do 83.
 O que NÃO prova: o advisory lock do limite contra duas sessões simultâneas
 (mesmo desenho da `check_public_waitlist_rate_limit`) e a leitura do link pela
 EF (Task 6).
+
+Correções dos gates `saas-shield-br` da E1 (nas três migrations, ainda não
+aplicadas em lugar nenhum):
+
+- **X-5 (8631–8632):** UPDATE legado que troca hora e mesa juntas, com a mesa
+  antiga ocupada na hora nova, passa (o trigger da janela agora se chama
+  `reservations_occupant_sync_slot` e roda depois da sincronia). Controle: com
+  a janela antes da sincronia, o mesmo UPDATE dá `23P01`.
+- **A-1…A-3 (8633–8635):** anon não grava `table_id` nem `table_choice` em
+  `reservations` (`42501 reservation_table_forbidden`); anon sem mesa segue
+  gravando como hoje (a policy `anon_insert_reservations` da 023b continua).
+- **R-16, R-17 (8636–8637):** o conflito da `set_occupant_tables` não mostra
+  nome de cliente de outra organização; `insert_reservation_with_tables` com
+  cliente de outra organização → `22023 reservation_row_invalid`.
+- **K-4 (8638–8639):** salão com link de escolha não muda de unidade;
+  controle: o mesmo salão sem link muda.
+
+**Resultados observados em 05/11/2026** (contêiner novo): **126/126** com as
+três migrations e 126/126 com as três reaplicadas; 81 em 83/83 e 82 em 52/52;
+backfill `7 reservas, 1 com overlap_ok, 1 com mesa de outra unidade ignoradas`
+e 83c PASS.

@@ -78,6 +78,36 @@ create trigger seat_choice_links_guard
   before insert or update on public.seat_choice_links
   for each row execute function app_private.guard_seat_choice_link();
 
+-- Salão com link de escolha também não muda de unidade (o link apontaria para
+-- outro tenant). Mesmo corpo da 20261105120000 com a perna de seat_choice_links.
+create or replace function app_private.guard_table_hall_unit()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if tg_table_name = 'tables' then
+    -- FOR SHARE trava o salão contra o UPDATE concorrente de halls.unit_id, que
+    -- trava a linha antes deste trigger: mover o salão e pendurar mesa nele não passam juntos.
+    if new.hall_id is not null then
+      perform 1 from public.halls h where h.id = new.hall_id and h.unit_id = new.unit_id for share;
+      if not found then
+        raise exception 'hall_unit_mismatch' using errcode = '42501';
+      end if;
+    end if;
+  elsif new.unit_id is distinct from old.unit_id and (
+          exists (select 1 from public.tables t where t.hall_id = old.id)
+          or exists (select 1 from public.hall_schedules s where s.hall_id = old.id)
+          or exists (select 1 from public.table_blocks b where b.hall_id = old.id)
+          or exists (select 1 from public.special_dates d where d.hall_id = old.id)
+          or exists (select 1 from public.table_combinations c where c.hall_id = old.id)
+          or exists (select 1 from public.seat_choice_links l where l.hall_id = old.id)) then
+    raise exception 'hall_unit_mismatch' using errcode = '42501';
+  end if;
+  return new;
+end
+$$;
+comment on function app_private.guard_table_hall_unit() is
+  'Recusa tables.hall_id de salão de outra unidade (ou inexistente) e mudança de halls.unit_id com mesa, horário, bloqueio, data especial, combinação ou link de escolha no salão: 42501 hall_unit_mismatch. Vale para todos os papéis.';
+revoke all on function app_private.guard_table_hall_unit() from public, anon, authenticated, service_role;
+
 -- ─── Limite de acesso do mapa público ────────────────────────────────────────
 create table if not exists public.seat_map_rate_events (
   id bigserial primary key,
