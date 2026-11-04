@@ -63,8 +63,8 @@ Convenções em [src/hooks/useDashboardMetrics.ts](src/hooks/useDashboardMetrics
 - **Taxa de no-show** = `no_show / (confirmed + no_show) * 100`. Mesma regra.
 - **"Pessoas esperadas hoje"** soma apenas `pending` ou `confirmed`. Canceladas e no-show excluídas.
 - **`KpiCard.formatValue`** renderiza "—" para `null`/`undefined`/`NaN`/`Infinity`. Suffix ("%", "⭐") só com número finito.
-- **Datas de eventos com timestamp UTC** (waitlist/walk_ins/notifications_sent): use `isoToLocalDate(iso)` pra agrupar por dia local — `.slice(0, 10)` em UTC atribui dia errado em eventos próximos da meia-noite BRT.
-- **`getDay()` em timestamp UTC** retorna dia da semana no fuso LOCAL do browser. Pra waitlist/walk-ins parsear via `new Date(isoToLocalDate(iso) + "T12:00:00").getDay()`. Pra reservas, `r.date` (YYYY-MM-DD) já é dia local.
+- **Relatório recorta e agrupa timestamps em horário de Brasília com [src/lib/brt.ts](src/lib/brt.ts), nunca pelo fuso do navegador nem UTC.** Período = `brtDayBounds(localDateKey(from), localDateKey(to))` com `gte` início e `lt` fim exclusivo; dia/hora/dia da semana via `brtDateOf`/`brtHourOf`/`brtDowOf`. `toISOString().slice(0,10)` do fim do picker (23:59 local) cai no dia seguinte, e `T00:00:00Z` puxa 21h–24h da véspera. Pra reservas, `r.date` já é o dia civil.
+- **Leitura de relatório usa `fetchAllPages` de [src/lib/fetch-all-pages.ts](src/lib/fetch-all-pages.ts) com `.order("id")` + `.range`:** `.limit(n)` acima de 1000 não vence o corte do PostgREST.
 - **Ordenação de timestamps** — sempre `new Date(iso).getTime()` numérico, nunca `localeCompare` (mistura de formatos com/sem Z / milissegundos quebra).
 
 ## Painel operacional

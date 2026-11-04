@@ -1,7 +1,15 @@
 import { useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { isoToLocalDate } from "@/lib/utils";
+import {
+  brtDateOf,
+  brtDayBounds,
+  brtDowOf,
+  eachDateKey,
+  localDateKey,
+} from "@/lib/brt";
+import { fetchAllPages } from "@/lib/fetch-all-pages";
+import { ALL_BUCKETS, bucketFor } from "@/lib/relatorio-passantes";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -99,47 +107,6 @@ export interface FluxoData {
 
 const DOW_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
-function toIsoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-function eachDay(from: Date, to: Date): string[] {
-  const days: string[] = [];
-  const cur = new Date(from);
-  cur.setHours(0, 0, 0, 0);
-  const end = new Date(to);
-  end.setHours(0, 0, 0, 0);
-  while (cur <= end) {
-    days.push(toIsoDate(cur));
-    cur.setDate(cur.getDate() + 1);
-  }
-  return days;
-}
-
-function bucketFor(partySize: number): string {
-  if (partySize <= 2) return "01-02";
-  if (partySize <= 4) return "03-04";
-  if (partySize <= 6) return "05-06";
-  if (partySize <= 8) return "07-08";
-  if (partySize <= 10) return "09-10";
-  if (partySize <= 12) return "11-12";
-  if (partySize <= 16) return "13-16";
-  if (partySize <= 19) return "17-19";
-  return "20+";
-}
-
-const ALL_BUCKETS = [
-  "01-02",
-  "03-04",
-  "05-06",
-  "07-08",
-  "09-10",
-  "11-12",
-  "13-16",
-  "17-19",
-  "20+",
-];
-
 const CANAL_LABEL: Record<ReservaCanal, string> = {
   whatsapp: "WhatsApp",
   instagram: "Instagram",
@@ -204,48 +171,49 @@ export function useFluxoClientes(
   range: DateRange,
   ticketMedioReais: number | null,
 ) {
-  const fromIso = toIsoDate(range.from);
-  const toIso = toIsoDate(range.to);
+  const fromIso = localDateKey(range.from);
+  const toIso = localDateKey(range.to);
 
   const query = useQuery({
     queryKey: ["fluxo-clientes", unitId, fromIso, toIso],
     placeholderData: keepPreviousData,
     queryFn: async () => {
-      const startTs = `${fromIso}T00:00:00.000Z`;
-      const endTs = new Date(range.to);
-      endTs.setHours(23, 59, 59, 999);
-      const endTsIso = endTs.toISOString();
+      const { startIso, endIsoExclusive } = brtDayBounds(fromIso, toIso);
 
-      const [resv, wait, walk] = await Promise.all([
-        supabase
-          .from("reservations")
-          .select("id, date, time, party_size, status, source")
-          .eq("unit_id", unitId)
-          .gte("date", fromIso)
-          .lte("date", toIso),
-        supabase
-          .from("waitlist")
-          .select("id, party_size, status, created_at, notified_at")
-          .eq("unit_id", unitId)
-          .gte("created_at", startTs)
-          .lte("created_at", endTsIso),
-        supabase
-          .from("walk_ins")
-          .select("id, party_size, status, arrived_at")
-          .eq("unit_id", unitId)
-          .gte("arrived_at", startTs)
-          .lte("arrived_at", endTsIso),
+      const [reservations, waitlist, walkIns] = await Promise.all([
+        fetchAllPages<ReservationRow>((from, to) =>
+          supabase
+            .from("reservations")
+            .select("id, date, time, party_size, status, source")
+            .eq("unit_id", unitId)
+            .gte("date", fromIso)
+            .lte("date", toIso)
+            .order("id")
+            .range(from, to),
+        ),
+        fetchAllPages<WaitlistRow>((from, to) =>
+          supabase
+            .from("waitlist")
+            .select("id, party_size, status, created_at, notified_at")
+            .eq("unit_id", unitId)
+            .gte("created_at", startIso)
+            .lt("created_at", endIsoExclusive)
+            .order("id")
+            .range(from, to),
+        ),
+        fetchAllPages<WalkInRow>((from, to) =>
+          supabase
+            .from("walk_ins")
+            .select("id, party_size, status, arrived_at")
+            .eq("unit_id", unitId)
+            .gte("arrived_at", startIso)
+            .lt("arrived_at", endIsoExclusive)
+            .order("id")
+            .range(from, to),
+        ),
       ]);
 
-      if (resv.error) throw resv.error;
-      if (wait.error) throw wait.error;
-      if (walk.error) throw walk.error;
-
-      return {
-        reservations: (resv.data ?? []) as ReservationRow[],
-        waitlist: (wait.data ?? []) as WaitlistRow[],
-        walkIns: (walk.data ?? []) as WalkInRow[],
-      };
+      return { reservations, waitlist, walkIns };
     },
     enabled: !!unitId,
   });
@@ -489,7 +457,7 @@ export function useFluxoClientes(
     };
 
     // ── Daily flow ─────────────────────────────────────────────────────────
-    const days = eachDay(range.from, range.to);
+    const days = eachDateKey(fromIso, toIso);
     const daily: DailyFlow[] = days.map((d) => ({
       date: d,
       label: d.slice(8, 10) + "/" + d.slice(5, 7),
@@ -510,14 +478,14 @@ export function useFluxoClientes(
       }
     }
     for (const w of filaSeated) {
-      const d = dailyMap[isoToLocalDate(w.created_at)];
+      const d = dailyMap[brtDateOf(w.created_at)];
       if (d) {
         d.fila_mesas += 1;
         d.fila_pessoas += w.party_size;
       }
     }
     for (const w of walkSeated) {
-      const d = dailyMap[isoToLocalDate(w.arrived_at)];
+      const d = dailyMap[brtDateOf(w.arrived_at)];
       if (d) {
         d.passante_mesas += 1;
         d.passante_pessoas += w.party_size;
@@ -554,14 +522,14 @@ export function useFluxoClientes(
       dow[d].reserva_pessoas += r.party_size;
     }
     for (const w of waitlist) {
-      const d = new Date(isoToLocalDate(w.created_at) + "T12:00:00").getDay();
+      const d = brtDowOf(w.created_at);
       if (d >= 0 && d < 7) {
         dow[d].fila_mesas += 1;
         dow[d].fila_pessoas += w.party_size;
       }
     }
     for (const w of walkIns) {
-      const d = new Date(isoToLocalDate(w.arrived_at) + "T12:00:00").getDay();
+      const d = brtDowOf(w.arrived_at);
       if (d >= 0 && d < 7) {
         dow[d].passante_mesas += 1;
         dow[d].passante_pessoas += w.party_size;
@@ -583,7 +551,7 @@ export function useFluxoClientes(
       dow: dowReordered,
       origem,
     };
-  }, [query.data, range.from, range.to, ticketMedioReais]);
+  }, [query.data, fromIso, toIso, ticketMedioReais]);
 
   return {
     data,
