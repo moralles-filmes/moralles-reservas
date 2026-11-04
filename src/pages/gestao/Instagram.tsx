@@ -33,9 +33,31 @@ import {
 const DM_NOTICE =
   "Respostas enviadas pelo app do Instagram não pausam a IA. Para atender você mesmo, use Assumir em Conversas.";
 
-function formatDate(value: string | null | undefined) {
-  return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleDateString("pt-BR") : "Não disponível";
+const WARN_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** DD/MM/AAAA no fuso de São Paulo, independente do fuso do navegador. */
+function formatDateBrt(ms: number) {
+  return new Date(ms).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "numeric" });
 }
+
+type Deadline = { kind: "none" } | { kind: "ok" | "soon" | "expired"; date: string };
+
+/** Prazo de acesso aos dados (90 dias da última atividade, renovado ao reconectar). */
+function deadlineOf(value: string | null | undefined, now: number): Deadline {
+  const ms = value ? Date.parse(value) : NaN;
+  if (!Number.isFinite(ms)) return { kind: "none" };
+  const date = formatDateBrt(ms);
+  if (ms <= now) return { kind: "expired", date };
+  return { kind: ms - now <= WARN_WINDOW_MS ? "soon" : "ok", date };
+}
+
+const PREREQUISITES = [
+  "O Instagram da loja precisa ser profissional e estar ligado a uma Página do Facebook.",
+  "Você precisa administrar ou moderar essa Página.",
+  "No app do Instagram, ligue Configurações › Mensagens e respostas ao story › Controles de mensagens › Ferramentas conectadas › Permitir acesso às mensagens.",
+];
+
+const START_ERROR = "Não foi possível iniciar a conexão com o Facebook. Tente novamente.";
 
 function RetryLine({ text, onRetry }: { text: string; onRetry: () => void }) {
   return (
@@ -121,10 +143,10 @@ function AccountPanel({ unitId, account }: { unitId: string; account: InstagramA
       setRedirecting(true);
       if (!redirectToAuthorize(authorize_url)) {
         setRedirecting(false);
-        toast.error("Não foi possível iniciar a conexão com o Instagram. Tente novamente.");
+        toast.error(START_ERROR);
       }
     } catch (e) {
-      toast.error(actionError(e, "Não foi possível iniciar a conexão com o Instagram. Tente novamente."));
+      toast.error(actionError(e, START_ERROR));
     }
   }
 
@@ -151,10 +173,16 @@ function AccountPanel({ unitId, account }: { unitId: string; account: InstagramA
     return (
       <div className="space-y-3 text-sm">
         <p className="text-muted-foreground">Nenhuma conta do Instagram conectada.</p>
-        <Button onClick={connect} disabled={start.isPending || redirecting}>Conectar Instagram</Button>
+        <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+          {PREREQUISITES.map((t) => <li key={t}>{t}</li>)}
+        </ul>
+        <Button onClick={connect} disabled={start.isPending || redirecting}>Conectar pelo Facebook</Button>
       </div>
     );
   }
+
+  const deadline = reauth ? ({ kind: "none" } as Deadline) : deadlineOf(account.token_expires_at, Date.now());
+  const needsReconnect = reauth || deadline.kind === "soon" || deadline.kind === "expired";
 
   return (
     <div className="space-y-4 text-sm">
@@ -163,14 +191,18 @@ function AccountPanel({ unitId, account }: { unitId: string; account: InstagramA
           <span className="font-medium">{account.username ? `@${account.username}` : "Conta sem nome de usuário"}</span>
           {reauth ? <Badge variant="destructive">Reconectar necessário</Badge> : <Badge variant="secondary">Conectada</Badge>}
         </div>
-        {account.token_expires_at && <p>Acesso válido até {formatDate(account.token_expires_at)}</p>}
+        {deadline.kind === "ok" && <p className="text-muted-foreground">Reconecte até {deadline.date} para manter o acesso.</p>}
+        {deadline.kind === "soon" && <p className="font-medium text-warning">Reconecte até {deadline.date} para manter o acesso.</p>}
+        {deadline.kind === "expired" && (
+          <p className="font-medium text-destructive">O acesso aos dados venceu em {deadline.date}. Reconecte para voltar a responder.</p>
+        )}
         {reauth && <p className="text-muted-foreground">O acesso expirou ou foi revogado. Reconecte para voltar a receber mensagens.</p>}
         {!account.subscribed && !reauth && (
           <p className="text-muted-foreground">O recebimento de mensagens está inativo.</p>
         )}
       </div>
       <div className="flex flex-wrap gap-2">
-        {reauth && <Button onClick={connect} disabled={start.isPending || redirecting}>Reconectar Instagram</Button>}
+        {needsReconnect && <Button onClick={connect} disabled={start.isPending || redirecting}>Reconectar pelo Facebook</Button>}
         {!account.subscribed && !reauth && (
           <Button variant="outline" onClick={doResubscribe} disabled={resubscribe.isPending}>Assinar de novo</Button>
         )}

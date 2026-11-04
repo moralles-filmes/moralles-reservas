@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 const submittedCodes = new Set<string>();
 
 const MSG_MISSING = "Não encontramos o retorno da Meta nesta página. Se ainda não conectou, inicie a conexão de novo.";
-const MSG_DENIED = "A autorização no Instagram não foi concluída. Inicie a conexão de novo se quiser conectar.";
+const MSG_DENIED = "A autorização no Facebook não foi concluída. Inicie a conexão de novo se quiser conectar.";
 const MSG_STATE = "A conexão não pôde ser confirmada (a sessão de segurança não confere). Inicie a conexão de novo.";
 const MSG_GENERIC = "Não foi possível concluir a conexão com o Instagram. Tente novamente.";
 

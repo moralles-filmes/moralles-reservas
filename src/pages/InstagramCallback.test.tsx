@@ -90,6 +90,18 @@ describe("InstagramCallback", () => {
     expect(screen.getByRole("link", { name: "Voltar ao Instagram" })).toBeTruthy();
   });
 
+  it("error na URL (autorização negada): mensagem do Facebook e sem chamar a EF", async () => {
+    open("?error=access_denied&error_reason=user_denied", null);
+    expect((await screen.findByRole("alert")).textContent).toBe("A autorização no Facebook não foi concluída. Inicie a conexão de novo se quiser conectar.");
+    expect(mocks.connectCallback).not.toHaveBeenCalled();
+  });
+
+  it("409 de várias Páginas mostra a mensagem do backend", async () => {
+    mocks.connectCallback.mockRejectedValue(new InstagramApiError("Há mais de uma conta do Instagram ligada às suas Páginas.", 409));
+    open(`?code=${code()}&state=S1`, "S1");
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Há mais de uma conta do Instagram ligada às suas Páginas."));
+  });
+
   it("sem usuário autenticado vai ao login sem chamar a EF", async () => {
     mocks.auth.user = null;
     open(`?code=${code()}&state=S1`, "S1");

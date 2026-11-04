@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -48,7 +48,7 @@ beforeEach(() => {
   mocks.api.readInstagramAccount.mockResolvedValue(account);
   mocks.api.readInstagramSettings.mockResolvedValue({ unit_id: "u1", dm_enabled: false, updated_at: null });
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("Página Instagram da loja", () => {
   it("operador é redirecionado e nunca chama status", async () => {
@@ -67,16 +67,78 @@ describe("Página Instagram da loja", () => {
 
   it("conectar guarda o state no sessionStorage antes de redirecionar", async () => {
     mocks.api.readInstagramAccount.mockResolvedValue(null);
-    mocks.api.connectStart.mockResolvedValue({ authorize_url: "https://www.instagram.com/oauth", state: "ST" });
+    mocks.api.connectStart.mockResolvedValue({ authorize_url: "https://www.facebook.com/v26.0/dialog/oauth?client_id=1", state: "ST" });
     let storedAtRedirect: string | null = null;
     mocks.redirect.mockImplementation(() => {
       storedAtRedirect = sessionStorage.getItem(INSTAGRAM_OAUTH_STATE_KEY);
       return true;
     });
     view();
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Conectar Instagram" }));
-    await waitFor(() => expect(mocks.redirect).toHaveBeenCalledWith("https://www.instagram.com/oauth"));
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Conectar pelo Facebook" }));
+    await waitFor(() => expect(mocks.redirect).toHaveBeenCalledWith("https://www.facebook.com/v26.0/dialog/oauth?client_id=1"));
     expect(storedAtRedirect).toBe("ST");
+  });
+
+  it("sem conta mostra os três pré-requisitos acima do botão", async () => {
+    mocks.api.readInstagramAccount.mockResolvedValue(null);
+    view();
+    const btn = await screen.findByRole("button", { name: "Conectar pelo Facebook" });
+    const texts = [
+      "O Instagram da loja precisa ser profissional e estar ligado a uma Página do Facebook.",
+      "Você precisa administrar ou moderar essa Página.",
+      "No app do Instagram, ligue Configurações › Mensagens e respostas ao story › Controles de mensagens › Ferramentas conectadas › Permitir acesso às mensagens.",
+    ];
+    for (const t of texts) {
+      const el = screen.getByText(t);
+      expect(el.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+
+  it("não mostra mais 'Acesso válido até'", async () => {
+    view();
+    await screen.findByText("@loja");
+    expect(screen.queryByText(/Acesso válido até/)).toBeNull();
+  });
+
+  describe("prazo de acesso aos dados", () => {
+    const NOW = "2026-11-04T15:00:00Z";
+    async function withExpiry(token_expires_at: string | null) {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(NOW));
+      mocks.api.readInstagramAccount.mockResolvedValue({ ...account, token_expires_at });
+      view();
+      await screen.findByText("@loja");
+    }
+
+    it("sem prazo (null): nada de prazo nem botão de renovar", async () => {
+      await withExpiry(null);
+      expect(screen.queryByText(/Reconecte até/)).toBeNull();
+      expect(screen.queryByText(/venceu em/)).toBeNull();
+      expect(screen.queryByRole("button", { name: "Reconectar pelo Facebook" })).toBeNull();
+    });
+
+    it("a mais de 14 dias: texto sem destaque e sem botão (data em BRT)", async () => {
+      // 02:00Z de 20/11 ainda é 19/11 em São Paulo.
+      await withExpiry("2026-11-20T02:00:00Z");
+      const el = screen.getByText("Reconecte até 19/11/2026 para manter o acesso.");
+      expect(el.className).not.toMatch(/text-warning/);
+      expect(screen.queryByRole("button", { name: "Reconectar pelo Facebook" })).toBeNull();
+    });
+
+    it("a 14 dias ou menos: destaque e botão que inicia a conexão", async () => {
+      await withExpiry("2026-11-18T15:00:00Z");
+      const el = screen.getByText("Reconecte até 18/11/2026 para manter o acesso.");
+      expect(el.className).toMatch(/text-warning/);
+      mocks.api.connectStart.mockResolvedValue({ authorize_url: "https://www.facebook.com/v26.0/dialog/oauth?x=1", state: "ST" });
+      fireEvent.click(screen.getByRole("button", { name: "Reconectar pelo Facebook" }));
+      await vi.waitFor(() => expect(mocks.redirect).toHaveBeenCalledWith("https://www.facebook.com/v26.0/dialog/oauth?x=1"));
+    });
+
+    it("vencido: mensagem de vencimento e botão", async () => {
+      await withExpiry("2026-11-01T12:00:00Z");
+      expect(screen.getByText("O acesso aos dados venceu em 01/11/2026. Reconecte para voltar a responder.")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Reconectar pelo Facebook" })).toBeTruthy();
+    });
   });
 
   it("mostra @ da conta e desconecta só após confirmação", async () => {
@@ -93,7 +155,7 @@ describe("Página Instagram da loja", () => {
   it("reauth_required oferece Reconectar; subscribed:false oferece Assinar de novo", async () => {
     mocks.api.readInstagramAccount.mockResolvedValue({ ...account, status: "reauth_required" });
     view();
-    expect(await screen.findByRole("button", { name: "Reconectar Instagram" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Reconectar pelo Facebook" })).toBeTruthy();
     cleanup();
     mocks.api.readInstagramAccount.mockResolvedValue({ ...account, subscribed: false });
     view();

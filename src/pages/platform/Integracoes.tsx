@@ -46,7 +46,7 @@ const SECRET_PLACEHOLDERS: Record<string, string> = {
   stripe_webhook_secret: "whsec_...",
   asaas_api_key: "$aact_hmlg_... ou $aact_prod_...",
   asaas_webhook_token: "Token do header asaas-access-token",
-  instagram_app_secret: "Cole o App Secret do Instagram Login",
+  instagram_app_secret: "Cole a Chave secreta do app Moralles Reservas (Configurações do app › Básico)",
   instagram_verify_token: "Mesmo texto informado no painel da Meta",
   meta_app_secret: "Cole o App Secret da Meta (opcional)",
 };
@@ -243,7 +243,7 @@ export default function PlatformIntegracoes() {
                 <CardTitle className="text-base">{PROVIDER_LABELS.instagram}</CardTitle>
               </div>
               <p className="text-sm text-muted-foreground">
-                Segredos do app do Instagram Login, usados na conexão das contas e no webhook de
+                Segredos do app Moralles Reservas (Login do Facebook para Empresas), usados na conexão das contas e no webhook de
                 mensagens diretas. O segredo da Meta é opcional.
               </p>
             </CardHeader>
