@@ -1,13 +1,12 @@
 import type { PlanWall } from "@/lib/hall-plan-core";
-import { HALL_LABEL_CM } from "@/lib/hall-arrange-core";
 import type { TableState } from "@/lib/table-situation-core";
 import { MesaBotao } from "./MesaBotao";
 import type { SceneHall } from "./PlantaCena2D";
 import { SCENE_ROT_X, SCENE_ROT_Z, WINDOW_STRIPES, entranceRect, wallRect } from "./scene-geometry";
 
 const WALL_PX = 6;
-/** Acima da etiqueta da mesa (30 px): o nome do salão nunca fica atrás de uma mesa. */
-const LABEL_RISE_PX = 40;
+/** Bem acima da etiqueta da mesa (30 px + texto): mesa no canto não encosta no nome. */
+const LABEL_RISE_PX = 56;
 const WALL_RISE_PX = 18;
 const RAISED: PlanWall[] = ["top", "right"];
 
@@ -30,20 +29,21 @@ export function SalaoPlano3D({ hall, scale, showLabel, states, timeLabels, selec
   return (
     <>
       {showLabel && (
-        // Cartaz em pé no canto do salão, acima das mesas e de frente para a câmera (mesma
-        // contra-rotação da etiqueta da mesa). Deitado no chão inclinado, o nome ficava achatado
-        // e as mesas elevadas do salão vizinho passavam por cima dele.
+        // Cartaz em pé, de frente para a câmera (mesma contra-rotação da etiqueta da mesa),
+        // preso ao canto do fundo à direita — o ponto mais alto do salão na tela — e alinhado à
+        // direita: ele se estende para a esquerda acima de todo o salão. No canto esquerdo, cobria
+        // os números das mesas encostadas na parede do fundo.
         <div
           aria-hidden="true"
           className="pointer-events-none absolute h-0 w-0"
           style={{
-            left: hall.xCm * scale,
-            top: (hall.yCm - HALL_LABEL_CM / 2) * scale,
+            left: (hall.xCm + plan.widthCm) * scale,
+            top: hall.yCm * scale,
             transform: `translateZ(${LABEL_RISE_PX}px) rotateZ(${SCENE_ROT_Z}deg) rotateX(-${SCENE_ROT_X}deg)`,
             transformStyle: "preserve-3d",
           }}
         >
-          <span className="surface absolute bottom-0 left-0 whitespace-nowrap rounded-full px-3 py-1 text-sm font-semibold leading-none text-foreground">
+          <span className="surface absolute bottom-0 right-0 whitespace-nowrap rounded-full px-3 py-1 text-sm font-semibold leading-none text-foreground">
             {hall.name}
             {hall.undrawn && <span className="font-normal text-muted-foreground">{" · grade automática"}</span>}
           </span>
