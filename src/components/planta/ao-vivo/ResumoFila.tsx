@@ -1,3 +1,4 @@
+import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { WaitlistEntry } from "@/types/reserva";
 import { activeQueueToday } from "@/lib/waitlist-queue";
@@ -9,12 +10,14 @@ interface Props {
   onCall?: (entry: WaitlistEntry) => void;
   /** Aviso em andamento para esta entrada. */
   callingId?: string | null;
+  /** "Adicionar à fila" no cabeçalho; sem ela, o botão não aparece. */
+  onAdd?: () => void;
 }
 
 const minutesSince = (iso: string, now: Date) =>
   Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 60_000));
 
-export function ResumoFila({ entries, now, onCall, callingId }: Props) {
+export function ResumoFila({ entries, now, onCall, callingId, onAdd }: Props) {
   // Só a fila de hoje (BRT), na mesma ordem do "Sentar da fila": fila esquecida não infla a espera média.
   const sorted = activeQueueToday(entries, now);
   const next = sorted[0];
@@ -24,7 +27,23 @@ export function ResumoFila({ entries, now, onCall, callingId }: Props) {
 
   return (
     <section data-testid="resumo-fila" className="surface rounded-lg p-4">
-      <h2 className="mb-2 text-sm font-semibold">Fila de espera</h2>
+      {onAdd ? (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">Fila de espera</h2>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="coarse:min-h-[44px]"
+            onClick={onAdd}
+          >
+            <Plus className="mr-1 h-4 w-4" />
+            Adicionar à fila
+          </Button>
+        </div>
+      ) : (
+        <h2 className="mb-2 text-sm font-semibold">Fila de espera</h2>
+      )}
       {!next ? (
         <p className="text-sm text-muted-foreground">Ninguém aguardando</p>
       ) : (

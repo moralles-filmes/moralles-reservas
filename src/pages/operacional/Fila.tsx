@@ -2,8 +2,6 @@ import { useMemo, useState } from "react";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import {
   useWaitlist,
-  useAddToWaitlist,
-  useUpdateWaitlistEntry,
   useUpdateWaitlistStatus,
   useNotifyWaitlist,
   useResendWaitlistEntered,
@@ -18,18 +16,10 @@ import {
 import { DeliveryBadge } from "@/components/notifications/DeliveryBadge";
 import { useWaitlistTemplates } from "@/hooks/useWaitlistTemplates";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { PartySizeInput } from "@/components/reserva/wizard/PartySizeInput";
+import { WaitlistEntryDialog } from "@/components/waitlist/WaitlistEntryDialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,7 +33,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { buildWaitlistMessage } from "@/lib/waitlist-message";
 import { cn, formatPhone } from "@/lib/utils";
-import { validateBrPhone } from "@/lib/phone";
 import type {
   WaitlistEntry,
   WaitlistPriorityCategory,
@@ -86,20 +75,13 @@ export default function Fila() {
   const unitId = unit?.unit_id ?? "";
 
   const [open, setOpen] = useState(false);
-  // null = modo "adicionar"; id = modo "editar" da entry correspondente.
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [partySize, setPartySize] = useState(2);
-  const [requestedTime, setRequestedTime] = useState("");
-  const [notes, setNotes] = useState("");
+  // null = modo "adicionar"; entry = modo "editar" da entrada correspondente.
+  const [editingEntry, setEditingEntry] = useState<WaitlistEntry | null>(null);
   // Pendings por entry id — botões "Notificar" ficam independentes entre si.
   const [notifyingIds, setNotifyingIds] = useState<Set<string>>(new Set());
 
   const { data: waitlist, isLoading, isError, refetch } = useWaitlist(unitId);
   const { data: templates } = useWaitlistTemplates(unitId);
-  const addToWaitlist = useAddToWaitlist(unitId);
-  const updateEntry = useUpdateWaitlistEntry(unitId);
   const updateStatus = useUpdateWaitlistStatus(unitId);
   const notifyEntry = useNotifyWaitlist(unitId);
   const resendEntered = useResendWaitlistEntered(unitId);
@@ -115,54 +97,9 @@ export default function Fila() {
   const isUpdatingEntry = (id: string) =>
     updateStatus.isPending && updateStatus.variables?.id === id;
 
-  const reset = () => {
-    setEditingId(null);
-    setName(""); setPhone(""); setPartySize(2); setRequestedTime(""); setNotes("");
-  };
+  const openAdd = () => { setEditingEntry(null); setOpen(true); };
 
-  const openAdd = () => { reset(); setOpen(true); };
-
-  const openEdit = (entry: WaitlistEntry) => {
-    setEditingId(entry.id);
-    setName(entry.customer_name);
-    setPhone(entry.customer_phone ?? "");
-    setPartySize(entry.party_size);
-    // requested_for_time vem como "HH:MM:SS" do Postgres; <input type="time"> quer "HH:MM".
-    setRequestedTime(entry.requested_for_time ? entry.requested_for_time.slice(0, 5) : "");
-    setNotes(entry.notes ?? "");
-    setOpen(true);
-  };
-
-  const handleSubmit = () => {
-    if (!name.trim()) { toast.error("Informe o nome do cliente."); return; }
-    const { valid, reason, digits: phoneDigits } = validateBrPhone(phone, { allowEmpty: true });
-    if (!valid) { toast.error(reason); return; }
-    const onSuccess = () => { setOpen(false); reset(); };
-    if (editingId) {
-      updateEntry.mutate(
-        {
-          id: editingId,
-          customer_name: name.trim(),
-          customer_phone: phoneDigits || null,
-          party_size: partySize,
-          requested_for_time: requestedTime || null,
-          notes: notes.trim() || null,
-        },
-        { onSuccess },
-      );
-    } else {
-      addToWaitlist.mutate(
-        {
-          customer_name: name.trim(),
-          customer_phone: phoneDigits || null,
-          party_size: partySize,
-          requested_for_time: requestedTime || null,
-          notes: notes.trim() || null,
-        },
-        { onSuccess },
-      );
-    }
-  };
+  const openEdit = (entry: WaitlistEntry) => { setEditingEntry(entry); setOpen(true); };
 
   const buildMessage = (entry: WaitlistEntry, event: "entered" | "table_ready") =>
     buildWaitlistMessage(entry, event, {
@@ -430,50 +367,12 @@ export default function Fila() {
         </div>
       )}
 
-      <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{editingId ? "Editar cliente" : "Adicionar à fila"}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 mt-2">
-            <div className="space-y-1">
-              <Label htmlFor="fila-name">Nome do cliente *</Label>
-              <Input id="fila-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Maria Costa" />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label htmlFor="fila-phone">WhatsApp (opcional)</Label>
-                <Input id="fila-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="fila-party">Pessoas *</Label>
-                {/* enter_waitlist: anon trava em 20; operador não tem cap no DB — 20 mantido por consistência de UI. */}
-                <PartySizeInput
-                  id="fila-party"
-                  value={partySize}
-                  onChange={setPartySize}
-                  max={20}
-                />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="fila-requested-time">Horário preferencial (opcional)</Label>
-              <Input id="fila-requested-time" type="time" value={requestedTime} onChange={(e) => setRequestedTime(e.target.value)} />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="fila-notes">Observações (opcional)</Label>
-              <Input id="fila-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ex: aniversário, alergia..." />
-            </div>
-            <Button
-              onClick={handleSubmit}
-              disabled={editingId ? updateEntry.isPending : addToWaitlist.isPending}
-              className="w-full"
-            >
-              {editingId ? "Salvar alterações" : "Adicionar à fila"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <WaitlistEntryDialog
+        unitId={unitId}
+        open={open}
+        onOpenChange={setOpen}
+        entry={editingEntry}
+      />
     </div>
   );
 }

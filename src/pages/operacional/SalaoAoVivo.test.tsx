@@ -48,7 +48,11 @@ vi.mock("@/hooks/useWalkIns", () => ({
   useCreateWalkIn: () => ({ mutate: vi.fn(), isPending: false }),
   useUpdateWalkInStatus: () => ({ mutate: vi.fn(), isPending: false }),
 }));
-vi.mock("@/hooks/useWaitlist", () => ({ useNotifyWaitlist: () => ({ mutate: vi.fn(), isPending: false }) }));
+vi.mock("@/hooks/useWaitlist", () => ({
+  useNotifyWaitlist: () => ({ mutate: vi.fn(), isPending: false }),
+  useAddToWaitlist: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateWaitlistEntry: () => ({ mutate: vi.fn(), isPending: false }),
+}));
 vi.mock("@/hooks/useWaitlistTemplates", () => ({ useWaitlistTemplates: () => ({ data: [] }) }));
 let currentUnitId = "u1";
 let currentSlug: string | undefined = "moralles";
@@ -197,6 +201,14 @@ describe("SalaoAoVivo", () => {
     expect(painel).not.toHaveAttribute("aria-live");
     fireEvent.click(screen.getByRole("button", { name: /^Mesa 3,/ }));
     expect(within(painel).getByRole("status")).toHaveTextContent("Mesa 3 selecionada");
+  });
+
+  it("Fila de espera: Adicionar à fila abre o diálogo no modo adicionar", () => {
+    renderPage();
+    fireEvent.click(within(screen.getByTestId("resumo-fila")).getByRole("button", { name: "Adicionar à fila" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Adicionar à fila" })).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/Nome do cliente/)).toHaveValue("");
   });
 
   it("o plano girado do 3D não carrega a animação de entrada, que sobrescreveria o transform", () => {

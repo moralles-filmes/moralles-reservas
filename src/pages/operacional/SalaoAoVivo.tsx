@@ -23,6 +23,7 @@ import { PainelMesa } from "@/components/planta/ao-vivo/PainelMesa";
 import { AcoesMesa } from "@/components/planta/ao-vivo/AcoesMesa";
 import { ProximasChegadas } from "@/components/planta/ao-vivo/ProximasChegadas";
 import { ResumoFila } from "@/components/planta/ao-vivo/ResumoFila";
+import { WaitlistEntryDialog } from "@/components/waitlist/WaitlistEntryDialog";
 
 const hallKey = (unitId: string) => `salao-ao-vivo:hall:${unitId}`;
 
@@ -43,6 +44,7 @@ export default function SalaoAoVivo() {
   const reduced = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [hallPref, setHallPref] = useState<string | null>(() => readStoredHall(unitId));
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
   const walkInsAtivos = useWalkIns(unitId);
   const waitingWalkIns = useMemo(
     () => (walkInsAtivos.data ?? []).filter((w) => w.status === "waiting"),
@@ -254,8 +256,10 @@ export default function SalaoAoVivo() {
           now={now}
           onCall={callNext}
           callingId={notify.isPending ? (notify.variables?.id ?? null) : null}
+          onAdd={unitId ? () => setAddOpen(true) : undefined}
         />
       </aside>
+      <WaitlistEntryDialog unitId={unitId} open={addOpen} onOpenChange={setAddOpen} />
     </div>
   );
 }
