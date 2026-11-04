@@ -64,6 +64,7 @@ const GCardAjustes   = lazy(() => import("./pages/gestao/cardapios/Ajustes"));
 
 // ── Gestão > Relatórios (sub-abas) ────────────────────────────────────────────
 const GFluxoClientes = lazy(() => import("./pages/gestao/relatorios/FluxoClientes"));
+const GRelPassantes = lazy(() => import("./pages/gestao/relatorios/Passantes"));
 const GRelVendas     = lazy(() => import("./pages/gestao/relatorios/Vendas"));
 const GRelComunicacao = lazy(() => import("./pages/gestao/relatorios/Comunicacao"));
 const GRelGiftback = lazy(() => import("./pages/gestao/relatorios/Giftback"));
@@ -259,6 +260,7 @@ export default function App() {
               <Route path="/g/:unitSlug/auditoria" element={<GestaoGuard><GAuditoria /></GestaoGuard>} />
               <Route path="/g/:unitSlug/relatorios" element={<Navigate to="fluxo-clientes" replace />} />
               <Route path="/g/:unitSlug/relatorios/fluxo-clientes" element={<GestaoGuard><GFluxoClientes /></GestaoGuard>} />
+              <Route path="/g/:unitSlug/relatorios/passantes" element={<GestaoGuard><GRelPassantes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/relatorios/vendas" element={<GestaoGuard><GRelVendas /></GestaoGuard>} />
               <Route path="/g/:unitSlug/relatorios/comunicacao" element={<GestaoGuard><GRelComunicacao /></GestaoGuard>} />
               <Route path="/g/:unitSlug/relatorios/avaliacoes" element={<GestaoGuard><GAvaliacoes /></GestaoGuard>} />
