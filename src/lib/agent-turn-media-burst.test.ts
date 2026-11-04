@@ -172,6 +172,28 @@ describe('rajada texto + mídia no turno', () => {
     expect(sentTexts(c)).toEqual(['Resposta']);
   });
 
+  it('texto → mídia → texto: o segundo texto supera o primeiro, responde os dois e avisa uma vez', async () => {
+    const { f, c } = setup();
+    c.controls.sdkResponses = [text('Respondi os dois'), text('Respondi os dois')];
+    // Durante o debounce do texto 1 chegam a mídia (adiada) e o texto 2.
+    onDebounceRead(c, () => {
+      push(c, media(c, 'image'));
+      push(c, { role: 'user', content: 'e mais uma coisa', author: 'customer', timestamp: later(c, -1000), received_at: later(c, -1000),
+        event_id: 'wa-in:datafy:wamid.second-text' });
+    });
+    await f.runChatControl({ kind: 'customer_text', text: 'Quero reservar' });
+    expect(outcomes(c)).toEqual(['debounced_superseded']);
+    expect(sentTexts(c)).toEqual([]);
+    // Turno do texto 2 (mesmo event_id já gravado: o append é idempotente).
+    await f.runChatControl({ kind: 'customer_text', text: 'e mais uma coisa', messageId: 'wamid.second-text' });
+    expect(outcomes(c)).toEqual(['debounced_superseded', 'success']);
+    const llm = JSON.stringify(c.sdk.requests.at(-1)!.input);
+    expect(llm).toContain('Quero reservar');
+    expect(llm).toContain('e mais uma coisa');
+    expect(llm).not.toContain('[imagem]');
+    expect(sentTexts(c)).toEqual(['Respondi os dois', mediaNoticeText(['image'])]);
+  });
+
   it('MEDIA_REPLY_TEXT continua intacto', () => {
     expect(MEDIA_REPLY_TEXT).toContain('Por aqui só consigo ler texto');
   });
