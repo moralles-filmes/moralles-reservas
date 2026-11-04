@@ -81,7 +81,9 @@ const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? 
 
 /** Número só se for inteiro seguro: ids de 17 dígitos perdem precisão no JSON.parse. */
 function parseId(raw: unknown): string | null {
-  return typeof raw === "number" ? (Number.isSafeInteger(raw) && raw > 0 ? String(raw) : null) : str(raw);
+  if (typeof raw === "number") return Number.isSafeInteger(raw) && raw > 0 ? String(raw) : null;
+  // Vira segmento de path do Graph e chave da conta: só dígitos, sem zero à esquerda, até 64.
+  return typeof raw === "string" && /^[1-9][0-9]{0,63}$/.test(raw) ? raw : null;
 }
 
 export function parseCodeExchange(json: unknown): { shortToken: string } | null {

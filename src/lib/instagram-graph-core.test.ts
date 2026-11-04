@@ -149,6 +149,16 @@ describe("parsePages", () => {
     expect(safe?.[0]).toMatchObject({ pageId: "222", igUserId: "333", igUsername: null });
     expect(parsePages({ data: [page({ id: 0 })] })).toEqual([]);
   });
+  it("id de Página ou do Instagram que não são só dígitos descarta o item", () => {
+    expect(parsePages({ data: [page({ id: "abc" })] })).toEqual([]);
+    expect(parsePages({ data: [page({ id: "12/../x" })] })).toEqual([]);
+    expect(parsePages({ data: [page({ instagram_business_account: { id: "1e17" } })] })).toEqual([]);
+    expect(parsePages({ data: [page({ instagram_business_account: { id: "-5" } })] })).toEqual([]);
+  });
+  it("parseMe recusa user_id string que não é só dígitos", () => {
+    expect(parseMe({ user_id: "abc" })).toBeNull();
+    expect(parseMe({ user_id: "1e17" })).toBeNull();
+  });
   it("sem access_token ou sem instagram_business_account sai", () => {
     expect(parsePages({ data: [page({ access_token: undefined }), page({ instagram_business_account: undefined })] })).toEqual([]);
   });
