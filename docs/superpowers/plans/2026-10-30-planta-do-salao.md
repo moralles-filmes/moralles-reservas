@@ -796,7 +796,7 @@ Ações por situação (todas as pessoas da unidade):
 - [x] **Step 2:** FAIL.
 - [x] **Step 3: Implementar.**
 - [x] **Step 4:** PASS.
-- [ ] **Step 5: Teste manual da B4 na MORALLES:**
+- [x] **Step 5: Teste manual da B4 na MORALLES:**
   - marcar chegada, desfazer e liberar;
   - sentar um passante novo;
   - sentar alguém da fila;
