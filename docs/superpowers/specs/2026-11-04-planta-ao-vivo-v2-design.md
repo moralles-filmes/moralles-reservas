@@ -40,7 +40,7 @@ Data: 2026-11-04 · Slug: `planta-ao-vivo-v2` · Branch: `feat/planta-ao-vivo-v2
   - um dedo ou o mouse no fundo faz pan;
   - dois dedos fazem pinça;
   - `wheel` com Ctrl/Meta (inclui a pinça do trackpad) dá zoom; `wheel` sozinho continua rolando a página, para não prender o cursor sobre a planta;
-  - `touch-action: none` só na área da planta.
+  - `touch-action`: `pan-y` com zoom ≤ 1, para o toque vertical rolar a página no tablet em retrato (painel embaixo), e `none` com zoom > 1, quando o arrasto é da planta. Mesa, alça e entrada mantêm `none`.
 - Controles `PlanViewportControls` (+, −, Centralizar), com `aria-label` e alvo de pelo menos 44 px em toque. Teclado: `+`, `-` e `0` com o foco na planta.
 - O gesto começa no **fundo**. Toque em mesa continua sendo seleção (ao vivo) ou arrasto e redimensionamento (editor). No editor, o arrasto da mesa divide o deslocamento em px pela escala efetiva (escala base × zoom), para a mesa seguir o dedo em qualquer zoom.
 - Clique no fundo sem mover (abaixo de 5 px, o mesmo limiar do arrasto) continua desmarcando a mesa no editor.

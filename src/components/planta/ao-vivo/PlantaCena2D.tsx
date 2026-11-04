@@ -33,6 +33,8 @@ export interface CenaProps {
   now: Date;
   /** Quando muda, o viewport centraliza a mesa (medida pelo DOM; vale no 2D e no 3D). */
   focus?: { tableId: string; nonce: number };
+  /** Chamado depois de centralizar: quem guarda o foco o limpa, para um remonte não recentralizar. */
+  onFocusHandled?: () => void;
   /** Altura máxima da cena (tela cheia); sem ela vale o limite padrão de cada vista. */
   maxHeightPx?: number;
 }
@@ -64,11 +66,12 @@ export function PlantaCena2D({
   onSelect,
   now,
   focus,
+  onFocusHandled,
   maxHeightPx,
 }: CenaProps) {
   const { ref, width: containerWidth } = useContainerWidth();
   const apiRef = useRef<PlanViewportApi | null>(null);
-  useFocusTable(apiRef, focus);
+  useFocusTable(apiRef, focus, onFocusHandled);
   const width =
     maxHeightPx != null
       ? Math.max(1, Math.min(containerWidth, (maxHeightPx * layout.widthCm) / layout.depthCm))

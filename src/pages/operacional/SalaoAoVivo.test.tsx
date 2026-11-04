@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { cleanup, render, screen, within, fireEvent } from "@testing-library/react";
+import { act, cleanup, render, screen, within, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import SalaoAoVivo from "./SalaoAoVivo";
 
@@ -305,6 +305,22 @@ describe("SalaoAoVivo", () => {
       renderPage();
       fireEvent.click(screen.getByRole("button", { name: "Tela cheia" }));
       expect(screen.getByTestId("salao-tela-cheia")).toBeInTheDocument();
+    });
+
+    it("sair pela tela cheia do navegador (Esc) com o diálogo aberto mantém o que foi digitado", () => {
+      withApi();
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Tela cheia" }));
+      fireEvent.click(within(screen.getByTestId("resumo-fila")).getByRole("button", { name: "Adicionar à fila" }));
+      fireEvent.change(within(screen.getByRole("dialog")).getByLabelText(/Nome do cliente/), {
+        target: { value: "Maria" },
+      });
+      // O navegador sai da tela cheia: fullscreenElement já é null e o evento chega.
+      act(() => {
+        document.dispatchEvent(new Event("fullscreenchange"));
+      });
+      expect(screen.queryByTestId("salao-tela-cheia")).toBeNull();
+      expect(within(screen.getByRole("dialog")).getByLabelText(/Nome do cliente/)).toHaveValue("Maria");
     });
 
     it("em tela cheia, Adicionar à fila abre o diálogo", () => {

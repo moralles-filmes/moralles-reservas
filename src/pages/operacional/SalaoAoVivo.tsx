@@ -177,6 +177,7 @@ export default function SalaoAoVivo() {
   const chooseHall = (id: string) => {
     applyHall(id);
     setSelectedId(null);
+    setFocus(undefined);
   };
 
   // Vindo de próximas chegadas, a troca de salão mantém a mesa recém escolhida.
@@ -247,6 +248,7 @@ export default function SalaoAoVivo() {
           layout={scene.layout}
           showLabels={viewAll}
           focus={focus}
+          onFocusHandled={() => setFocus(undefined)}
           states={states}
           timeLabels={timeLabels}
           selectedId={selectedId}
@@ -347,14 +349,23 @@ export default function SalaoAoVivo() {
           onAdd={unitId ? () => setAddOpen(true) : undefined}
         />
       </aside>
-      <WaitlistEntryDialog unitId={unitId} open={addOpen} onOpenChange={setAddOpen} />
     </div>
   );
 
-  if (!fullscreen.active) return page;
+  // O diálogo fica fora da subárvore que muda de pai na tela cheia: sair dela (Esc do
+  // navegador) não remonta o formulário nem perde o que o atendente digitou.
+  const dialog = <WaitlistEntryDialog unitId={unitId} open={addOpen} onOpenChange={setAddOpen} />;
+  if (!fullscreen.active) {
+    return (
+      <>
+        {page}
+        {dialog}
+      </>
+    );
+  }
   // Camada no body: Dialog, Select e Sonner (z-50, também no body) ficam por cima.
   const inset = (side: string) => `max(12px, env(safe-area-inset-${side}))`;
-  return createPortal(
+  const layer = createPortal(
     <div
       data-testid="salao-tela-cheia"
       className="fixed inset-0 z-40 overflow-y-auto bg-background lg:overflow-hidden"
@@ -368,5 +379,11 @@ export default function SalaoAoVivo() {
       {page}
     </div>,
     document.body,
+  );
+  return (
+    <>
+      {layer}
+      {dialog}
+    </>
   );
 }

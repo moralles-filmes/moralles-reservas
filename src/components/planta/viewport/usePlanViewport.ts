@@ -113,8 +113,10 @@ export function usePlanViewport() {
   const onPointerDown = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (e.target instanceof Element && e.target.closest(IGNORE_SELECTOR)) return;
     if (e.pointerType === "mouse" && e.button !== 0) return;
-    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const g = gesture.current;
+    // Sem gesto em curso, ponteiro que sobrou no mapa (pointerup fora, sem captura) é lixo: não pode virar pinça falsa.
+    if (g.mode === "none") pointers.current.clear();
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const el = contentRef.current;
     if (el) el.style.transition = "";
     if (pointers.current.size === 1) {
@@ -244,8 +246,12 @@ export function usePlanViewport() {
   /** true se o último gesto no fundo foi um arrasto (para distinguir de clique). */
   const wasPanning = useCallback(() => didPan.current, []);
 
+  // Sem zoom, o toque vertical rola a página (tablet em retrato, painel embaixo); com zoom, o arrasto é da planta.
+  const touchAction = zoom > 1 ? "none" : "pan-y";
+
   return {
     containerRef,
+    touchAction,
     contentRef,
     zoom,
     zoomIn,

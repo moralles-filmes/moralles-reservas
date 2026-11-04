@@ -272,7 +272,7 @@ export function PlantaEditorCanvas({
       className="surface relative w-full overflow-hidden rounded-lg border border-border bg-background"
       style={{
         aspectRatio: `${plan.widthCm} / ${plan.depthCm}`,
-        touchAction: "none",
+        touchAction: vp.touchAction,
       }}
       {...vp.handlers}
     >

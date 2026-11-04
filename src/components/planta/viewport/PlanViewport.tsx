@@ -48,7 +48,7 @@ export function PlanViewport({
       aria-describedby={hintId}
       tabIndex={0}
       className={cn("relative overflow-hidden", className)}
-      style={{ ...style, touchAction: "none" }}
+      style={{ ...style, touchAction: vp.touchAction }}
       {...vp.handlers}
     >
       <span id={hintId} className="sr-only">
