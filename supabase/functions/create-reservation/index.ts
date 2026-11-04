@@ -51,7 +51,11 @@ interface CreateReservationBody {
   party_size?: number;
   notes?: string | null;
   marketing_opt_in?: unknown;
+  /** Mesa ou combinação escolhida no mapa. Exige hall_id; indisponível = seat_unavailable. */
+  seat?: { kind?: unknown; id?: unknown } | null;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function validateBody(b: CreateReservationBody): string | null {
   if (!b.unit_id || typeof b.unit_id !== "string") return "unit_id obrigatório.";
@@ -70,6 +74,13 @@ function validateBody(b: CreateReservationBody): string | null {
   if (!b.date || !/^\d{4}-\d{2}-\d{2}$/.test(b.date)) return "Data inválida (use YYYY-MM-DD).";
   if (!b.time || !/^\d{2}:\d{2}(:\d{2})?$/.test(b.time)) return "Horário inválido (use HH:MM).";
   if (typeof b.party_size !== "number" || b.party_size < 1 || b.party_size > 30) return "party_size inválido.";
+  if (b.hall_id != null && (typeof b.hall_id !== "string" || !UUID_RE.test(b.hall_id))) return "Salão inválido.";
+  if (b.seat != null) {
+    if (typeof b.seat !== "object") return "Mesa inválida.";
+    if (b.seat.kind !== "table" && b.seat.kind !== "combination") return "Mesa inválida.";
+    if (typeof b.seat.id !== "string" || !UUID_RE.test(b.seat.id)) return "Mesa inválida.";
+    if (!b.hall_id) return "Escolha de mesa exige o salão.";
+  }
   return null;
 }
 
@@ -132,6 +143,30 @@ serve(async (req) => {
       return jsonResponse({ success: false, reason: "org_blocked", message: "Este restaurante não está aceitando novas reservas no momento." }, 403);
     }
 
+    // Salão pedido precisa ser da unidade: sem isto, o hall_id de outro
+    // restaurante seria lido pelo service role. A pertença da mesa/combinação
+    // ao salão é conferida dentro da disponibilidade (id alheio = indisponível).
+    if (body.hall_id) {
+      const { data: hallRow, error: hallError } = await supabase
+        .from("halls")
+        .select("id")
+        .eq("id", body.hall_id)
+        .eq("unit_id", unitId)
+        .eq("active", true)
+        .maybeSingle();
+      if (hallError) {
+        jsonLog("error", { requestId, evt: "create_reservation_hall_lookup_failed", unitId });
+        return jsonResponse({ success: false, reason: "dependency_unavailable", message: "Não foi possível conferir o salão agora." }, 503);
+      }
+      if (!hallRow) {
+        jsonLog("warn", { requestId, evt: "create_reservation_hall_mismatch", unitId });
+        return jsonResponse({ success: false, reason: "unit_invalid", message: "Unidade inválida." }, 400);
+      }
+    }
+    const seat = body.seat
+      ? { kind: body.seat.kind as "table" | "combination", id: body.seat.id as string }
+      : null;
+
     // Rate limit por (phone, unit) — mesma RPC já usada no webhook
     const { data: allowed, error: rateError } = await supabase.rpc("check_rate_limit", {
       p_phone: phone,
@@ -178,6 +213,7 @@ serve(async (req) => {
       result = await reserveSlot(supabase, {
         unitId,
         hallId: body.hall_id ?? undefined,
+        choice: seat,
         date: body.date!,
         time: body.time!,
         partySize: body.party_size!,
@@ -274,6 +310,7 @@ serve(async (req) => {
       reservation_id: result.reservationId,
       reservation_code: result.reservationCode,
       table_id: result.tableId,
+      table_ids: result.tableIds,
       reservation_status: result.reservationStatus,
       requires_payment: false,
       payment_amount_cents: null,

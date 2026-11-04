@@ -83,7 +83,7 @@
   "supabase/functions/_shared/asaas-billing-events-apply.ts": 16,
   "supabase/functions/_shared/asaas-config.ts": 7,
   "supabase/functions/_shared/authz.ts": 2,
-  "supabase/functions/_shared/availability.ts": 16,
+  "supabase/functions/_shared/availability.ts": 12,
   "supabase/functions/_shared/billing-category.ts": 2,
   "supabase/functions/_shared/billing-notify.ts": 6,
   "supabase/functions/_shared/checkout-sessions.ts": 6,

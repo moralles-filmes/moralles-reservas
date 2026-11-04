@@ -28,6 +28,7 @@ function memoryDb(tables: Record<string, Row[]>) {
         lte: (c: string, v: string) => (filters.push((r) => String(r[c]) <= v), builder),
         gte: (c: string, v: unknown) => (filters.push((r) => (r[c] as number | string) >= (v as number | string)), builder),
         order: (col: string, opts?: { ascending?: boolean }) => ((orderBy = { col, asc: opts?.ascending !== false }), builder),
+        limit: () => builder,
         maybeSingle: () => Promise.resolve({ data: run()[0] ?? null, error: null }),
         then: (resolve: (v: { data: Row[]; error: null }) => unknown) => resolve({ data: run(), error: null }),
       };
@@ -50,9 +51,9 @@ function baseTables(reservations: Row[], opts: { overbooking?: boolean } = {}) {
       open_time: "18:00:00", close_time: "23:00:00", slot_minutes: 30, min_advance_minutes: 0, discount_percent: null,
     }],
     tables: [
-      { id: "t-2a", hall_id: "hall-1", active: true, min_capacity: 1, max_capacity: 2 },
-      { id: "t-4a", hall_id: "hall-1", active: true, min_capacity: 1, max_capacity: 4 },
-      { id: "t-4b", hall_id: "hall-1", active: true, min_capacity: 1, max_capacity: 4 },
+      { id: "t-2a", unit_id: UNIT, hall_id: "hall-1", active: true, min_capacity: 1, max_capacity: 2 },
+      { id: "t-4a", unit_id: UNIT, hall_id: "hall-1", active: true, min_capacity: 1, max_capacity: 4 },
+      { id: "t-4b", unit_id: UNIT, hall_id: "hall-1", active: true, min_capacity: 1, max_capacity: 4 },
     ],
     reservations,
   };
@@ -168,7 +169,7 @@ describe("reserveSlot com o hook insertReservation (Task 4.0b)", () => {
   }
   const params = { unitId: UNIT, date: DATE, time: "20:00", partySize: 2, customerId: "c1", notes: "obs", status: "confirmed", source: "instagram" };
 
-  it("com hook, a linha vai ao hook (mesma forma do INSERT direto) e o INSERT direto não acontece", async () => {
+  it("com hook, a linha vai ao hook (mesma forma do INSERT direto, com table_choice) e o INSERT direto não acontece", async () => {
     const { db, inserts } = dbWithInsertSpy(baseTables([]));
     const rows: Row[] = [];
     const hook = vi.fn(async (row: Row) => { rows.push(row); return { data: { id: "res-hook", status: "confirmed", payment_status: null }, error: null }; });
@@ -182,11 +183,11 @@ describe("reserveSlot com o hook insertReservation (Task 4.0b)", () => {
     expect((out as { reservationCode: string }).reservationCode).toBe(reservation_code);
     expect(resto).toEqual({
       customer_id: "c1", unit_id: UNIT, table_id: "t-2a", date: DATE, time: "20:00", party_size: 2,
-      notes: "obs", status: "confirmed", applied_discount_percent: null, source: "instagram",
+      notes: "obs", status: "confirmed", applied_discount_percent: null, source: "instagram", table_choice: "system",
     });
   });
 
-  it("sem hook, o INSERT direto de sempre, com a mesma linha", async () => {
+  it("sem hook, o INSERT direto de sempre, com a mesma linha mais table_choice", async () => {
     const { db, inserts } = dbWithInsertSpy(baseTables([]));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await reserveSlot(db as any, params as any);
@@ -195,7 +196,7 @@ describe("reserveSlot com o hook insertReservation (Task 4.0b)", () => {
     const { reservation_code: _code, ...resto } = inserts[0];
     expect(resto).toEqual({
       customer_id: "c1", unit_id: UNIT, table_id: "t-2a", date: DATE, time: "20:00", party_size: 2,
-      notes: "obs", status: "confirmed", applied_discount_percent: null, source: "instagram",
+      notes: "obs", status: "confirmed", applied_discount_percent: null, source: "instagram", table_choice: "system",
     });
   });
 

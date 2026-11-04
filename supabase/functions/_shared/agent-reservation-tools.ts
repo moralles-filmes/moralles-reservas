@@ -23,6 +23,7 @@
  */
 
 import type { AvailabilityParams, AvailabilityResult } from "./availability.ts";
+import { loadReservationTableIds } from "./adapters/hall-seating.ts";
 import { reservationNotesForLlm, sanitizeReservationNotes } from "./agent/reservation-notes.ts";
 
 export type ReservationToolScope = { unitId: string; customerId: string; reservationIds?: readonly string[] };
@@ -153,6 +154,7 @@ export async function updateReservationScoped(
         .from("tables")
         .select("hall_id")
         .eq("id", current.table_id)
+        .eq("unit_id", scope.unitId)
         .maybeSingle()) as DbResult;
       if (tableError) {
         logToolError("update_reservation", tableError);
@@ -160,15 +162,33 @@ export async function updateReservationScoped(
       }
       hallId = (tableData as { hall_id: string | null } | null)?.hall_id ?? undefined;
     }
-    const check = await deps.checkAvailability({
+    // Mesas atuais (as juntadas inclusive) para mantê-las se continuarem livres.
+    const occ = await loadReservationTableIds(db, current.id, scope.unitId);
+    if (occ.ok === false) {
+      logToolError("update_reservation", { code: occ.code ?? undefined });
+      return { success: false, error: DB_UNAVAILABLE };
+    }
+    const currentTableIds = [...new Set([
+      ...(current.table_id ? [current.table_id] : []),
+      ...occ.tableIds,
+    ])];
+    const availability: AvailabilityParams = {
       unitId: scope.unitId,
       hallId,
       date: nextDate,
       time: nextTime,
       partySize: nextParty,
       excludeReservationId: current.id,
-      preferTableId: current.table_id,
-    });
+      preferTableIds: currentTableIds,
+    };
+    let check = await deps.checkAvailability(availability);
+    // O UPDATE grava só table_id (o trigger refaz occupant_tables com uma mesa):
+    // combinação nova não cabe aqui.
+    const picked = check.suggestedTableIds ?? [];
+    if (check.available && picked.length > 1
+        && !(picked.length === currentTableIds.length && picked.every((id) => currentTableIds.includes(id)))) {
+      check = await deps.checkAvailability({ ...availability, singleTableOnly: true });
+    }
     if (!check.available) {
       return {
         success: false,
@@ -193,8 +213,9 @@ export async function updateReservationScoped(
 
   if (error) {
     logToolError("update_reservation", error);
-    // UNIQUE (table_id, date, time) ativo: outra reserva pegou a mesa entre a checagem e o UPDATE.
-    if (error.code === "23505") {
+    // UNIQUE (table_id, date, time) ou exclusão por janela em occupant_tables:
+    // outra reserva pegou a mesa entre a checagem e o UPDATE.
+    if (error.code === "23505" || error.code === "23P01") {
       return { success: false, available: false, message: "Esse horário acabou de ser ocupado. A reserva não foi alterada; ofereça outro horário com check_availability." };
     }
     return { success: false, error: DB_UNAVAILABLE };
