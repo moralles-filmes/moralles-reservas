@@ -25,6 +25,7 @@ const box: TableBox = {
   tableId: "t1",
   number: 1,
   capacity: 4,
+  bookable: true,
   x: 300,
   y: 300,
   w: 100,

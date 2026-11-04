@@ -35,6 +35,7 @@ function mesa(overrides: Partial<Mesa> & { number: number }): Mesa {
     unit_id: "u1",
     hall_id: "h1",
     capacity: 4,
+    bookable: true,
     min_capacity: 1,
     max_capacity: 4,
     location: "internal",
@@ -54,6 +55,7 @@ function box(overrides: Partial<TableBox> = {}): TableBox {
     tableId: "t",
     number: 1,
     capacity: 4,
+    bookable: true,
     x: 0,
     y: 0,
     w: 80,
@@ -162,6 +164,17 @@ describe("grade automática", () => {
     const boxes = resolveTableBoxes(DEFAULT_HALL_PLAN, twelveTables());
     expect(boxes).toHaveLength(12);
     expect(boxes.every((b) => b.positioned === false)).toBe(true);
+  });
+
+  it("bookable ausente assume true e false é preservado nas duas posições", () => {
+    const boxes = resolveTableBoxes(DEFAULT_HALL_PLAN, [
+      mesa({ number: 1 }),
+      mesa({ number: 3, bookable: false }),
+      mesa({ number: 2, bookable: false, plan_x: 200, plan_y: 200, plan_w: 80, plan_h: 80, plan_rotation: 0, plan_shape: "square" }),
+    ]);
+    expect(boxes[0].bookable).toBe(true);
+    expect(boxes.find((item) => item.number === 2)?.bookable).toBe(false);
+    expect(boxes.find((item) => item.number === 3)?.bookable).toBe(false);
   });
 
   it("nenhum par de caixas se sobrepõe e todas ficam dentro do salão", () => {
@@ -279,8 +292,18 @@ describe("toSavePayload", () => {
       box({ tableId: "t9", positioned: false, x: 10, y: 20, w: 70, h: 70, rotation: 0, shape: "round" }),
     ]);
     expect(payload.p_tables).toEqual([
-      { id: "t9", x: null, y: null, w: null, h: null, rotation: null, shape: null },
+      { id: "t9", x: null, y: null, w: null, h: null, rotation: null, shape: null, bookable: true },
     ]);
+    expect(payload.p_combinations).toBeNull();
+  });
+
+  it("inclui bookable e mapeia combinações com ids ordenados", () => {
+    const payload = toSavePayload(DEFAULT_HALL_PLAN, [box({ tableId: "b", bookable: false }), box({ tableId: "a", positioned: false })], [
+      { key: "b,a", tableIds: ["b", "a"], min: 5, max: 8 },
+    ]);
+    expect(payload.p_tables.map((table) => table.bookable)).toEqual([false, true]);
+    expect(payload.p_combinations).toEqual([{ min: 5, max: 8, table_ids: ["a", "b"] }]);
+    expect(toSavePayload(DEFAULT_HALL_PLAN, [], null).p_combinations).toBeNull();
   });
 
   it("normaliza a rotação para 0..359", () => {
@@ -325,7 +348,7 @@ describe("toSavePayload", () => {
 
 describe("applyTablePatch (CHECK tables_plan_values: só rect tem w ≠ h)", () => {
   const base: TableBox = {
-    tableId: "t", number: 1, capacity: 4, x: 300, y: 300, w: 80, h: 80, rotation: 0, shape: "square", positioned: true,
+    tableId: "t", number: 1, capacity: 4, bookable: true, x: 300, y: 300, w: 80, h: 80, rotation: 0, shape: "square", positioned: true,
   };
 
   it("mudar a largura de uma quadrada leva a profundidade junto", () => {

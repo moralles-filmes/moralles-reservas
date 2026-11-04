@@ -1,4 +1,5 @@
 import type { Hall, Mesa, PlanWall } from "@/types/reserva";
+import type { DraftCombination } from "./table-combination-core";
 
 export type { PlanWall } from "@/types/reserva";
 
@@ -15,6 +16,7 @@ export interface TableBox {
   tableId: string;
   number: number;
   capacity: number;
+  bookable: boolean;
   /** Centro da mesa, em cm. */
   x: number;
   y: number;
@@ -96,6 +98,7 @@ export function resolveTableBoxes(plan: HallPlan, tables: Mesa[]): TableBox[] {
       tableId: t.id,
       number: t.number,
       capacity: t.max_capacity ?? t.capacity,
+      bookable: t.bookable ?? true,
       x: t.plan_x,
       y: t.plan_y,
       w: t.plan_w,
@@ -119,6 +122,7 @@ export function resolveTableBoxes(plan: HallPlan, tables: Mesa[]): TableBox[] {
       tableId: t.id,
       number: t.number,
       capacity,
+      bookable: t.bookable ?? true,
       x: 0,
       y: 0,
       w: size.w,
@@ -185,6 +189,7 @@ function clampCenter(center: number, half: number, dim: number): number {
 export function toSavePayload(
   plan: HallPlan,
   boxes: TableBox[],
+  combinations?: DraftCombination[] | null,
 ): {
   p_hall: {
     width_cm: number;
@@ -201,7 +206,9 @@ export function toSavePayload(
     h: number | null;
     rotation: number | null;
     shape: PlanShape | null;
+    bookable: boolean;
   }>;
+  p_combinations: Array<{ min: number; max: number; table_ids: string[] }> | null;
 } {
   return {
     p_hall: {
@@ -213,7 +220,7 @@ export function toSavePayload(
     },
     p_tables: boxes.map((b) => {
       if (!b.positioned) {
-        return { id: b.tableId, x: null, y: null, w: null, h: null, rotation: null, shape: null };
+        return { id: b.tableId, x: null, y: null, w: null, h: null, rotation: null, shape: null, bookable: b.bookable };
       }
       return {
         id: b.tableId,
@@ -223,8 +230,12 @@ export function toSavePayload(
         h: Math.round(b.h),
         rotation: Math.round(((b.rotation % 360) + 360) % 360) % 360,
         shape: b.shape,
+        bookable: b.bookable,
       };
     }),
+    p_combinations: combinations == null
+      ? null
+      : combinations.map((c) => ({ min: c.min, max: c.max, table_ids: [...c.tableIds].sort() })),
   };
 }
 
