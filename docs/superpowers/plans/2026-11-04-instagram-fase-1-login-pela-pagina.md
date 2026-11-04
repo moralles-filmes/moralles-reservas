@@ -160,7 +160,7 @@
     - `manyPages`: "Selecione só a Página desta loja ao conectar" (409, corpo `{ error, usernames }`).
   - Sai `notProfessional`.
 
-- [ ] **Passo 1: trocar o `transport` do fixture pelos quatro endpoints do Facebook e escrever os testes:**
+- [x] **Passo 1: trocar o `transport` do fixture pelos quatro endpoints do Facebook e escrever os testes:**
   - **sequência feliz:** GET `oauth/access_token` (code) → GET `oauth/access_token` (`fb_exchange_token`) → GET `me/accounts` → GET `debug_token` (com `input_token = PAGE_TOKEN`) → POST `{PAGE}/subscribed_apps`. O `store_…` recebe `p_ig_user_id = IG`, `p_page_id = PAGE` (`PAGE ≠ IG`), `p_token = PAGE_TOKEN`, `p_expires_at = "2027-02-02T14:45:36.000Z"` (fixture `data_access_expires_at: 1801579536`) e `p_account_type = null`; a resposta é `{ unit_slug, username, subscribed: true }`.
   - **prazo de acesso:** `debug_token` com `data_access_expires_at: 0` grava `p_expires_at = null`. `debug_token` com 500 ou erro do Graph **não bloqueia** a conexão: grava `p_expires_at = null` e loga `instagram_debug_token_failed` só com `errorClass`/`httpStatus` (escolha minha: a leitura é informativa, não é gate).
   - **token do usuário:** `USER_LONG`, `SHORT`, `APP_SECRET` e `CODE` não aparecem em nenhum argumento de RPC, em `harness.logs` nem em nenhum corpo de resposta. `PAGE_TOKEN` só aparece no argumento `p_token`.
@@ -168,13 +168,13 @@
   - **`start`:** o `authorize_url` tem `config_id` igual ao env; sem `INSTAGRAM_LOGIN_CONFIG_ID`, ou com `"abc"`, dá 503 sem `state`.
   - **`resubscribe`:** conta com `page_id` nulo → 409 sem chamada ao Graph; conta com `page_id` → POST `{PAGE}/subscribed_apps` com o token do cofre.
   - Os testes atuais de gates (papel, grant, state, 503 de leitura, P0001/42501/22023) continuam, só com o fixture novo.
-- [ ] **Passo 2:** `npx vitest run src/lib/instagram-connect-request.test.ts`. Esperado: FAIL.
-- [ ] **Passo 3:** implementar o adapter e a EF.
+- [x] **Passo 2:** `npx vitest run src/lib/instagram-connect-request.test.ts`. Esperado: FAIL.
+- [x] **Passo 3:** implementar o adapter e a EF.
   - No `callback`, a ordem dos gates não muda até o slug.
   - Depois: `exchangeCode` → `toLongLivedUser` → `listPages` → `choosePage` → `debugToken` + `parseDataAccessExpiry` → `store_…` → `subscribePage` → `record_…`.
   - O comentário de topo da EF descreve o fluxo novo.
-- [ ] **Passo 4:** `npx vitest run src/lib/instagram-connect-request.test.ts src/lib/instagram-graph-core.test.ts src/lib/instagram-config-core.test.ts` e `deno check supabase/functions/instagram-connect/index.ts`. Esperado: PASS e exit 0.
-- [ ] **Passo 5:** commit `feat(instagram): conexão pelo Login do Facebook com a Página`.
+- [x] **Passo 4:** `npx vitest run src/lib/instagram-connect-request.test.ts src/lib/instagram-graph-core.test.ts src/lib/instagram-config-core.test.ts` e `deno check supabase/functions/instagram-connect/index.ts`. Esperado: PASS e exit 0.
+- [x] **Passo 5:** commit `feat(instagram): conexão pelo Login do Facebook com a Página`.
 
 ### Task 4: envio pelo worker e pelo envio manual
 
