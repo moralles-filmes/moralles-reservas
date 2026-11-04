@@ -35,7 +35,7 @@ O plano B é o **Login do Facebook para Empresas com a Página** ligada ao Insta
 **Requisitos da loja**
 - Conta do Instagram **Profissional** ligada a uma **Página do Facebook**.
 - Quem conecta tem na Página a tarefa MODERATE ou MANAGE. O envio pede MESSAGE e o perfil do cliente pede MODERATE.
-- No app do Instagram, a opção "Permitir acesso às mensagens" precisa estar ligada (Configurações › Mensagens e respostas ao story › Controles de mensagens › Ferramentas conectadas).
+- No app do Instagram, a opção "Permitir acesso às mensagens" precisa estar ligada (menu ☰ › Como as outras pessoas podem interagir com você › Mensagens e respostas ao story › Solicitações de mensagem; caminho confirmado no app pelo responsável no piloto).
 
 **Permissões**
 - `instagram_basic`, `instagram_manage_messages`, `pages_manage_metadata`, `pages_show_list` e `pages_read_engagement` (esta última para o perfil do cliente).

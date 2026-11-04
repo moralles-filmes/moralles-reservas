@@ -353,7 +353,30 @@
   - o responsável gravou o `instagram_app_secret` (chave do app Moralles Reservas);
   - as telas compartilhadas ficaram como antes.
   - O `meta_app_secret` já guardava a mesma chave desde 03/11. Isso é inofensivo, porque o WhatsApp oficial não lê esse segredo. A nota da spec foi corrigida.
-- **Pendente:** o merge e o piloto na Moralles (módulo, webhook da Meta, app Live, conexão e E2E).
+- **Merge** do PR #66: `main` `2f82a10`, Vercel produção `READY`.
+
+**Piloto na Moralles (2026-11-04, horários em UTC).** Cada passo foi autorizado pelo responsável.
+- **18:34, módulo:** grant `instagram` só na Moralles, com `dm_enabled` falso.
+- **18:37, webhook da Meta:** objeto Instagram, campo `messages` v27.0; a verificação GET deu 200.
+- **18:44, conexão:** `@morallesfilmes`, Página Moralles Films `758899170635576`, `status` `connected`, `token_expires_at` 2027-02-02 (o `debug_token` com o app token no header funcionou na Meta real).
+  - A inscrição da Página falhou: `instagram_connect_subscribe_failed` HTTP 403, `graphCode` 200 (permissão). O Important 2 se confirmou, e a decisão foi a opção (a).
+  - Uma DM de teste às 18:47 não gerou nenhum POST no `webhook-instagram` até 18:49.
+- **18:55, painel da Meta (o agente executou, com autorização):** caso de uso "Interagir com os clientes no Messenger" adicionado (`pages_manage_metadata` e `pages_messaging` "Pronto para teste"); a config `950774527855623` ganhou `pages_manage_metadata` (mesmo id).
+- **19:00, reconexão:** de novo 403/200, mesmo com `pages_manage_metadata` concedida em Integrações comerciais.
+- **19:07, config + `pages_messaging` (7 permissões) e reconexão:** `subscribed_fields` `["messages"]`. A inscrição exige as duas permissões na config; sem `pages_messaging`, o `subscribed_apps(messages)` dá 403/200.
+- **App publicado (Live)** pelo responsável no painel. As permissões continuam em acesso padrão: só quem tem papel no app conversa com a IA.
+- **19:08, entrega:** POST 200 no `webhook-instagram`, `instagram_webhook_authenticated` com o segredo `instagram`; descarte `dm_disabled` (o Direct ainda estava desligado). A entrega de ponta a ponta funcionou.
+- **19:11–19:12, primeiro E2E com o Direct ligado:** o primeiro turno da IA deu `success`. O cliente mandou um texto com telefone, e o IG gerou sozinho uma mensagem separada com anexo `template` (cartão "Phone number") 3 s depois. O placeholder de mídia superou o texto no debounce: texto `debounced_superseded`, cartão `media_response`.
+  - Correção: PR #72 (`main` `aee4adb`), mensagem só com anexos `template` fecha `ignored_auto_card`. `process-instagram-inbound` v2 publicado às 19:22 (rollback: redeploy da `main` `2f82a10`).
+- **19:23–19:24, E2E com a v2:** texto `success`, cartão `ignored_auto_card`. Reserva `source=instagram` `confirmed` para 2026-11-05 12:00, 2 pessoas, com o cliente ligado e 1 linha em `instagram_contact_reservations`.
+  - A confirmação pelo WhatsApp deu `send_whatsapp_not_configured`: a Moralles não tem WhatsApp, como o responsável já esperava.
+- **Não medido no piloto:** passos 6–10 do E2E (filtro Instagram em Conversas, Assumir, resposta manual, Devolver, IA de volta), ecos `echo_own` × `echo_unknown`, latência do ACK e `get_instagram_diagnostics`.
+
+**Pendências depois do piloto.**
+- Texto mais mídia real na mesma rajada perde o texto (`turn.ts`, compartilhado com o WhatsApp): precisa de spec própria.
+- App Review e acesso avançado antes de ligar outras lojas, incluindo `pages_manage_metadata` e `pages_messaging`.
+- Remover os usuários do sistema de teste nas BMs Moralles e Aldeia da Serra 2.
+- Reconectar a Moralles antes de 2027-02-02.
 
 **Rulings (controller e responsável) e custo se errado.**
 - Remoção de `parseLongLived`/`parseMe` e das funções antigas do adapter na Task 5, não nas 1/3: cada task fica verde e o refresh morre junto. Custo: código morto por duas tasks.

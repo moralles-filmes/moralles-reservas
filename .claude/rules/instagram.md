@@ -55,6 +55,7 @@ Plano e decisões: [2026-10-20-instagram-fase-1-direct-conversas.md](../../docs/
 
 - **Texto enviado tem no máximo 1000 bytes UTF-8 por mensagem (`INSTAGRAM_MAX_TEXT_BYTES`), sem markdown.** O limite é em bytes, não caracteres; a divisão não quebra code point.
 - **Resultado com `ok:false` e HTTP 2xx, HTTP nulo, ou `transient` em POST é "desfecho desconhecido": a mensagem pode ter saído.** Use `isGraphOutcomeUnknown`; nunca reenviar sozinho nem gravar como "não enviada".
+- **A inscrição da Página (`POST /{page_id}/subscribed_apps`, `messages`) só passa com `pages_manage_metadata` E `pages_messaging` na configuração de login (caso de uso "Interagir com os clientes no Messenger" no app).** Faltando uma, a Meta devolve HTTP 403 com código 200 e o webhook nunca chega, sem outro erro visível; reconectar depois de mudar a config. Visto no piloto.
 - **Classes de erro do Graph são as da tabela do plano (`190` → `reauth_required` etc.), mais 429/17/32 → `rate_limited` e 1/2 → `transient`.** Código `10` sem permissão também cai em `window_closed`: medir no piloto. `classifyGraphError`.
 
 ## Token
