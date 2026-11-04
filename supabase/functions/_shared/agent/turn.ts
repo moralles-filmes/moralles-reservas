@@ -1643,6 +1643,7 @@ export function createAgentTurn(io: AgentTurnIO) {
 
     // Aviso adiado de mídia da rajada: só depois da resposta entregue (desfecho
     // success/success_history_degraded). Falha aqui nunca muda o desfecho.
+    let noticeStage: "send" | "append" = "send";
     try {
       const firstPending = pendingUserMsgs[0];
       const sinceFloor = Date.now() - MEDIA_NOTICE_MAX_AGE_SECONDS * 1000;
@@ -1658,14 +1659,19 @@ export function createAgentTurn(io: AgentTurnIO) {
         const noticeText = mediaNoticeText(kinds);
         const noticeSend = await sendAutomatic(noticeText);
         if (noticeSend.ok) {
-          await appendToConversation(conv.id, conv.messages || [], "assistant", noticeText, { author: "automation" });
-          jsonLog("info", { requestId, evt: "media_notice_sent", convId: conv.id, count: kinds.length });
+          noticeStage = "append";
+          const noticeAppend = await appendToConversation(conv.id, conv.messages || [], "assistant", noticeText, { author: "automation" });
+          if (noticeAppend.persisted) {
+            jsonLog("info", { requestId, evt: "media_notice_sent", convId: conv.id, count: kinds.length });
+          } else {
+            jsonLog("warn", { requestId, evt: "media_notice_failed", convId: conv.id, stage: "append" });
+          }
         } else {
           jsonLog("warn", { requestId, evt: "media_notice_failed", convId: conv.id, stage: "send" });
         }
       }
     } catch (noticeErr) {
-      jsonLog("warn", { requestId, evt: "media_notice_failed", convId: conv.id, stage: "send", ...errorLogFields(noticeErr) });
+      jsonLog("warn", { requestId, evt: "media_notice_failed", convId: conv.id, stage: noticeStage, ...errorLogFields(noticeErr) });
     }
 
     // Fim do turno: liquida o custo real e devolve a diferença ao disponível.

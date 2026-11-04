@@ -278,12 +278,26 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
         case 'record_conversation_media': {
           if (args.p_conversation_id !== ids.conversation) return fail('media_arguments');
           const message = structuredClone(args.p_message) as ChatRow, messages = conversation.messages as ChatRow[];
-          if (message.event_id && messages.some(row => row.event_id === message.event_id)) return { data: { decision: 'duplicate', variant: false }, error: null };
-          const lastReply = messages.map(row => row.role as unknown).reduce<number>((acc: number, role: unknown, i: number) => role === 'assistant' || role === 'human' ? i : acc, -1);
-          const hasText = messages.slice(lastReply + 1).some(row => row.role === 'user' && !row.media_kind && String(row.content ?? '').trim());
-          const decision = conversation.status !== 'ai_active' || args.p_notice_allowed === false ? 'suppressed' : hasText ? 'deferred' : 'notice_now';
-          messages.push({ ...message, media_notice: decision === 'deferred' ? 'deferred' : 'none' });
-          return { data: { decision, variant: decision === 'deferred' }, error: null };
+          if (message.role !== 'user' || typeof message.media_kind !== 'string' || !message.media_kind.trim()) throw new Error('invalid media_kind');
+          const eventId = typeof message.event_id === 'string' ? message.event_id.trim() : '';
+          if (eventId && messages.some(row => row.event_id === eventId)) return { data: { decision: 'duplicate', variant: false }, error: null };
+          const now = h.now, burst = Number(args.p_burst_seconds) * 1000, grace = Number(args.p_debounce_grace_seconds) * 1000;
+          const arrival = (row: ChatRow) => Date.parse(String(row.received_at ?? row.timestamp));
+          let lastReply = -1;
+          messages.forEach((row, i) => { if (row.role === 'assistant' || row.role === 'human') lastReply = i; });
+          const isText = (row: ChatRow) => row.role === 'user' && !row.media_kind;
+          const unanswered = messages.slice(lastReply + 1).filter(row => isText(row) && String(row.content ?? '').trim());
+          const newest = unanswered.length ? Math.max(...unanswered.map(arrival)) : null;
+          const variant = messages.some(row => isText(row) && arrival(row) >= now - burst);
+          const lock = conversation.ai_lock_until ? Date.parse(String(conversation.ai_lock_until)) : null;
+          let decision: string, notice: string;
+          if (!args.p_notice_allowed) { decision = 'suppressed'; notice = 'none'; }
+          else if (newest !== null && newest >= now - burst && ((lock !== null && lock > now) || newest >= now - grace)) { decision = 'deferred'; notice = 'deferred'; }
+          else { decision = 'notice_now'; notice = 'claimed'; }
+          messages.push({ ...message, media_notice: notice });
+          const at = String(message.timestamp);
+          conversation.last_message_at = !conversation.last_message_at || Date.parse(at) > Date.parse(String(conversation.last_message_at)) ? at : conversation.last_message_at;
+          return { data: { decision, variant }, error: null };
         }
         case 'claim_conversation_media_notices': {
           if (controls.claimError) return { data: null, error: { code: 'synthetic_claim' } };
@@ -380,7 +394,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     if (unexpected.length) throw new Error(`unexpected_chat_io:${unexpected.join(',')}; ${JSON.stringify(trace.slice(-8))}; ${h.logs.slice(-5).join('; ')}`);
     return response;
   }
-  return { ids,tables,controls,calls,sdk,trace,queries,unexpected,harness:h,run,request };
+  return { ids,tables,controls,calls,sdk,trace,queries,unexpected,harness:h,run,request,rpc: db.rpc.bind(db) };
 }
 
 export async function createTemplateDispatchFixture(promotional = false) {

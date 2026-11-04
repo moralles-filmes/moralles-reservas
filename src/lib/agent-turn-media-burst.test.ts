@@ -124,6 +124,17 @@ describe('rajada texto + mídia no turno', () => {
     await f.runChatControl({ kind: 'customer_text', text: 'Oi' });
     expect(outcomes(c)).toEqual(['send_error']);
     expect(c.trace.map((t) => t.operation)).not.toContain(CLAIM);
+    expect(sentTexts(c).some((t) => t.includes('Recebi também'))).toBe(false);
+  });
+
+  it('agent_error com adiada: sem claim e sem aviso', async () => {
+    const { f, c } = setup();
+    c.controls.sdkResponses = [new Error('synthetic provider down'), new Error('synthetic provider down')];
+    onDebounceRead(c, () => deferredFixture(c));
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi' });
+    expect(outcomes(c)).toEqual(['agent_error']);
+    expect(c.trace.map((t) => t.operation)).not.toContain(CLAIM);
+    expect(sentTexts(c).some((t) => t.includes('Recebi também'))).toBe(false);
   });
 
   it('ai_reply_suppressed_by_human com adiada: sem claim e sem aviso', async () => {
@@ -142,10 +153,12 @@ describe('rajada texto + mídia no turno', () => {
     c.controls.sdkResponses = [text('Resposta')];
     // Pendente de 10 min atrás, sem resposta depois dela.
     push(c, { role: 'user', content: 'antiga', author: 'customer', timestamp: '2026-10-05T14:50:00Z', received_at: '2026-10-05T14:50:00Z', event_id: 'old' });
+    push(c, media(c, 'image', { timestamp: '2026-10-05T14:50:01Z', received_at: '2026-10-05T14:50:01Z', event_id: 'old-media' }));
     await f.runChatControl({ kind: 'customer_text', text: 'Oi' });
     const claim = c.trace.find((t) => t.operation === CLAIM)!;
     const since = Date.parse((claim.value as { p_since: string }).p_since);
     expect(since).toBeGreaterThanOrEqual(Date.parse('2026-10-05T15:00:00Z') - 120_000);
+    expect(sentTexts(c)).toEqual(['Resposta']);
   });
 
   it('claim que falha: success, log media_notice_failed e nenhum aviso', async () => {
@@ -161,5 +174,54 @@ describe('rajada texto + mídia no turno', () => {
 
   it('MEDIA_REPLY_TEXT continua intacto', () => {
     expect(MEDIA_REPLY_TEXT).toContain('Por aqui só consigo ler texto');
+  });
+});
+
+describe('fixture: emulação de record_conversation_media (semântica do SQL)', () => {
+  const NOW_ISO = '2026-10-05T15:00:00Z';
+  const record = (c: Chat, over: Record<string, unknown> = {}, allowed = true) => c.rpc('record_conversation_media', {
+    p_conversation_id: c.ids.conversation,
+    p_message: { role: 'user', content: '[imagem]', author: 'customer', timestamp: NOW_ISO, received_at: NOW_ISO, event_id: 'm1', media_kind: 'image', ...over },
+    p_notice_allowed: allowed, p_burst_seconds: 60, p_debounce_grace_seconds: 11,
+  });
+  const userText = (ageSec: number, extra: Record<string, unknown> = {}) => {
+    const at = new Date(Date.parse(NOW_ISO) - ageSec * 1000).toISOString();
+    return { role: 'user', content: 'oi', author: 'customer', timestamp: at, received_at: at, event_id: `t${ageSec}`, ...extra };
+  };
+  const last = (c: Chat) => (c.tables.conversations[0].messages as { media_notice?: string }[]).at(-1)!;
+
+  it('texto recente dentro da folga: deferred + variant', async () => {
+    const { c } = setup(); push(c, userText(5));
+    expect(await record(c)).toEqual({ data: { decision: 'deferred', variant: true }, error: null });
+    expect(last(c).media_notice).toBe('deferred');
+  });
+  it('texto na rajada mas fora da folga e sem lock: notice_now (claimed), variant true', async () => {
+    const { c } = setup(); push(c, userText(30));
+    expect(await record(c)).toEqual({ data: { decision: 'notice_now', variant: true }, error: null });
+    expect(last(c).media_notice).toBe('claimed');
+  });
+  it('texto na rajada fora da folga com lock vigente: deferred', async () => {
+    const { c } = setup(); push(c, userText(30));
+    c.tables.conversations[0].ai_lock_until = new Date(Date.parse(NOW_ISO) + 60_000).toISOString();
+    expect((await record(c) as { data: { decision: string } }).data.decision).toBe('deferred');
+  });
+  it('texto velho (fora da rajada): notice_now e variant false', async () => {
+    const { c } = setup(); push(c, userText(600));
+    expect(await record(c)).toEqual({ data: { decision: 'notice_now', variant: false }, error: null });
+  });
+  it('texto já respondido não conta como pendente, mas conta no variant', async () => {
+    const { c } = setup(); push(c, userText(5)); push(c, { role: 'assistant', content: 'r', author: 'ai', timestamp: NOW_ISO });
+    expect(await record(c)).toEqual({ data: { decision: 'notice_now', variant: true }, error: null });
+  });
+  it('p_notice_allowed=false: suppressed, media_notice none, mesmo com texto recente', async () => {
+    const { c } = setup(); push(c, userText(5));
+    expect((await record(c, {}, false) as { data: { decision: string } }).data.decision).toBe('suppressed');
+    expect(last(c).media_notice).toBe('none');
+  });
+  it('mesmo event_id: duplicate e nada gravado', async () => {
+    const { c } = setup(); await record(c);
+    const n = (c.tables.conversations[0].messages as unknown[]).length;
+    expect(await record(c)).toEqual({ data: { decision: 'duplicate', variant: false }, error: null });
+    expect((c.tables.conversations[0].messages as unknown[]).length).toBe(n);
   });
 });
