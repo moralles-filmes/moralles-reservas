@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { StatusPill } from "@/components/ui/status-pill";
 import type { Mesa, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
-import type { TableState } from "@/lib/table-situation-core";
+import { brtNow, reservationLiveSituation, type TableState } from "@/lib/table-situation-core";
 import { SITUATION_TONE, TONE_CLASS, situationText } from "../situation-labels";
 
 type ReservaComCliente = Reserva & { customer?: { name?: string | null } | null };
@@ -14,6 +15,10 @@ interface Props {
   waitlistSeated: WaitlistEntry[];
   /** Preenchido pelas ações da planta (Task 12). */
   actions?: ReactNode;
+  now: Date;
+  durationMinutes: number;
+  /** Reserva tocada em "Próximas chegadas": fica destacada na lista da mesa. */
+  pickedReservationId?: string | null;
 }
 
 const hhmmBrt = new Intl.DateTimeFormat("pt-BR", {
@@ -25,7 +30,17 @@ const hhmmBrt = new Intl.DateTimeFormat("pt-BR", {
 
 const plural = (n: number) => `${n} ${n === 1 ? "pessoa" : "pessoas"}`;
 
-export function PainelMesa({ table, state, reservations, walkIns, waitlistSeated, actions }: Props) {
+export function PainelMesa({
+  table,
+  state,
+  reservations,
+  walkIns,
+  waitlistSeated,
+  actions,
+  now,
+  durationMinutes,
+  pickedReservationId,
+}: Props) {
   let body: ReactNode = <p className="text-sm text-muted-foreground">Toque numa mesa para ver os detalhes</p>;
 
   if (table && state) {
@@ -61,6 +76,22 @@ export function PainelMesa({ table, state, reservations, walkIns, waitlistSeated
       note = nextTime ? `Livre até a reserva das ${nextTime}` : "Livre pelo resto do dia";
     }
 
+    // As demais reservas de hoje desta mesa, ainda não chegadas. Sem elas, tocar no Guilherme
+    // das 19:00 abria a mesa mostrando só a reserva atrasada do meio-dia, como se fosse a dele.
+    const today = brtNow(now).date;
+    const shownId = occ?.kind === "reservation" ? occ.id : state.focusReservationId;
+    const others = reservations
+      .filter(
+        (r) =>
+          r.table_id === table.id &&
+          r.id !== shownId &&
+          r.date === today &&
+          !r.arrived_at &&
+          !r.released_at &&
+          (r.status === "pending" || r.status === "confirmed"),
+      )
+      .sort((a, b) => a.time.localeCompare(b.time));
+
     body = (
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -89,6 +120,36 @@ export function PainelMesa({ table, state, reservations, walkIns, waitlistSeated
         )}
         {note && <p className="text-sm text-muted-foreground">{note}</p>}
         {actions}
+        {others.length > 0 && (
+          <div data-testid="painel-mesa-outras" className="border-t border-border pt-3">
+            <p className="mb-1 text-xs font-medium text-muted-foreground">Outras reservas de hoje nesta mesa</p>
+            <ul className="space-y-1">
+              {others.map((r) => {
+                const live = reservationLiveSituation(r, now, durationMinutes);
+                const picked = r.id === pickedReservationId;
+                return (
+                  <li
+                    key={r.id}
+                    aria-current={picked ? "true" : undefined}
+                    className={cn(
+                      "flex items-center justify-between gap-2 rounded-md px-2 py-1.5",
+                      picked && "bg-accent/50 ring-1 ring-ring",
+                    )}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">{r.customer?.name ?? "Cliente"}</span>
+                      <span className="block text-xs text-muted-foreground">{plural(r.party_size)}</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      {live && <StatusPill tone={live.tone}>{live.label}</StatusPill>}
+                      <span className="text-sm tabular-nums">{r.time.slice(0, 5)}</span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
       </div>
     );
   }

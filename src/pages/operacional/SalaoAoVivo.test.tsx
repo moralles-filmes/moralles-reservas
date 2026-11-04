@@ -141,6 +141,23 @@ describe("SalaoAoVivo", () => {
     expect(screen.getByRole("button", { name: /^Mesa 5,/ })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("tocar numa reserva mais tarde de uma mesa atrasada destaca a reserva tocada, sem o atraso da outra", () => {
+    // Mesa 2: r2 das 14:40 atrasada (agora 15:00) e rg das 19:00 ainda por vir.
+    current = { ...hookData, reservations: [...hookData.reservations, res("rg", "t2", "19:00")] };
+    renderPage();
+    fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente rg").closest("button")!);
+    const outras = within(screen.getByTestId("painel-mesa")).getByTestId("painel-mesa-outras");
+    const linha = within(outras).getByText("Cliente rg").closest("li")!;
+    expect(linha).toHaveAttribute("aria-current", "true");
+    expect(linha).toHaveTextContent("19:00");
+    expect(linha).not.toHaveTextContent(/Atrasada/);
+    // Tocar direto na mesa tira o destaque.
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 2,/ }));
+    expect(within(screen.getByTestId("painel-mesa-outras")).getByText("Cliente rg").closest("li")).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
   it("isError mostra Tentar de novo", () => {
     current = { ...hookData, isError: true };
     renderPage();

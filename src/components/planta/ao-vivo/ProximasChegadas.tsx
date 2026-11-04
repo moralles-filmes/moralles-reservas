@@ -9,7 +9,8 @@ interface Props {
   tables: Mesa[];
   /** "Hoje" em BRT (YYYY-MM-DD). */
   today: string;
-  onPick: (table: Mesa) => void;
+  /** Mesa da reserva e a própria reserva: o painel destaca a escolhida, não só a da vez da mesa. */
+  onPick: (table: Mesa, reservationId: string) => void;
 }
 
 export function ProximasChegadas({ reservations, tables, today, onPick }: Props) {
@@ -36,7 +37,7 @@ export function ProximasChegadas({ reservations, tables, today, onPick }: Props)
                 <button
                   type="button"
                   disabled={!table}
-                  onClick={() => table && onPick(table)}
+                  onClick={() => table && onPick(table, r.id)}
                   className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left transition-transform duration-200 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-70 coarse:min-h-[44px]"
                 >
                   <span className="min-w-0">
