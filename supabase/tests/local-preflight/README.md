@@ -3531,9 +3531,9 @@ aplicadas em lugar nenhum):
   antiga ocupada na hora nova, passa (o trigger da janela agora se chama
   `reservations_occupant_sync_slot` e roda depois da sincronia). Controle: com
   a janela antes da sincronia, o mesmo UPDATE dá `23P01`.
-- **A-1…A-3 (8633–8635):** anon não grava `table_id` nem `table_choice` em
-  `reservations` (`42501 reservation_table_forbidden`); anon sem mesa segue
-  gravando como hoje (a policy `anon_insert_reservations` da 023b continua).
+- **A-1…A-3 (8633–8635):** anon não grava em `reservations` com ou sem mesa
+  (`42501 permission denied`, migration `20261105120300`; antes dela, o guard
+  da 120100 barrava só `table_id`/`table_choice`).
 - **R-16, R-17 (8636–8637):** o conflito da `set_occupant_tables` não mostra
   nome de cliente de outra organização; `insert_reservation_with_tables` com
   cliente de outra organização → `22023 reservation_row_invalid`.
@@ -3544,3 +3544,21 @@ aplicadas em lugar nenhum):
 três migrations e 126/126 com as três reaplicadas; 81 em 83/83 e 82 em 52/52;
 backfill `7 reservas, 1 com overlap_ok, 1 com mesa de outra unidade ignoradas`
 e 83c PASS.
+
+Migration `20261105120300_fechar_anon_insert_reservations.sql` (drop da policy
+`anon_insert_reservations` da 023b + `revoke insert` de anon em
+`reservations`). Aplicar depois das três acima e rodar o 83, 81 e 82 de novo.
+O P-13a do 81 (8238) passou a usar `service_role`: o trigger
+`born_with_presence` é o que ele prova, e anon já não chega lá.
+
+- **A-1…A-3 (8633–8635):** ver acima.
+- **A-4…A-6 (8640–8642), controles:** devolvendo INSERT e policy dentro do
+  subbloco, anon sem mesa volta a gravar; só o INSERT de volta, a RLS recusa
+  (cada tranca segura sozinha); com as duas de volta, anon com mesa ainda cai
+  no `reservation_table_forbidden` da 120100.
+- **A-7 (8643):** catálogo sem a policy e `anon` sem `INSERT`.
+
+**Resultados observados em 04/11/2026** (contêiner novo): **125/130 com as três
+primeiras** (os 5 FAIL são A-1, A-2, A-3, A-5, A-7; 81 em 83/83), **130/130**
+com a 120300 e 130/130 com as quatro reaplicadas; 81 em 83/83 e 82 em 52/52
+nas duas rodadas.

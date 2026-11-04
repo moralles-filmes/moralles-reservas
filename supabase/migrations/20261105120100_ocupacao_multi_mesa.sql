@@ -278,11 +278,11 @@ create trigger reservations_occupant_sync_slot
   for each row execute function app_private.refresh_occupant_slot();
 
 -- ─── Anon não escolhe mesa por escrita direta ────────────────────────────────
--- A policy anon_insert_reservations (023b) segue viva e não restringe coluna.
--- Nenhum caminho do produto grava reservations como anon (a reserva pública
--- vai pela EF com service role), mas com a exclusão por duração uma linha anon
--- com mesa trancaria a janela inteira e pularia bookable e combinações.
--- Fechar a policy inteira é decisão à parte; aqui só a mesa.
+-- A policy anon_insert_reservations (023b) não restringe coluna. Nenhum caminho
+-- do produto grava reservations como anon (a reserva pública vai pela EF com
+-- service role), mas com a exclusão por duração uma linha anon com mesa
+-- trancaria a janela inteira e pularia bookable e combinações. A policy e o
+-- INSERT de anon caem na 20261105120300; este guard fica como terceira tranca.
 create or replace function app_private.guard_anon_reservation_table()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin

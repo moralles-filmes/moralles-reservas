@@ -777,14 +777,28 @@ select pg_temp.caso(8632, 'X-5 controle: com a janela antes da sincronia, o mesm
   $s$ || pg_temp.res('N1', 'T13', 'D1', '19:00') || pg_temp.res('N2', 'T13', 'D1', '21:00') || $s$
   update public.reservations set table_id = '{T14}', time = '21:00' where id = '{N1}'; select 'x'$s$,
   '23P01%occupant_tables_no_overlap%');
+-- A-1…A-3: com a 20261105120300, anon não grava reservations de jeito nenhum
+-- (sem INSERT, nem chega à RLS). A-4…A-6 reabrem as trancas uma a uma dentro
+-- do subbloco desfeito para provar que cada uma segura sozinha.
+create function pg_temp.reabrir_anon(p_policy boolean) returns text language sql as $f$
+  select 'grant insert on table public.reservations to anon;'
+    || case when p_policy then $q$
+    drop policy if exists anon_insert_reservations on public.reservations;
+    create policy anon_insert_reservations on public.reservations for insert to anon
+      with check (unit_id is not null and exists (
+        select 1 from public.units u join public.organizations o on o.id = u.organization_id
+         where u.id = reservations.unit_id and u.is_public = true and o.is_public = true));$q$ else '' end
+    || $q$ select set_config('role', 'anon', true), set_config('request.jwt.claims', '{"role":"anon"}', true);$q$
+$f$;
+
 select pg_temp.caso(8633, 'A-1 anon insere reserva com mesa', 'anon',
-  pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$ select 'x'$s$, '42501 reservation_table_forbidden');
+  pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$ select 'x'$s$, '42501 permission denied for table reservations');
 select pg_temp.caso(8634, 'A-2 anon insere reserva sem mesa com table_choice', 'anon',
   $s$insert into public.reservations (id, customer_id, date, time, party_size, status, reservation_code, unit_id, table_choice)
     values ('{N1}', '{F1}', '{D1}', '19:00', 4, 'pending', 'P83-N1', '{A}', 'customer'); select 'x'$s$,
-  '42501 reservation_table_forbidden');
-select pg_temp.caso(8635, 'A-3 anon sem mesa segue gravando (caminho anon legado intacto)', 'anon',
-  pg_temp.res('N1', null, 'D1', '19:00') || $s$ select 'x'$s$, 'ok');
+  '42501 permission denied for table reservations');
+select pg_temp.caso(8635, 'A-3 anon sem mesa não grava mais (policy 023b fechada)', 'anon',
+  pg_temp.res('N1', null, 'D1', '19:00') || $s$ select 'x'$s$, '42501 permission denied for table reservations');
 select pg_temp.caso(8636, 'R-16 conflito não mostra nome de cliente de outra organização', 'postgres',
   pg_temp.cliente_fz() || pg_temp.res('N1', 'T14', 'D1', '19:00') || $s$
   insert into public.reservations (id, customer_id, table_id, date, time, party_size, status, reservation_code, unit_id)
@@ -806,6 +820,21 @@ select pg_temp.caso(8639, 'K-4b controle: o mesmo salão sem link muda de unidad
   $s$insert into public.halls (id, unit_id, name) values ('{SV}', '{A}', 'Vazio 83');
   $s$ || pg_temp.como('PA') || $s$
   update public.halls set unit_id = '{B}' where id = '{SV}'; select 'x'$s$, 'ok');
+
+-- ═══ Anon fora de reservations (migration 20261105120300) ═══════════════════
+select pg_temp.caso(8640, 'A-4 controle: com INSERT e policy de volta, anon sem mesa grava', 'postgres',
+  pg_temp.reabrir_anon(true) || pg_temp.res('N1', null, 'D1', '19:00') || $s$ select 'x'$s$, 'ok');
+select pg_temp.caso(8641, 'A-5 só o INSERT de volta (sem policy): a RLS recusa', 'postgres',
+  pg_temp.reabrir_anon(false) || pg_temp.res('N1', null, 'D1', '19:00') || $s$ select 'x'$s$,
+  '42501 new row violates row-level security policy%');
+select pg_temp.caso(8642, 'A-6 com INSERT e policy de volta, anon com mesa: o guard da 120100 recusa', 'postgres',
+  pg_temp.reabrir_anon(true) || pg_temp.res('N1', 'T13', 'D1', '19:00') || $s$ select 'x'$s$,
+  '42501 reservation_table_forbidden');
+select pg_temp.caso(8643, 'A-7 catálogo: sem a policy anon_insert_reservations e anon sem INSERT', 'postgres',
+  $s$select (not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'reservations'
+                 and policyname = 'anon_insert_reservations'))
+     || '/' || (not has_table_privilege('anon', 'public.reservations', 'INSERT'))$s$,
+  'ok', $c$$1 = 'true/true'$c$);
 
 -- ═══ Resultado ═══════════════════════════════════════════════════════════════
 \o
