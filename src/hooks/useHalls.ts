@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { Hall, HallSchedule } from "@/types/reserva";
+import { HALL_NOT_IN_UNIT_MESSAGE, assertWrote } from "@/lib/layout-errors";
 
 export interface HallWithSchedules extends Hall {
   schedules: HallSchedule[];
@@ -49,19 +50,25 @@ export function useHalls(unitId: string, { includeInactive = false } = {}) {
   });
 }
 
-export function useHall(hallId: string | undefined) {
+/**
+ * Salão da unidade ativa. A RLS libera todas as unidades do membro, então o
+ * filtro de `unit_id` é o que impede abrir o salão de outra unidade dentro desta
+ * tela; salão alheio ou inexistente volta `null`.
+ */
+export function useHall(unitId: string, hallId: string | undefined) {
   return useQuery({
-    queryKey: ["hall", hallId],
+    queryKey: ["hall", unitId, hallId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("halls")
         .select("*")
         .eq("id", hallId!)
-        .single();
+        .eq("unit_id", unitId)
+        .maybeSingle();
       if (error) throw error;
-      return data as Hall;
+      return (data ?? null) as Hall | null;
     },
-    enabled: !!hallId,
+    enabled: !!unitId && !!hallId,
   });
 }
 
@@ -97,14 +104,15 @@ export function useUpdateHall(unitId: string) {
         .from("halls")
         .update(patch)
         .eq("id", id)
-        .select()
-        .single();
+        .eq("unit_id", unitId)
+        .select();
       if (error) throw error;
-      return data as Hall;
+      assertWrote(data, HALL_NOT_IN_UNIT_MESSAGE);
+      return data![0] as Hall;
     },
-    onSuccess: (_data, variables) => {
+    onSettled: (_data, _err, variables) => {
       qc.invalidateQueries({ queryKey: ["halls", unitId] });
-      qc.invalidateQueries({ queryKey: ["hall", variables.id] });
+      qc.invalidateQueries({ queryKey: ["hall", unitId, variables.id] });
     },
   });
 }
@@ -113,10 +121,16 @@ export function useDeleteHall(unitId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from("halls").delete().eq("id", id);
+      const { data, error } = await supabase
+        .from("halls")
+        .delete()
+        .eq("id", id)
+        .eq("unit_id", unitId)
+        .select("id");
       if (error) throw error;
+      assertWrote(data, HALL_NOT_IN_UNIT_MESSAGE);
     },
-    onSuccess: () => {
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["halls", unitId] });
     },
   });

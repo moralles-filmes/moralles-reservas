@@ -24,6 +24,7 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { HallSchedule } from "@/types/reserva";
 import { toast } from "sonner";
+import { layoutErrorMessage } from "@/lib/layout-errors";
 
 export default function Saloes() {
   const unit = useCurrentUnit();
@@ -69,7 +70,7 @@ export default function Saloes() {
           setNewName("");
           setNewDesc("");
         },
-        onError: (err: Error) => toast.error(err.message ?? "Erro ao criar salão."),
+        onError: (err: Error) => toast.error(layoutErrorMessage(err, "Erro ao criar salão.")),
       },
     );
   };
@@ -161,7 +162,7 @@ export default function Saloes() {
                     updateHall.mutate(
                       { id: h.id, active },
                       {
-                        onError: () => toast.error("Erro ao atualizar salão."),
+                        onError: (err: Error) => toast.error(layoutErrorMessage(err, "Erro ao atualizar salão.")),
                       },
                     )
                   }
