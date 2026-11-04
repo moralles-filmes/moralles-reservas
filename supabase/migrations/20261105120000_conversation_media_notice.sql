@@ -7,9 +7,35 @@
 -- Campos novos no elemento de conversations.messages: media_kind, media_notice
 -- (none | deferred | claimed). Sem DDL de tabela; nada é ativado por esta migration.
 --
--- ROLLBACK (manual; nenhuma coluna ou dado novo além dos campos JSON acima):
+-- ROLLBACK (manual; nenhuma coluna ou dado novo além dos campos JSON acima;
+-- reverta as EFs antes, pois elas chamam estas RPCs):
 --   drop function if exists public.claim_conversation_media_notices(uuid, timestamptz);
 --   drop function if exists public.record_conversation_media(uuid, jsonb, boolean, integer, integer);
+--   drop function if exists app_private.safe_timestamptz(text);
+
+create schema if not exists app_private;
+
+-- Cast tolerante: chegada ilegivel (legado `""`, `abc`, epoca numerica, `2026-13-45`)
+-- vira NULL = "nao recente", e nunca derruba a decisao do aviso. So as RPCs
+-- DEFINER abaixo a chamam (o dono executa; ninguem mais precisa de EXECUTE).
+create or replace function app_private.safe_timestamptz(p_value text)
+returns timestamptz
+language plpgsql
+stable
+set search_path = ''
+as $$
+begin
+  if p_value is null or p_value !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' then
+    return null;
+  end if;
+  return p_value::timestamptz;
+exception when others then
+  return null;
+end;
+$$;
+
+revoke all on function app_private.safe_timestamptz(text)
+  from public, anon, authenticated, service_role;
 
 create or replace function public.record_conversation_media(
   p_conversation_id uuid,
@@ -89,7 +115,7 @@ begin
 
   -- Texto sem resposta = role user, sem media_kind, conteúdo não vazio, depois da última resposta.
   -- A chegada cai para `timestamp` em mensagem legada sem `received_at`.
-  select max(coalesce(t.item->>'received_at', t.item->>'timestamp')::timestamptz)
+  select max(app_private.safe_timestamptz(coalesce(t.item->>'received_at', t.item->>'timestamp')))
     into v_newest_unanswered
     from pg_catalog.jsonb_array_elements(v_messages) with ordinality as t(item, ord)
    where t.ord > v_last_reply
@@ -102,7 +128,7 @@ begin
       from pg_catalog.jsonb_array_elements(v_messages) as t(item)
      where t.item->>'role' = 'user'
        and nullif(t.item->>'media_kind', '') is null
-       and coalesce(t.item->>'received_at', t.item->>'timestamp')::timestamptz
+       and app_private.safe_timestamptz(coalesce(t.item->>'received_at', t.item->>'timestamp'))
            >= v_now - pg_catalog.make_interval(secs => p_burst_seconds)
   ) into v_variant;
 
@@ -167,7 +193,7 @@ begin
      order by t.ord
   loop
     if v_item->>'media_notice' = 'deferred'
-       and coalesce(v_item->>'received_at', v_item->>'timestamp')::timestamptz >= p_since then
+       and app_private.safe_timestamptz(coalesce(v_item->>'received_at', v_item->>'timestamp')) >= p_since then
       v_kinds := v_kinds || (v_item->>'media_kind');
       v_item := v_item || pg_catalog.jsonb_build_object('media_notice', 'claimed');
       v_changed := true;

@@ -116,6 +116,23 @@ begin
   k := public.claim_conversation_media_notices(c, now() - interval '120 seconds');
   perform pg_temp.ok('8311', k = '{}'::text[] and pg_temp.msgs(c)->0->>'media_notice' = 'deferred', k::text);
 
+  -- 8313: chegada legada ilegivel (received_at "", timestamp "abc", epoca, data impossivel)
+  -- gravada direto no jsonb: a decisao e o claim nao erram e tratam como "nao recente".
+  c := pg_temp.conv(jsonb_build_array(
+    jsonb_build_object('role','user','content','oi','timestamp', now()::text, 'received_at', ''),
+    jsonb_build_object('role','user','content','oi2','timestamp', 'abc'),
+    jsonb_build_object('role','user','content','oi3','timestamp', '1730000000'),
+    jsonb_build_object('role','user','content','oi4','timestamp', '2026-13-45T00:00:00Z'),
+    jsonb_build_object('role','user','content','[imagem]','media_kind','image','media_notice','deferred',
+      'timestamp', 'abc', 'received_at', '')));
+  r := public.record_conversation_media(c, pg_temp.media('e13'), true, 60, 11);
+  perform pg_temp.ok('8313a', r = '{"decision":"notice_now","variant":false}'::jsonb, r::text);
+  k := public.claim_conversation_media_notices(c, now() - interval '120 seconds');
+  perform pg_temp.ok('8313b', k = '{}'::text[], k::text);
+  perform pg_temp.ok('8313c', app_private.safe_timestamptz('2026-13-45') is null
+    and app_private.safe_timestamptz('') is null and app_private.safe_timestamptz(null) is null
+    and app_private.safe_timestamptz('2026-11-04T10:00:00Z') is not null);
+
   -- 8312: ACL, SECURITY DEFINER e search_path vazio
   perform pg_temp.ok('8312a', not has_function_privilege('anon',
     'public.record_conversation_media(uuid,jsonb,boolean,integer,integer)', 'execute'));
@@ -135,6 +152,11 @@ begin
   perform pg_temp.ok('8312h', (select bool_and(proconfig @> array['search_path=""']) from pg_proc
       where oid in ('public.record_conversation_media(uuid,jsonb,boolean,integer,integer)'::regprocedure,
                     'public.claim_conversation_media_notices(uuid,timestamptz)'::regprocedure)));
+  perform pg_temp.ok('8312i', not has_function_privilege('anon', 'app_private.safe_timestamptz(text)', 'execute')
+    and not has_function_privilege('authenticated', 'app_private.safe_timestamptz(text)', 'execute')
+    and not has_function_privilege('service_role', 'app_private.safe_timestamptz(text)', 'execute'));
+  perform pg_temp.ok('8312j', (select proconfig @> array['search_path=""'] from pg_proc
+      where oid = 'app_private.safe_timestamptz(text)'::regprocedure));
 end $$;
 
 select 'GREEN83' as marcador;

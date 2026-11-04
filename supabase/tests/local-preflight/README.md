@@ -3408,11 +3408,12 @@ Repita a migration com fins de linha CRLF (`sed 's/$/\r/'`) e LF: o resultado é
   `media_kind` conta como texto; mensagem legada sem `received_at` usa `timestamp`.
 - **8310–8311:** o claim devolve `{image,audio}` na ordem e `{}` na segunda
   chamada; com `p_since = now() - 120 s` ignora adiada de 10 min.
+- **8313:** chegada legada ilegível (`received_at:""`, `timestamp:"abc"`, época, `2026-13-45`) gravada direto no jsonb: `record_conversation_media` decide e o claim roda sem erro (cast tolerante `app_private.safe_timestamptz`, ilegível = nulo = "não recente").
 - **8312:** `anon`/`authenticated` sem EXECUTE, `service_role` com; `SECURITY
-  DEFINER`; `search_path=""`.
+  DEFINER`; `search_path=""`. O helper `app_private.safe_timestamptz` não tem EXECUTE para anon/authenticated/service_role (8312i–j).
 
 **Resultados observados em 05/11/2026** (imagem `supabase/postgres:17.11.0.004`):
-RED por "function … does not exist" antes da migration; `GREEN83` com a
+RED por "function … does not exist" antes da migration (e, com a versão sem o helper, o 8313 cai em erro de cast); `GREEN83` com a
 migration em LF e em CRLF, cada uma aplicada e reaplicada.
 
 O que NÃO prova: concorrência real entre duas sessões (a ordem vem do
