@@ -1,5 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
+import { Maximize2, Minimize2 } from "lucide-react";
+import { useFullscreen } from "@/hooks/useFullscreen";
+import { useViewportHeight } from "@/components/planta/ao-vivo/useContainerWidth";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
@@ -27,6 +31,8 @@ import { ResumoFila } from "@/components/planta/ao-vivo/ResumoFila";
 import { WaitlistEntryDialog } from "@/components/waitlist/WaitlistEntryDialog";
 
 const ALL_HALLS = "all";
+/** Padding da camada + da section + espaço entre blocos + folga para avisos, em px. */
+const FULLSCREEN_CHROME_PX = 120;
 const hallKey = (unitId: string) => `salao-ao-vivo:hall:${unitId}`;
 
 function readStoredHall(unitId: string): string | null {
@@ -47,6 +53,20 @@ export default function SalaoAoVivo() {
   const [hallPref, setHallPref] = useState<string | null>(() => readStoredHall(unitId));
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const fullscreen = useFullscreen();
+  const viewportH = useViewportHeight();
+  const topRef = useRef<HTMLDivElement>(null);
+  const [topH, setTopH] = useState(0);
+  useEffect(() => {
+    const el = topRef.current;
+    if (!fullscreen.active || !el) return;
+    const measure = () => setTopH(el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fullscreen.active]);
   const [focus, setFocus] = useState<{ tableId: string; nonce: number } | undefined>(undefined);
   const walkInsAtivos = useWalkIns(unitId);
   const waitingWalkIns = useMemo(
@@ -232,19 +252,36 @@ export default function SalaoAoVivo() {
           selectedId={selectedId}
           onSelect={(id) => setSelectedId(id)}
           now={now}
+          maxHeightPx={fullscreen.active ? Math.max(240, viewportH - topH - FULLSCREEN_CHROME_PX) : undefined}
         />
       </>
     );
   }
 
-  return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_372px]">
-      <section className="glass space-y-4 rounded-xl p-4 sm:p-5">
+  const page = (
+    <div className={cn("grid gap-4 lg:grid-cols-[minmax(0,1fr)_372px]", fullscreen.active && "lg:h-full")}>
+      <section className={cn("glass space-y-4 rounded-xl p-4 sm:p-5", fullscreen.active && "lg:h-full lg:overflow-hidden")}>
+        <div ref={topRef} className="space-y-4">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-[28px] font-semibold tracking-[-0.02em]">Salão ao vivo</h1>
           <span className="rounded-full border border-border px-2.5 py-0.5 text-xs text-muted-foreground">
             {`${hallTables.length} ${hallTables.length === 1 ? "mesa" : "mesas"}`}
           </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            aria-pressed={fullscreen.active}
+            className="ml-auto coarse:min-h-[44px]"
+            onClick={fullscreen.active ? fullscreen.exit : fullscreen.enter}
+          >
+            {fullscreen.active ? (
+              <Minimize2 className="mr-1.5 h-4 w-4" aria-hidden="true" />
+            ) : (
+              <Maximize2 className="mr-1.5 h-4 w-4" aria-hidden="true" />
+            )}
+            {fullscreen.active ? "Sair da tela cheia" : "Tela cheia"}
+          </Button>
         </div>
         {halls.length > 1 && (
           <div role="group" aria-label="Ambiente" className="flex flex-wrap gap-2">
@@ -274,9 +311,10 @@ export default function SalaoAoVivo() {
           </div>
         )}
         <LegendaSituacoes counts={counts} />
+        </div>
         {content}
       </section>
-      <aside className="space-y-4">
+      <aside className={cn("space-y-4", fullscreen.active && "lg:h-full lg:overflow-y-auto")}>
         <PainelMesa
           table={selectedTable}
           state={selectedState}
@@ -311,5 +349,24 @@ export default function SalaoAoVivo() {
       </aside>
       <WaitlistEntryDialog unitId={unitId} open={addOpen} onOpenChange={setAddOpen} />
     </div>
+  );
+
+  if (!fullscreen.active) return page;
+  // Camada no body: Dialog, Select e Sonner (z-50, também no body) ficam por cima.
+  const inset = (side: string) => `max(12px, env(safe-area-inset-${side}))`;
+  return createPortal(
+    <div
+      data-testid="salao-tela-cheia"
+      className="fixed inset-0 z-40 overflow-y-auto bg-background lg:overflow-hidden"
+      style={{
+        paddingTop: inset("top"),
+        paddingRight: inset("right"),
+        paddingBottom: inset("bottom"),
+        paddingLeft: inset("left"),
+      }}
+    >
+      {page}
+    </div>,
+    document.body,
   );
 }

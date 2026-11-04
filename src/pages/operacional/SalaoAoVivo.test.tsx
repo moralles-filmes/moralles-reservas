@@ -268,6 +268,53 @@ describe("SalaoAoVivo", () => {
     expect(within(dialog).getByLabelText(/Nome do cliente/)).toHaveValue("");
   });
 
+  describe("tela cheia", () => {
+    const request = vi.fn(() => Promise.resolve());
+    const exitFs = vi.fn(() => Promise.resolve());
+    afterEach(() => {
+      delete document.documentElement.requestFullscreen;
+      Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => null });
+    });
+    const withApi = () => {
+      request.mockClear();
+      Object.defineProperty(document.documentElement, "requestFullscreen", {
+        configurable: true,
+        writable: true,
+        value: request,
+      });
+      Object.defineProperty(document, "exitFullscreen", { configurable: true, writable: true, value: exitFs });
+    };
+
+    it("liga com a API: pede no documentElement, usa a camada fixed e o botão vira Sair", () => {
+      withApi();
+      renderPage();
+      expect(screen.queryByTestId("salao-tela-cheia")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Tela cheia" }));
+      expect(request).toHaveBeenCalledTimes(1);
+      const camada = screen.getByTestId("salao-tela-cheia");
+      expect(camada.parentElement).toBe(document.body);
+      expect(camada.className).toContain("fixed");
+      expect(within(camada).getByTestId("painel-mesa")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Sair da tela cheia" })).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(screen.getByRole("button", { name: "Sair da tela cheia" }));
+      expect(screen.queryByTestId("salao-tela-cheia")).toBeNull();
+      expect(screen.getByRole("button", { name: "Tela cheia" })).toBeInTheDocument();
+    });
+
+    it("sem a API a camada liga mesmo assim", () => {
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Tela cheia" }));
+      expect(screen.getByTestId("salao-tela-cheia")).toBeInTheDocument();
+    });
+
+    it("em tela cheia, Adicionar à fila abre o diálogo", () => {
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Tela cheia" }));
+      fireEvent.click(within(screen.getByTestId("resumo-fila")).getByRole("button", { name: "Adicionar à fila" }));
+      expect(within(screen.getByRole("dialog")).getByRole("heading", { name: "Adicionar à fila" })).toBeInTheDocument();
+    });
+  });
+
   it("o plano girado do 3D não carrega a animação de entrada, que sobrescreveria o transform", () => {
     renderPage();
     const plano = screen.getByTestId("planta-3d-plano");

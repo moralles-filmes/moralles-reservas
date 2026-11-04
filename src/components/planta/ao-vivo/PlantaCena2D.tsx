@@ -33,6 +33,8 @@ export interface CenaProps {
   now: Date;
   /** Quando muda, o viewport centraliza a mesa (medida pelo DOM; vale no 2D e no 3D). */
   focus?: { tableId: string; nonce: number };
+  /** Altura máxima da cena (tela cheia); sem ela vale o limite padrão de cada vista. */
+  maxHeightPx?: number;
 }
 
 const WALL_PX = 4;
@@ -62,13 +64,19 @@ export function PlantaCena2D({
   onSelect,
   now,
   focus,
+  maxHeightPx,
 }: CenaProps) {
-  const { ref, width } = useContainerWidth();
+  const { ref, width: containerWidth } = useContainerWidth();
   const apiRef = useRef<PlanViewportApi | null>(null);
   useFocusTable(apiRef, focus);
+  const width =
+    maxHeightPx != null
+      ? Math.max(1, Math.min(containerWidth, (maxHeightPx * layout.widthCm) / layout.depthCm))
+      : containerWidth;
   const scale = width / layout.widthCm;
   return (
     <div ref={ref} className="w-full">
+      <div className={maxHeightPx != null ? "mx-auto" : undefined} style={maxHeightPx != null ? { width } : undefined}>
       <PlanViewport
         data-testid="planta-2d"
         apiRef={apiRef}
@@ -119,6 +127,7 @@ export function PlantaCena2D({
           );
         })}
       </PlanViewport>
+      </div>
     </div>
   );
 }

@@ -7,13 +7,13 @@ import { SalaoPlano3D } from "./SalaoPlano3D";
 import { SCENE_PERSPECTIVE, SCENE_ROT_X, SCENE_ROT_Z, fitSceneScale, projectedSpanCm } from "./scene-geometry";
 import { useContainerWidth, useViewportHeight } from "./useContainerWidth";
 
-function PlantaCena3DInner({ halls, layout, showLabels, states, timeLabels, selectedId, onSelect, now, focus }: CenaProps) {
+function PlantaCena3DInner({ halls, layout, showLabels, states, timeLabels, selectedId, onSelect, now, focus, maxHeightPx }: CenaProps) {
   const { ref, width } = useContainerWidth();
   const apiRef = useRef<PlanViewportApi | null>(null);
   useFocusTable(apiRef, focus);
   // Altura disponível: no máximo 70% da janela e 640 px; a escala cabe a caixa projetada nos dois eixos.
   const viewportH = useViewportHeight();
-  const maxH = Math.min(viewportH * 0.7, 640);
+  const maxH = maxHeightPx != null ? Math.max(240, maxHeightPx) : Math.min(viewportH * 0.7, 640);
   const scale = fitSceneScale(layout.widthCm, layout.depthCm, width, maxH);
   const span = projectedSpanCm(layout.widthCm, layout.depthCm);
   const height = Math.min(maxH, Math.max(240, span.h * scale + 64));
