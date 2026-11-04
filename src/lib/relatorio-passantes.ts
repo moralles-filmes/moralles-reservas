@@ -203,6 +203,7 @@ export function computePassantesReport(input: PassanteInput): PassantesReport {
   const waits = seated
     .map(waitSec)
     .filter((v): v is number => v != null && v > DIRECT_SEAT_MAX_SEC);
+  // Espera negativa (seated_at < arrived_at, relógio de quem lançou) conta como sentou direto.
   const directSeated = seated.filter((r) => {
     const w = waitSec(r);
     return w != null && w <= DIRECT_SEAT_MAX_SEC;

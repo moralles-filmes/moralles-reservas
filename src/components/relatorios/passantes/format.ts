@@ -26,9 +26,16 @@ export function formatDecimal(value: number | null | undefined, digits = 1): str
 }
 
 /** "+12% vs período anterior" / "-3,2 p.p. vs período anterior"; null sem base. */
-export function deltaText(d: KpiDelta | undefined): string | null {
+/** Delta arredondado a 1 casa, sem "-0"; null sem base. Sinal e cor saem daqui. */
+export function roundedDelta(d: KpiDelta | undefined): number | null {
   if (!d || d.delta == null || !Number.isFinite(d.delta)) return null;
-  const rounded = Math.round(d.delta * 10) / 10;
+  const r = Math.round(d.delta * 10) / 10;
+  return r === 0 ? 0 : r;
+}
+
+export function deltaText(d: KpiDelta | undefined): string | null {
+  const rounded = roundedDelta(d);
+  if (rounded == null) return null;
   const sign = rounded > 0 ? "+" : "";
   const num = rounded.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
   const unit = d.unit === "pp" ? " p.p." : "%";

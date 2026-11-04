@@ -11,6 +11,7 @@ import {
   Users,
   UsersRound,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useUnitPublicContent } from "@/hooks/useUnitPublicContent";
 import type { DateRange } from "@/hooks/useFluxoClientes";
@@ -125,7 +126,7 @@ export default function Passantes() {
   const ticket = unitContent?.price_range_max ?? null;
   const hasTicket = !!ticket && ticket > 0;
 
-  const { report, comparison, isLoading, error, refetch } = useRelatorioPassantes(
+  const { report, comparison, isLoading, isPlaceholderData, error, refetch } = useRelatorioPassantes(
     unitId,
     range,
     ticket,
@@ -168,7 +169,7 @@ export default function Passantes() {
           </CardContent>
         </Card>
       ) : (
-        <>
+        <div className={cn("space-y-5 transition-opacity", isPlaceholderData && "opacity-60")} aria-busy={isPlaceholderData}>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <PassanteKpiCard title="Grupos" value={String(k.groups)} icon={Footprints} delta={comparison.groups} />
             <PassanteKpiCard title="Pessoas" value={String(k.people)} icon={Users} delta={comparison.people} />
@@ -292,7 +293,7 @@ export default function Passantes() {
           <p className="text-xs text-muted-foreground">
             O tempo na mesa só existe para passantes liberados pela planta. Horários em horário de Brasília.
           </p>
-        </>
+        </div>
       )}
     </div>
   );

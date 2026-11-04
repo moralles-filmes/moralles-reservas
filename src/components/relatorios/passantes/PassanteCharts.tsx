@@ -102,7 +102,8 @@ export function PartySizeBars({ data }: { data: PassantePartySize[] }) {
 export function PartySizeTableTime({ data }: { data: PassantePartySize[] }) {
   const series = data.map((d) => ({
     label: bucketLabel(d.bucket),
-    minutes: d.avgTableSec == null ? 0 : Math.round(d.avgTableSec / 60),
+    // Sem amostra = sem barra (null), não "0 min".
+    minutes: d.avgTableSec == null ? null : Math.round(d.avgTableSec / 60),
   }));
   return (
     <ResponsiveContainer width="100%" height="100%">

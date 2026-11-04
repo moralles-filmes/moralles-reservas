@@ -29,12 +29,21 @@ export function useRelatorioPassantes(
         fetchUnitTablesAndHalls(unitId),
       ]);
 
-      return { current, previous, tables, halls };
+      // As chaves viajam com os dados: com keepPreviousData, o placeholder do período
+      // antigo tem de ser calculado com os dias dele, não com os do período novo.
+      return {
+        current,
+        previous,
+        tables,
+        halls,
+        keys: { fromKey, toKey, prevFromKey, prevToKey },
+      };
     },
   });
 
   const computed = useMemo(() => {
     const data = query.data;
+    const keys = data?.keys ?? { fromKey, toKey, prevFromKey, prevToKey };
     const ticketCents =
       ticketMedioReais && ticketMedioReais > 0 ? Math.round(ticketMedioReais * 100) : 0;
     const tables = data?.tables ?? [];
@@ -43,16 +52,16 @@ export function useRelatorioPassantes(
       walkIns: data?.current ?? [],
       tables,
       halls,
-      fromKey,
-      toKey,
+      fromKey: keys.fromKey,
+      toKey: keys.toKey,
       ticketCents,
     });
     const previous = computePassantesReport({
       walkIns: data?.previous ?? [],
       tables,
       halls,
-      fromKey: prevFromKey,
-      toKey: prevToKey,
+      fromKey: keys.prevFromKey,
+      toKey: keys.prevToKey,
       ticketCents,
     });
     return { report, previous, comparison: comparePassantes(report, previous) };
@@ -60,7 +69,10 @@ export function useRelatorioPassantes(
 
   return {
     ...computed,
-    isLoading: query.isLoading,
+    // Sem unidade resolvida ainda, a query fica desabilitada: é carregamento, não "vazio".
+    isLoading: !unitId || query.isLoading,
+    /** Mostrando o período anterior enquanto o novo carrega. */
+    isPlaceholderData: query.isPlaceholderData,
     error: query.error,
     refetch: query.refetch,
   };

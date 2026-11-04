@@ -2,7 +2,7 @@ import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { KpiDelta } from "@/lib/relatorio-passantes";
-import { deltaText } from "./format";
+import { deltaText, roundedDelta } from "./format";
 
 interface Props {
   title: string;
@@ -16,7 +16,7 @@ interface Props {
 
 export function PassanteKpiCard({ title, value, icon: Icon, subtitle, delta, invertDelta }: Props) {
   const text = deltaText(delta);
-  const d = delta?.delta ?? 0;
+  const d = roundedDelta(delta) ?? 0;
   const good = invertDelta ? d < 0 : d > 0;
   const bad = invertDelta ? d > 0 : d < 0;
   const DeltaIcon = d === 0 ? Minus : d > 0 ? ArrowUpRight : ArrowDownRight;
