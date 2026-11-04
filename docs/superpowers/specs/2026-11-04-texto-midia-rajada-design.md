@@ -1,6 +1,6 @@
 # Texto e mídia na mesma rajada: a resposta ao texto não pode se perder
 
-Status: rascunho para aprovação do responsável (2026-11-04), com o builder check incorporado. Canais: WhatsApp e Instagram (Direct).
+Status: **aprovada pelo responsável em 2026-11-04**, com o builder check incorporado. Canais: WhatsApp e Instagram (Direct).
 
 ## 1. Intenção
 
