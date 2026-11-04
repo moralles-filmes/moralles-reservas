@@ -60,6 +60,16 @@ export function useCreateWalkIn(unitId: string) {
   });
 }
 
+export const STALE_WALKIN_MESSAGE = "Esse passante já foi atualizado em outro aparelho.";
+
+/** UPDATE/DELETE casou zero linhas: outro aparelho já mudou o passante. */
+export class StaleWalkInError extends Error {
+  constructor() {
+    super(STALE_WALKIN_MESSAGE);
+    this.name = "StaleWalkInError";
+  }
+}
+
 const WALKIN_STATUS_TOAST: Record<WalkInStatus, string> = {
   waiting: "Status atualizado.",
   seated: "Cliente sentado.",
@@ -75,15 +85,23 @@ export function useUpdateWalkInStatus(unitId: string) {
       if (status === "seated") updates.seated_at = new Date().toISOString();
       if (table_id !== undefined) updates.table_id = table_id;
 
-      const { error } = await supabase.from("walk_ins").update(updates).eq("id", id);
+      const { data, error } = await supabase
+        .from("walk_ins")
+        .update(updates)
+        .eq("id", id)
+        .eq("unit_id", unitId)
+        .eq("status", "waiting")
+        .select("id");
       if (error) throw error;
+      if (!data || data.length === 0) throw new StaleWalkInError();
       return { status };
     },
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] });
       toast.success(WALKIN_STATUS_TOAST[result.status] ?? "Status atualizado.");
     },
-    onError: (err: Error) => toast.error(err.message || "Erro ao atualizar status."),
+    onError: (err: Error) =>
+      toast.error(err instanceof StaleWalkInError ? STALE_WALKIN_MESSAGE : err.message || "Erro ao atualizar status."),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] }),
   });
 }
 
@@ -91,10 +109,16 @@ export function useDeleteWalkIn(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from("walk_ins").delete().eq("id", id);
+      const { data, error } = await supabase
+        .from("walk_ins")
+        .delete()
+        .eq("id", id)
+        .eq("unit_id", unitId)
+        .select("id");
       if (error) throw error;
+      if (!data || data.length === 0) throw new StaleWalkInError();
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] }),
-    onError: () => toast.error("Erro ao remover."),
+    onError: (err: Error) => toast.error(err instanceof StaleWalkInError ? STALE_WALKIN_MESSAGE : "Erro ao remover."),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] }),
   });
 }

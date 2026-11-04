@@ -9,11 +9,13 @@ const mocks = vi.hoisted(() => ({
   insert: vi.fn(),
   success: vi.fn(),
   error: vi.fn(),
+  info: vi.fn(),
 }));
 vi.mock("@/lib/supabase", () => ({
   supabase: { rpc: mocks.rpc, from: vi.fn(() => ({ insert: mocks.insert })) },
 }));
-vi.mock("sonner", () => ({ toast: { success: mocks.success, error: mocks.error } }));
+vi.mock("sonner", () => ({ toast: { success: mocks.success, error: mocks.error, info: mocks.info } }));
+import { setReservationPresence } from "@/features/planta/api";
 
 import {
   presenceErrorMessage,
@@ -72,6 +74,38 @@ describe("useReservationPresence", () => {
       await result.current.mutateAsync({ reservationId: "r1", action: "release" }).catch(() => undefined);
     });
     expect(mocks.error).toHaveBeenCalledWith("Esta mesa já foi liberada.");
+  });
+});
+
+describe("presença idempotente (RPC devolve false)", () => {
+  it.each([
+    ["arrive", "Chegada já registrada."],
+    ["undo_arrive", "Chegada já desfeita."],
+    ["release", "Mesa já liberada."],
+  ] as const)("%s com false: toast.info sem action", async (action, text) => {
+    mocks.rpc.mockResolvedValue({ data: false, error: null });
+    const { wrapper, invalidate } = setup();
+    const { result } = renderHook(() => useReservationPresence("u1"), { wrapper });
+    await act(() => result.current.mutateAsync({ reservationId: "r1", action }));
+    expect(mocks.info).toHaveBeenCalledWith(text);
+    expect(mocks.success).not.toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["reservas", "u1"] });
+  });
+
+  it("arrive com true mantém o Desfazer", async () => {
+    mocks.rpc.mockResolvedValue({ data: true, error: null });
+    const { wrapper } = setup();
+    const { result } = renderHook(() => useReservationPresence("u1"), { wrapper });
+    await act(() => result.current.mutateAsync({ reservationId: "r1", action: "arrive" }));
+    expect(mocks.info).not.toHaveBeenCalled();
+    expect(mocks.success.mock.calls[0][1].action.label).toBe("Desfazer");
+  });
+});
+
+describe("setReservationPresence", () => {
+  it.each([[true, true], [false, false], [null, true], [undefined, true]])("data %j -> %j", async (data, out) => {
+    mocks.rpc.mockResolvedValue({ data, error: null });
+    expect(await setReservationPresence("r1", "arrive")).toBe(out);
   });
 });
 

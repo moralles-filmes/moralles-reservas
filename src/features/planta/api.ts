@@ -158,12 +158,14 @@ export async function fetchSalaoDurationSetting(unitId: string): Promise<unknown
 export type PresenceAction = "arrive" | "undo_arrive" | "release";
 
 /** Chegada, desfazer chegada ou liberação da mesa de uma reserva. */
-export async function setReservationPresence(reservationId: string, action: PresenceAction): Promise<void> {
-  const { error } = await supabase.rpc("set_reservation_presence", {
+export async function setReservationPresence(reservationId: string, action: PresenceAction): Promise<boolean> {
+  const { data, error } = await supabase.rpc("set_reservation_presence", {
     p_reservation_id: reservationId,
     p_action: action,
   });
   if (error) throw error;
+  // false = nada mudou (já estava assim). null/undefined vêm da RPC antiga (front sobe antes da migration): conta como mudou.
+  return (data as unknown) !== false;
 }
 
 /** Senta uma entrada da fila na mesa. */
