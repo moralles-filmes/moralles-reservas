@@ -41,6 +41,7 @@ import {
   Star,
   Store,
   TrendingUp,
+  Footprints,
   UserCircle,
   UserCog,
   UserPlus,
@@ -90,6 +91,7 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
       matchPrefix: `${base}/relatorios`,
       children: [
         { to: `${base}/relatorios/fluxo-clientes`, label: "Fluxo de clientes", icon: TrendingUp },
+        { to: `${base}/relatorios/passantes`,      label: "Passantes",         icon: Footprints },
         { to: `${base}/relatorios/vendas`,         label: "Vendas",            icon: DollarSign },
         { to: `${base}/relatorios/comunicacao`,    label: "Comunicação",       icon: MessageSquare },
         { to: `${base}/relatorios/avaliacoes`,     label: "Avaliações",        icon: Star },
