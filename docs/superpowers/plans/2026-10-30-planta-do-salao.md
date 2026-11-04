@@ -350,7 +350,7 @@ git commit -m "feat(planta): tipos de layout e presença; README do harness 81"
   - `supabase db push --dry-run` lista só `<ts1>` e `<ts2>`; depois, `supabase db push`.
   - Conferir com `supabase migration list` que as duas versões estão em local e remoto.
   - Deploy da Vercel em READY (só tipos mudaram).
-- [ ] **Step 7: Criar a integração:** `git switch -c feat/planta-do-salao` a partir da `main` nova. Atualizar o STATE.
+- [x] **Step 7: Criar a integração:** `git switch -c feat/planta-do-salao` a partir da `main` nova. Atualizar o STATE.
 
 ---
 
@@ -653,7 +653,7 @@ O que a tela faz (mockup `Salao.dc.html`):
     - com o halo ativo em 5 mesas, rolagem do aside sem queda de quadros visível no FPS meter.
   - Anotar os números no STATE.
 - [x] **Step 3: Se falhar,** reduzir as camadas `translateZ` das mesas (de 4 para 2) e o halo para só `opacity`, e medir de novo. Não trocar a técnica sem o dono.
-- [ ] **Step 4: Revisão visual:** 1440×900, 1194×834 e 390×844, nos dois temas, com movimento reduzido ligado; teclado (Tab percorre as mesas por número; Enter seleciona).
+- [x] **Step 4: Revisão visual:** 1440×900, 1194×834 e 390×844, nos dois temas, com movimento reduzido ligado; teclado (Tab percorre as mesas por número; Enter seleciona).
 - [x] **Step 5: Commit** dos ajustes, se houver: `perf(planta): ...`.
 
 ---
@@ -868,15 +868,15 @@ As listas mostram a pílula gravada e, quando não é `null`, a derivada ao lado
   - corrigir bloqueante em nova task.
 - [x] **Step 3: Revisão da branch inteira** com `superpowers:requesting-code-review` (modelo mais capaz).
 - [x] **Step 4: Segredos:** `git diff main...feat/planta-do-salao | grep -nE "sk-|sk-ant-|xai-|AIza|eyJ|Bearer |service_role|whsec_"` sem resultado.
-- [ ] **Step 5: Conferência do dono, local:**
+- [x] **Step 5: Conferência do dono, local:**
   - pelo `npm run dev`, o dono confere na MORALLES o editor, o Salão ao vivo no tablet e as listas;
   - não existe preview da Vercel: está desligado para `feat/planta-do-salao` em `vercel.json` (`git.deploymentEnabled`).
-- [ ] **Step 6: PR e merge, com autorização:**
+- [x] **Step 6: PR e merge, com autorização:**
   - primeiro e único push de `feat/planta-do-salao`, e `gh pr create --base main --head feat/planta-do-salao`, com o resumo das fases, as medições da Task 10, os achados fora do escopo e o rodapé de atribuição;
   - merge depois dos checks;
   - conferir a produção na Vercel em READY. O único build da B2 até a B5 é este;
   - a entrada `feat/planta-do-salao` do `vercel.json` sai num commit de limpeza que pega carona no próximo PR, para não gastar um build só com ela.
-- [ ] **Step 7: Fechar a mudança:**
+- [x] **Step 7: Fechar a mudança:**
   - STATE em "concluído";
   - memória do projeto atualizada;
   - checkboxes deste plano marcados.

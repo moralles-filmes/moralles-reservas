@@ -19,8 +19,8 @@ export function useSaveHallPlan(unitId: string, hallId: string) {
       saveHallPlan(hallId, expectedUpdatedAt, payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["hall-plan", unitId, hallId] });
-      qc.invalidateQueries({ queryKey: ["hall", hallId] });
-      qc.invalidateQueries({ queryKey: ["hall-tables", hallId] });
+      qc.invalidateQueries({ queryKey: ["hall", unitId, hallId] });
+      qc.invalidateQueries({ queryKey: ["hall-tables", unitId, hallId] });
       qc.invalidateQueries({ queryKey: ["salao-ao-vivo", unitId] });
     },
   });

@@ -2802,3 +2802,86 @@ casos 8133–8135 e 8137 deram FAIL contra a versão anterior das migrations (se
 O que NÃO prova: PostgREST/JWT real nem o `BYPASSRLS` do `postgres` de
 produção. As RPCs são INVOKER e não dependem dele; os triggers são DEFINER e só
 leem `unit_members`, `platform_admins` e `tables`.
+
+**Desde a 20261104120000 (§82), o 81 espera o estado final:** L-4 e L-5a
+(operador mudando capacidade ou criando mesa sem `plan_*`) passam a
+`42501 layout_write_forbidden`; os controles L-CP e L-CP2 desligam também os
+triggers `*_write_role_guard`; o L-22 desliga `tables_write_unit_hall_guard` para
+montar a mesa de B pendurada em S1 e seguir medindo o filtro `t.unit_id` da
+`save_hall_plan`. Rodar o 81 com as três migrations. Reaplicar a 20261030120100
+depois da 20261104120000 falha com `42P13` (ela recria a RPC com retorno
+`void`); só a 20261104120000 é reaplicada.
+
+### 82 — Endurecimento da planta
+
+Pré-voo da migration `20261104120000_planta_endurecimento.sql`: escrita em
+`tables`, `halls` e `hall_schedules` só para owner, gerente ou platform_admin
+(trigger `guard_layout_write`, `42501 layout_write_forbidden`), mesa presa à
+unidade do salão (trigger `guard_table_hall_unit`, `42501 hall_unit_mismatch`)
+e `set_reservation_presence` devolvendo `boolean`. Mesmo contêiner, motor e
+fixtures do 81; o `82a-planta-endurecimento-bootstrap.sql` acrescenta
+`hall_schedules` no estado de produção (conferido por MCP só leitura em
+2026-11-04) com os horários H1 (S1), H2 (S2) e HB (SB). Roda **da raiz do repo**.
+
+```bash
+docker run -d --name planta82-pg --network none -e POSTGRES_PASSWORD=x \
+  public.ecr.aws/supabase/postgres:17.11.0.004
+P()  { docker exec -i planta82-pg psql -U postgres       -d postgres -X -q -v ON_ERROR_STOP=1; }
+PA() { docker exec -i planta82-pg psql -U supabase_admin -d postgres -X -q -v ON_ERROR_STOP=1; }
+PA < supabase/tests/local-preflight/81a-planta-do-salao-bootstrap.sql
+P  < supabase/migrations/20261030120000_planta_do_salao_layout.sql
+P  < supabase/migrations/20261030120100_planta_do_salao_presenca.sql
+P  < supabase/tests/local-preflight/82a-planta-endurecimento-bootstrap.sql
+P  < supabase/tests/local-preflight/82-planta-endurecimento.sql       # RED
+P  < supabase/migrations/20261104120000_planta_endurecimento.sql
+P  < supabase/tests/local-preflight/82-planta-endurecimento.sql       # GREEN
+P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # GREEN
+P  < supabase/migrations/20261104120000_planta_endurecimento.sql      # reaplicar
+P  < supabase/tests/local-preflight/82-planta-endurecimento.sql       # GREEN de novo
+P  < supabase/tests/local-preflight/81-planta-do-salao.sql
+docker rm -f planta82-pg
+```
+
+- **H-1…H-3 (8401–8411):** operador recebe `42501 layout_write_forbidden` ao
+  criar, mudar capacidade, desativar, trocar de salão e apagar mesa; criar,
+  renomear e apagar salão; criar, ligar caução e apagar horário.
+- **H-4 (8412–8419):** owner, gerente, platform_admin sem membership e
+  `service_role` fazem as mesmas escritas.
+- **H-5, H-6, H-11, H-13 (8420–8424):** gerente só de B não enxerga mesa de A;
+  gerente de A não move mesa para B nem horário de S1 para SB; operador segue
+  lendo mesas, salões e horários (4/2/2); `authenticated` sem claims recusado.
+- **H-7, H-8 (8425–8430):** mesa de A em salão de B, por platform_admin ou
+  `service_role`, e salão inexistente → `42501 hall_unit_mismatch` (o BEFORE
+  vem antes da FK); salão com mesas não muda de unidade; salão vazio muda.
+- **H-9, H-10 (8431–8433):** gerente apaga S1 com horário e mesas (a cascata
+  passa pelos triggers com o salão já apagado); `save_hall_plan` segue para
+  gerente e recusa o operador.
+- **H-12 (8434–8439):** `true` na primeira chegada; `false` na chegada
+  repetida (horário mantido), no desfazer sem chegada e na liberação repetida;
+  anon sem EXECUTE; gerente só de B → `42501 presence_forbidden`.
+- **H-CP1…H-CP3 (8440–8442), controles:** sem `tables_write_role_guard` o
+  operador muda a capacidade; sem `tables_write_unit_hall_guard` a mesa vai para salão
+  de B; sem `hall_schedules_write_role_guard` o operador apaga horário.
+- **H-8c, H-8d, H-7e, H-7f, H-13b (8443–8447):** salão vazio com bloqueio ou
+  data especial não muda de unidade (o 82a projeta `table_blocks` e
+  `special_dates` só com o vínculo); gerente só de B e operador pendurando mesa
+  em salão de B recebem `layout_write_forbidden`, não `hall_unit_mismatch` (o
+  guard de papel dispara antes do de unidade: sem oráculo da unidade do salão);
+  DELETE sem claims não apaga nada (a RLS filtra antes do trigger).
+- **H-CP4, H-CP5, H-5c, H-3d, H-8e (8448–8452):** sem `halls_write_role_guard` o
+  operador renomeia salão; sem `halls_write_unit_change_guard` salão com mesas muda
+  de unidade; operador de A que é gerente de B não move mesa de A para B
+  (unidade antiga conferida); gerente de A não cria horário em salão de B nem muda
+  a unidade de um salão para B.
+
+**Resultados observados em 04/11/2026** (imagem `supabase/postgres:17.11.0.004`,
+sem rede, contêiner novo): **18/52 antes da migration** (os 34 FAIL são a
+falha: operador gravando tudo, mesa em salão alheio, RPC sem retorno, triggers
+inexistentes nos controles), **52/52** depois e 52/52 com a migration
+reaplicada; 81 em 83/83 nas duas rodadas.
+
+O que NÃO prova: PostgREST/JWT real nem concorrência (o `FOR SHARE` do
+`guard_table_hall_unit` contra a mudança de `halls.unit_id` não tem caso de
+duas sessões). Os triggers são DEFINER e só leem `unit_members`,
+`platform_admins`, `halls`, `tables`, `hall_schedules`, `table_blocks` e
+`special_dates`.

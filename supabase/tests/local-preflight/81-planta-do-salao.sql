@@ -122,12 +122,12 @@ select pg_temp.caso(8102, 'L-2 gerente grava plan_* de mesa de A', 'GER',
 select pg_temp.caso(8103, 'L-3 operador grava plan_x direto', 'OPE',
   $s$update public.tables set plan_x=100, plan_y=100, plan_w=80, plan_h=80, plan_rotation=0, plan_shape='round'
      where id='{T11}'; select 'x'$s$, '42501 plan_write_forbidden');
+-- Desde a 20261104120000 o operador não escreve layout (guard_layout_write).
 select pg_temp.caso(8104, 'L-4 operador muda max_capacity sem plan_*', 'OPE',
-  $s$update public.tables set max_capacity=5 where id='{T11}'; select 'x'$s$, 'ok',
-  $c$(select capacity from public.tables where id='{T11}') = 5$c$);
+  $s$update public.tables set max_capacity=5 where id='{T11}'; select 'x'$s$, '42501 layout_write_forbidden');
 select pg_temp.caso(8105, 'L-5a operador cria mesa sem plan_*', 'OPE',
   $s$insert into public.tables (number, capacity, unit_id, hall_id, min_capacity, max_capacity)
-     values (99, 2, '{A}', '{S1}', 1, 2); select 'x'$s$, 'ok');
+     values (99, 2, '{A}', '{S1}', 1, 2); select 'x'$s$, '42501 layout_write_forbidden');
 select pg_temp.caso(8106, 'L-5b operador cria mesa com plan_*', 'OPE',
   $s$insert into public.tables (number, capacity, unit_id, hall_id, min_capacity, max_capacity,
        plan_x, plan_y, plan_w, plan_h, plan_rotation, plan_shape)
@@ -244,6 +244,7 @@ select pg_temp.caso(8130, 'L-20 papel authenticated sem claims cria mesa com pla
      select 'x'$s$, '42501 plan_write_forbidden');
 select pg_temp.caso(8131, 'L-CP controle: sem o trigger, o operador grava plan_*', 'postgres',
   $s$alter table public.tables disable trigger tables_plan_write_guard;
+     alter table public.tables disable trigger tables_write_role_guard;
      select set_config('role', 'authenticated', true),
             set_config('request.jwt.claims', '{"sub":"{OPE}","role":"authenticated"}', true);
      update public.tables set plan_x=100, plan_y=100, plan_w=80, plan_h=80, plan_rotation=0, plan_shape='round'
@@ -258,6 +259,8 @@ select pg_temp.caso(8132, 'L-CP2 controle: trigger sem o modo estrito, o L-10b d
        if v_mut = v_def then raise exception 'L-CP2: trecho do modo estrito não encontrado'; end if;
        execute v_mut;
      end $d$;
+     alter table public.halls disable trigger halls_write_role_guard;
+     alter table public.tables disable trigger tables_write_role_guard;
      select set_config('role', 'authenticated', true),
             set_config('request.jwt.claims', '{"sub":"{OPE}","role":"authenticated"}', true);
      select public.save_hall_plan('{S1}', (select updated_at from public.halls where id='{S1}'),
@@ -284,7 +287,8 @@ select pg_temp.caso(8136, 'L-CP3 controle: CHECK na forma antiga aceita só a la
   $c$(select plan_width_cm from public.halls where id='{S1}') = 800$c$);
 -- Mesa de B pendurada no salão de A (o FK de hall_id não olha a unidade).
 select pg_temp.caso(8137, 'L-22 platform_admin salva S1 com mesa de B pendurada nele', 'postgres',
-  $s$update public.tables set hall_id='{S1}' where id='{TB1}';
+  $s$alter table public.tables disable trigger tables_write_unit_hall_guard;
+     update public.tables set hall_id='{S1}' where id='{TB1}';
      select set_config('role', 'authenticated', true),
             set_config('request.jwt.claims', '{"sub":"{PA}","role":"authenticated"}', true);
      select public.save_hall_plan('{S1}', (select updated_at from public.halls where id='{S1}'),

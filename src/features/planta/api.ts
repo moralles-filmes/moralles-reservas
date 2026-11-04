@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import type { Hall, Mesa, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 import type { BlockWindow } from "@/lib/table-situation-core";
+import { HALL_NOT_IN_UNIT_MESSAGE } from "@/lib/layout-errors";
 
 /** Colunas de `Mesa`, com a planta (`plan_*`). */
 export const TABLE_COLUMNS =
@@ -26,10 +27,13 @@ export interface SaveHallPlanArgs {
   }>;
 }
 
-/** Salão e mesas ativas dele, só da unidade dada. O erro do PostgREST sobe como está. */
+/**
+ * Salão e mesas ativas dele, só da unidade dada. O erro do PostgREST sobe como está;
+ * salão de outra unidade ou inexistente sobe como `Error(HALL_NOT_IN_UNIT_MESSAGE)`.
+ */
 export async function fetchHallPlan(unitId: string, hallId: string): Promise<{ hall: Hall; tables: Mesa[] }> {
   const [hallRes, tablesRes] = await Promise.all([
-    supabase.from("halls").select("*").eq("id", hallId).eq("unit_id", unitId).single(),
+    supabase.from("halls").select("*").eq("id", hallId).eq("unit_id", unitId).maybeSingle(),
     supabase
       .from("tables")
       .select(TABLE_COLUMNS)
@@ -39,6 +43,7 @@ export async function fetchHallPlan(unitId: string, hallId: string): Promise<{ h
       .order("number", { ascending: true }),
   ]);
   if (hallRes.error) throw hallRes.error;
+  if (!hallRes.data) throw new Error(HALL_NOT_IN_UNIT_MESSAGE);
   if (tablesRes.error) throw tablesRes.error;
   return { hall: hallRes.data as Hall, tables: (tablesRes.data ?? []) as Mesa[] };
 }
@@ -158,12 +163,14 @@ export async function fetchSalaoDurationSetting(unitId: string): Promise<unknown
 export type PresenceAction = "arrive" | "undo_arrive" | "release";
 
 /** Chegada, desfazer chegada ou liberação da mesa de uma reserva. */
-export async function setReservationPresence(reservationId: string, action: PresenceAction): Promise<void> {
-  const { error } = await supabase.rpc("set_reservation_presence", {
+export async function setReservationPresence(reservationId: string, action: PresenceAction): Promise<boolean> {
+  const { data, error } = await supabase.rpc("set_reservation_presence", {
     p_reservation_id: reservationId,
     p_action: action,
   });
   if (error) throw error;
+  // false = nada mudou (já estava assim). null/undefined vêm da RPC antiga (front sobe antes da migration): conta como mudou.
+  return (data as unknown) !== false;
 }
 
 /** Senta uma entrada da fila na mesa. */

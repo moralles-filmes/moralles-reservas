@@ -21,6 +21,7 @@ import { MesaPropriedades } from "@/components/planta/editor/MesaPropriedades";
 import { SalaoPropriedades } from "@/components/planta/editor/SalaoPropriedades";
 import { BandejaSemPosicao } from "@/components/planta/editor/BandejaSemPosicao";
 import { BreadcrumbReservas } from "./Saloes";
+import { HALL_NOT_IN_UNIT_MESSAGE } from "@/lib/layout-errors";
 
 /** Recalcula as sugestões das mesas fora da planta para nunca colidirem com as posicionadas. */
 function relayout(plan: HallPlan, boxes: TableBox[], tables: Mesa[]): TableBox[] {
@@ -50,7 +51,7 @@ export default function SalaoPlanta() {
   const unitSlug = unit?.unit_slug ?? "";
   const readOnly = !unit?.isGerente;
 
-  const { data, isLoading, isError, refetch } = useHallPlanData(unitId, hallId);
+  const { data, isLoading, isError, error, refetch } = useHallPlanData(unitId, hallId);
   const save = useSaveHallPlan(unitId, hallId);
 
   const [plan, setPlan] = useState<HallPlan | null>(null);
@@ -218,6 +219,21 @@ export default function SalaoPlanta() {
         <div className="flex flex-col gap-5 lg:flex-row">
           <Skeleton className="aspect-[4/3] w-full flex-1" />
           <Skeleton className="h-64 w-full lg:w-80" />
+        </div>
+      </div>
+    );
+  }
+
+  // Salão de outra unidade (a RLS libera todas as do membro) ou inexistente: sem retry nem ação.
+  if (!data && error?.message === HALL_NOT_IN_UNIT_MESSAGE) {
+    return (
+      <div className="space-y-5">
+        {header}
+        <div className="surface space-y-3 rounded-lg border border-border p-6">
+          <p className="text-sm">{HALL_NOT_IN_UNIT_MESSAGE}</p>
+          <Button asChild variant="outline" className="min-h-11">
+            <Link to={`/g/${unitSlug}/reservas/saloes`}>Voltar para os salões</Link>
+          </Button>
         </div>
       </div>
     );

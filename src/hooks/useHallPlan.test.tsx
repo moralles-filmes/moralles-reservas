@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => {
   };
   const from = vi.fn((table: string) => {
     const builder: Record<string, unknown> = {};
-    for (const m of ["select", "eq", "order", "single"]) {
+    for (const m of ["select", "eq", "order", "single", "maybeSingle"]) {
       builder[m] = (...args: unknown[]) => {
         calls.push({ table, method: m, args });
         return builder;
@@ -112,8 +112,8 @@ describe("useSaveHallPlan", () => {
       await result.current.mutateAsync({ expectedUpdatedAt: "x", payload });
     });
     expect(spy).toHaveBeenCalledWith({ queryKey: ["hall-plan", "unit-a", "h-1"] });
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["hall", "h-1"] });
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["hall-tables", "h-1"] });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["hall", "unit-a", "h-1"] });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["hall-tables", "unit-a", "h-1"] });
     expect(spy).toHaveBeenCalledWith({ queryKey: ["salao-ao-vivo", "unit-a"] });
   });
 

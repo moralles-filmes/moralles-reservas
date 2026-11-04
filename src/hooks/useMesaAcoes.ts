@@ -32,10 +32,18 @@ const onError = (err: unknown) => toast.error(presenceErrorMessage(err));
 
 export function useReservationPresence(unitId: string) {
   const queryClient = useQueryClient();
-  const mutation = useMutation<void, Error, { reservationId: string; action: PresenceAction }>({
+  const mutation = useMutation<boolean, Error, { reservationId: string; action: PresenceAction }>({
     mutationFn: ({ reservationId, action }) => setReservationPresence(reservationId, action),
-    onSuccess: (_data, { reservationId, action }) => {
-      if (action === "arrive") {
+    onSuccess: (changed, { reservationId, action }) => {
+      if (changed === false) {
+        toast.info(
+          action === "arrive"
+            ? "Chegada já registrada."
+            : action === "undo_arrive"
+              ? "Chegada já desfeita."
+              : "Mesa já liberada.",
+        );
+      } else if (action === "arrive") {
         toast.success("Chegada marcada.", {
           action: {
             label: "Desfazer",
