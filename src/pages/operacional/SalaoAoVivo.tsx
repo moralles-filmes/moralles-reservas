@@ -52,6 +52,7 @@ export default function SalaoAoVivo() {
   const reduced = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [hallPref, setHallPref] = useState<string | null>(() => readStoredHall(unitId));
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pickedReservationId, setPickedReservationId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const fullscreen = useFullscreen();
   const viewportH = useViewportHeight();
@@ -90,6 +91,7 @@ export default function SalaoAoVivo() {
   useEffect(() => {
     setHallPref(readStoredHall(unitId));
     setSelectedId(null);
+    setPickedReservationId(null);
   }, [unitId]);
 
   const halls = useMemo(() => data.halls.filter((h) => h.active), [data.halls]);
@@ -177,17 +179,19 @@ export default function SalaoAoVivo() {
   const chooseHall = (id: string) => {
     applyHall(id);
     setSelectedId(null);
+    setPickedReservationId(null);
     setFocus(undefined);
   };
 
   // Vindo de próximas chegadas, a troca de salão mantém a mesa recém escolhida.
-  const pickTable = (t: Mesa) => {
+  const pickTable = (t: Mesa, reservationId: string) => {
     if (viewAll) {
       setFocus({ tableId: t.id, nonce: Date.now() });
     } else if (t.hall_id) {
       applyHall(t.hall_id);
     }
     setSelectedId(t.id);
+    setPickedReservationId(reservationId);
   };
 
   const selectedTable = tables.find((t) => t.id === selectedId) ?? null;
@@ -252,7 +256,10 @@ export default function SalaoAoVivo() {
           states={states}
           timeLabels={timeLabels}
           selectedId={selectedId}
-          onSelect={(id) => setSelectedId(id)}
+          onSelect={(id) => {
+            setSelectedId(id);
+            setPickedReservationId(null);
+          }}
           now={now}
           maxHeightPx={fullscreen.active ? Math.max(240, viewportH - topH - FULLSCREEN_CHROME_PX) : undefined}
         />
@@ -323,6 +330,9 @@ export default function SalaoAoVivo() {
           reservations={data.reservations}
           walkIns={data.walkIns}
           waitlistSeated={data.waitlistSeated}
+          now={now}
+          durationMinutes={data.durationMinutes}
+          pickedReservationId={pickedReservationId}
           actions={
             selectedTable && selectedState ? (
               <AcoesMesa
