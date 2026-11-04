@@ -25,8 +25,13 @@ insert into t_ids values
   ('A', 'aa'), ('B', 'bb'), ('OWN', 'a1'), ('GER', 'a2'), ('OPE', 'a3'), ('GERB', 'b2'),
   ('OUT', 'e1'), ('PA', 'c1'), ('S1', '01'), ('S2', '02'), ('SB', '03'),
   ('T11', '11'), ('T12', '12'), ('T13', '13'), ('T14', '14'), ('T21', '21'), ('TB1', '31'),
-  ('R1', '101'), ('R2', '102');
+  ('R1', '101'), ('R2', '102'), ('CA', 'ca1'), ('CB', 'cb1');
 update t_ids set id = 'a0d81000-0000-4000-8000-' || lpad(id, 12, '0');
+
+-- Canais de WhatsApp de A e B (Task 3; desfeitos no ROLLBACK final).
+insert into public.whatsapp_channels (id, unit_id, display_phone) values
+  ('a0d81000-0000-4000-8000-000000000ca1', 'a0d81000-0000-4000-8000-0000000000aa', '11999990001'),
+  ('a0d81000-0000-4000-8000-000000000cb1', 'a0d81000-0000-4000-8000-0000000000bb', '11999990002');
 
 -- Datas das reservas em BRT (desfeito no ROLLBACK final).
 update public.reservations r set date = (now() at time zone 'America/Sao_Paulo')::date
@@ -668,6 +673,87 @@ select pg_temp.caso(8619, 'R-15b p_kind inválido → 22023', 'OPE',
 select pg_temp.caso(8620, 'R-15c p_table_ids vazio → 22023', 'OPE',
   $s$select public.set_occupant_tables('reservation', '{R1}', array[]::uuid[])::text$s$,
   '22023 seat_action_invalid');
+
+-- ═══ K-*: links de escolha e limite do mapa público (Task 3) ═════════════════
+-- INSERT de link (SQL a rodar como o ator do caso); campos sobrescrevíveis.
+create function pg_temp.link(p_hall text default '{S1}', p_channel text default '{CA}',
+                             p_hash text default null, p_party int default 4,
+                             p_ttl text default '6 hours', p_unit text default '{A}')
+returns text language sql as $f$
+  select format($q$insert into public.seat_choice_links
+      (unit_id, hall_id, channel_id, date, time, party_size, token_hash, expires_at)
+    values ('%s', %s, %s, current_date, '19:00', %s, %L, now() + interval %L) returning id::text$q$,
+    p_unit, quote_literal(p_hall) || '::uuid',
+    case when p_channel is null then 'null' else quote_literal(p_channel) || '::uuid' end,
+    p_party, coalesce(p_hash, repeat('ab', 32)), p_ttl)
+$f$;
+
+-- Chamada da RPC de limite; p_unit nulo = modo token.
+create function pg_temp.rl(p_unit text, p_ip text default 'a') returns text language sql as $f$
+  select format('public.check_public_seat_map_rate_limit(%s, %L)',
+    case when p_unit is null then 'null::uuid' else quote_literal(p_unit) || '::uuid' end,
+    'public-seat-map-ip:' || repeat(p_ip, 64))
+$f$;
+
+select pg_temp.caso(8601, 'K-1a anon lê seat_choice_links', 'anon',
+  $s$select count(*)::text from public.seat_choice_links$s$, '42501 permission denied%');
+select pg_temp.caso(8602, 'K-1b anon grava seat_choice_links', 'anon',
+  pg_temp.link(), '42501 permission denied%');
+select pg_temp.caso(8603, 'K-1c gerente de A lê seat_choice_links', 'GER',
+  $s$select count(*)::text from public.seat_choice_links$s$, '42501 permission denied%');
+select pg_temp.caso(8604, 'K-1d gerente de A grava seat_choice_links', 'GER',
+  pg_temp.link(), '42501 permission denied%');
+select pg_temp.caso(8605, 'K-2a service_role grava e lê o link pelo hash', 'service_role',
+  pg_temp.link() || $s$; select count(*)::text from public.seat_choice_links
+    where token_hash = repeat('ab', 32) and unit_id = '{A}' and expires_at > now()$s$,
+  'ok', $c$$1 = '1'$c$);
+select pg_temp.caso(8606, 'K-2b salão de B num link de A', 'service_role',
+  pg_temp.link('{SB}'), '42501 seat_link_invalid');
+select pg_temp.caso(8607, 'K-2c canal de B num link de A', 'service_role',
+  pg_temp.link('{S1}', '{CB}'), '42501 seat_link_invalid');
+select pg_temp.caso(8608, 'K-2d service_role não altera link', 'service_role',
+  pg_temp.link() || $s$; update public.seat_choice_links set expires_at = now() + interval '20 hours' returning id::text$s$,
+  '42501 permission denied%');
+select pg_temp.caso(8609, 'K-2e hash fora do formato (token cru)', 'service_role',
+  pg_temp.link('{S1}', '{CA}', 'tokencruAbc_-123'), '23514%seat_choice_links_token_hash_check%');
+select pg_temp.caso(8610, 'K-2f validade acima de 24 h', 'service_role',
+  pg_temp.link('{S1}', '{CA}', null, 4, '25 hours'), '23514%seat_choice_links_expiry_check%');
+select pg_temp.caso(8621, 'K-2g party_size 51', 'service_role',
+  pg_temp.link('{S1}', '{CA}', null, 51), '23514%seat_choice_links_party_size_check%');
+select pg_temp.caso(8622, 'K-2h salão inexistente dá a mesma recusa', 'service_role',
+  pg_temp.link('a0d81000-0000-4000-8000-0000000000f9'), '42501 seat_link_invalid');
+select pg_temp.caso(8623, 'K-3a anon executa a RPC de limite', 'anon',
+  'select ' || pg_temp.rl('{A}') || '::text', '42501 permission denied%');
+select pg_temp.caso(8624, 'K-3b authenticated executa a RPC de limite', 'GER',
+  'select ' || pg_temp.rl('{A}') || '::text', '42501 permission denied%');
+select pg_temp.caso(8625, 'K-3c 30 chamadas em 60 s passam e a 31ª não', 'service_role',
+  'select string_agg(case when ok then ''t'' else ''f'' end, '''' order by g) from (select g, '
+    || pg_temp.rl('{A}') || ' as ok from generate_series(1, 31) g) s',
+  'ok', $c$$1 = repeat('t', 30) || 'f'$c$);
+select pg_temp.caso(8626, 'K-3d outro IP, outra unidade e o modo token têm balde próprio', 'service_role',
+  'select count(*) from generate_series(1, 30) g where ' || pg_temp.rl('{A}') || '; select '
+    || pg_temp.rl('{A}', 'b') || '::text || ' || pg_temp.rl('{B}') || '::text || '
+    || pg_temp.rl(null) || '::text || ' || pg_temp.rl('{A}') || '::text',
+  'ok', $c$$1 = 'truetruetruefalse'$c$);
+select pg_temp.caso(8627, 'K-3e chamada de mais de 60 s não conta; de mais de 1 h é apagada', 'postgres',
+  $s$insert into public.seat_map_rate_events (unit_id, ip_hash, created_at)
+     select '{A}', 'public-seat-map-ip:' || repeat('a', 64), clock_timestamp() - interval '61 seconds'
+       from generate_series(1, 30);
+   insert into public.seat_map_rate_events (unit_id, ip_hash, created_at)
+     values (null, 'public-seat-map-ip:' || repeat('c', 64), clock_timestamp() - interval '2 hours');
+   select set_config('role', 'service_role', true);
+   select $s$ || pg_temp.rl('{A}') || '::text',
+  'ok', $c$$1 = 'true' and (select count(*) from public.seat_map_rate_events
+     where created_at < clock_timestamp() - interval '1 hour') = 0
+   and (select count(*) from public.seat_map_rate_events) = 31$c$);
+select pg_temp.caso(8628, 'K-3f chave fora do formato (prefixo da fila de espera)', 'service_role',
+  $s$select public.check_public_seat_map_rate_limit('{A}', 'public-waitlist-ip:' || repeat('a', 64))::text$s$,
+  '22023 public_seat_map_rate_limit_invalid');
+select pg_temp.caso(8629, 'K-3g service_role sem acesso direto à contagem', 'service_role',
+  $s$select count(*)::text from public.seat_map_rate_events$s$, '42501 permission denied%');
+select pg_temp.caso(8630, 'K-CP controle: sem o guard, salão de B entra num link de A', 'postgres',
+  $s$drop trigger seat_choice_links_guard on public.seat_choice_links; $s$ || pg_temp.link('{SB}'),
+  'ok');
 
 -- ═══ Resultado ═══════════════════════════════════════════════════════════════
 \o

@@ -139,7 +139,8 @@
   ],
 
   "_service_only_escolha_de_mesa": [
-    "insert_reservation_with_tables(jsonb,uuid[])"
+    "insert_reservation_with_tables(jsonb,uuid[])",
+    "check_public_seat_map_rate_limit(uuid,text)"
   ],
 
   "_expected_advisor": {

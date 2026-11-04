@@ -35,4 +35,14 @@ alter table public.table_blocks
   add column title text,
   add column reason text;
 
+-- ─── whatsapp_channels (Task 3: canal do link de escolha) ────────────────────
+-- Forma da 013 reduzida ao que a seat_choice_links e o guard dela leem (id e
+-- unit_id NOT NULL com FK em cascata). Fora da projeção: provider, status,
+-- credenciais, RLS e grants (o guard é DEFINER). Os canais de A e B nascem
+-- dentro da transação desfeita do 83.
+create table public.whatsapp_channels (
+  id uuid primary key default gen_random_uuid(),
+  unit_id uuid not null references public.units(id) on delete cascade,
+  display_phone text);
+
 commit;

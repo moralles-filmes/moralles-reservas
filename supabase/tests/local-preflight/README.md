@@ -2909,11 +2909,14 @@ P  < supabase/tests/local-preflight/83a-escolha-de-mesa-bootstrap.sql
 P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED da Task 2 (só C-* passam)
 P  < supabase/migrations/20261105120100_ocupacao_multi_mesa.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED da Task 3 (só K-* falham)
+P  < supabase/migrations/20261105120200_links_escolha_mesa.sql
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN
 P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # segue verde
 P  < supabase/tests/local-preflight/82-planta-endurecimento.sql       # segue verde
 P  < supabase/migrations/20261105120000_mesas_reservaveis_combinacoes.sql   # reaplicar
 P  < supabase/migrations/20261105120100_ocupacao_multi_mesa.sql             # reaplicar
+P  < supabase/migrations/20261105120200_links_escolha_mesa.sql              # reaplicar
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
 docker rm -f mesa83-pg
 ```
@@ -3008,3 +3011,28 @@ O que NÃO prova: PostgREST/JWT real e concorrência de duas sessões (a exclus�
 `gist` e o `FOR NO KEY UPDATE` das mesas na `set_occupant_tables` não têm caso
 de duas conexões). O caminho legado sentar passante pela tela não confere
 `seat_taken`: só a RPC da recepção confere.
+
+Task 3 (migration `20261105120200_links_escolha_mesa.sql`). O 83a projeta
+`whatsapp_channels` mínimo (id, unit_id, display_phone), alvo da FK do link;
+os canais de A e B nascem dentro da transação desfeita do 83.
+
+- **K-1, K-2 (8601–8610, 8621–8622), `seat_choice_links`:** anon e gerente de
+  A não leem nem gravam (sem privilégio); service_role grava e lê pelo hash;
+  salão de B, canal de B e salão inexistente num link de A → o mesmo `42501
+  seat_link_invalid`; service_role não altera link (sem UPDATE); token cru no
+  lugar do hash, validade acima de 24 h e 51 pessoas caem nos CHECKs.
+- **K-3 (8623–8629), `check_public_seat_map_rate_limit`:** anon e
+  authenticated sem EXECUTE; 30 chamadas em 60 s passam e a 31ª não; outro IP,
+  outra unidade e o modo token (`p_unit_id` nulo) têm balde próprio; chamada
+  de mais de 60 s não conta e a de mais de 1 h é apagada; chave com o prefixo
+  da fila de espera → `22023`; service_role sem acesso direto à contagem.
+- **K-CP (8630), controle:** sem o trigger `seat_choice_links_guard`, o salão
+  de B entra num link de A.
+
+**Resultados observados em 05/11/2026** (mesma imagem, contêiner novo):
+**97/117 com as duas primeiras** (os 20 FAIL são os K-*), **117/117** com a
+20261105120200 e 117/117 com as três reaplicadas; 81 em 83/83 e 82 em 52/52.
+
+O que NÃO prova: o advisory lock do limite contra duas sessões simultâneas
+(mesmo desenho da `check_public_waitlist_rate_limit`) e a leitura do link pela
+EF (Task 6).
