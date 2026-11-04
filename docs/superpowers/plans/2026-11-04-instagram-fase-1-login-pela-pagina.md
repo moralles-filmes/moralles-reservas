@@ -55,8 +55,8 @@
     - permissões: `instagram_basic`, `instagram_manage_messages`, `pages_read_engagement`, `pages_show_list` e `business_management`.
     - Essa é a lista obrigatória para mensagens que a própria Meta mostra nesse caso de uso. `pages_manage_metadata` não está disponível nele, então a inscrição da Página no webhook é medida no piloto; a contingência é o "Instagram setup tool".
   - Em "URIs de redirecionamento do OAuth válidos", conferir `https://reservas.moralles.com.br/instagram/callback`.
-- [ ] **Passo 2:** o responsável roda `node meta-page-login-test.mjs`, escolhe só a Página "Moralles Films" no diálogo e cola a saída aqui.
-- [ ] **Passo 3:** conferir o critério:
+- [x] **Passo 2:** o responsável roda `node meta-page-login-test.mjs`, escolhe só a Página "Moralles Films" no diálogo e cola a saída aqui.
+- [x] **Passo 3:** conferir o critério:
   - a Página "Moralles Films" aparece com `instagram.username` = `morallesfilmes` e `instagram.id` = `17841470263374765`;
   - as `tasks` incluem `MODERATE` ou `MANAGE`;
   - o token da Página tem `expires_at` 0;
@@ -79,7 +79,8 @@
   - `type PageCandidate = { pageId: string; pageName: string | null; pageToken: string; tasks: string[]; igUserId: string; igUsername: string | null }`;
   - `parsePages(json: unknown): PageCandidate[] | null`: `null` se `data` não for array; ficam só itens com `access_token`, id de Página e `instagram_business_account.id` válidos;
   - `type PageChoice = { kind: "one"; page: PageCandidate } | { kind: "none"; reason: "no_instagram" | "insufficient_task" } | { kind: "many"; usernames: string[] }`;
-  - `choosePage(pages: PageCandidate[]): PageChoice`: filtra por `tasks` ∩ {`MODERATE`, `MANAGE`}. Zero sem filtro dá `no_instagram`; zero só depois do filtro dá `insufficient_task`.
+  - `choosePage(pages: PageCandidate[]): PageChoice`: filtra por `tasks` ∩ {`MODERATE`, `MANAGE`}. Zero sem filtro dá `no_instagram`; zero só depois do filtro dá `insufficient_task`;
+  - `parseDataAccessExpiry(json: unknown): string | null`: lê `data.data_access_expires_at` da resposta do `debug_token`. Inteiro positivo em segundos vira ISO (`new Date(s * 1000).toISOString()`); 0, ausente, não inteiro ou corpo inválido dão `null`.
 - Saem: `INSTAGRAM_SCOPES`, `parseLongLived`, `parseMe`. Ficam: `classifyGraphError`, `redactSecrets`, `stripOAuthCodeSuffix`, `parseGraphErrorBody`, `isGraphOutcomeUnknown` e `INSTAGRAM_SUBSCRIBED_FIELDS = ["messages"]`.
 
 - [ ] **Passo 1: trocar os testes do authorize e dos parsers por estes casos:**
@@ -89,7 +90,8 @@
   - item sem `access_token` ou sem `instagram_business_account` sai;
   - `parsePages({})` dá `null`;
   - `choosePage([])` dá `{ kind:"none", reason:"no_instagram" }`; um candidato com `tasks: ["ADVERTISE"]` dá `insufficient_task`; dois válidos dão `{ kind:"many", usernames:["a","b"] }`; um válido dá `one`;
-  - `parseUserLongLived({ access_token: "U-LONG", token_type: "bearer" })` dá `{ token: "U-LONG" }`, mesmo sem `expires_in`.
+  - `parseUserLongLived({ access_token: "U-LONG", token_type: "bearer" })` dá `{ token: "U-LONG" }`, mesmo sem `expires_in`;
+  - `parseDataAccessExpiry({ data: { data_access_expires_at: 1801579536 } })` dá `"2027-02-02T14:45:36.000Z"`; com `0`, `"1801579536"` (string), `-5`, `1.5`, `{}` ou `null` dá `null`.
 - [ ] **Passo 2:** `npx vitest run src/lib/instagram-graph-core.test.ts`. Esperado: FAIL nos casos novos.
 - [ ] **Passo 3:** implementar as assinaturas acima. O comentário de topo passa a dizer "Login do Facebook para Empresas com a Página".
 - [ ] **Passo 4:** `npx vitest run src/lib/instagram-graph-core.test.ts`. Esperado: PASS.
@@ -143,6 +145,7 @@
   - `exchangeCode({ appId, appSecret, redirectUri, code })`: GET `/v26.0/oauth/access_token`, credenciais na query;
   - `toLongLivedUser({ appId, appSecret, shortToken })`: GET `/v26.0/oauth/access_token?grant_type=fb_exchange_token&client_id&client_secret&fb_exchange_token`;
   - `listPages({ userToken })`: GET `/v26.0/me/accounts?fields=id,name,tasks,access_token,instagram_business_account{id,username}&limit=100`, com Bearer;
+  - `debugToken({ appId, appSecret, inputToken })`: GET `/v26.0/debug_token?input_token=…`, com `Authorization: Bearer {appId}|{appSecret}` (o segredo fica fora da URL);
   - `subscribePage({ pageId, pageToken })`: POST `/v26.0/{pageId}/subscribed_apps?subscribed_fields=messages`, com Bearer;
   - `sendText({ pageId, token, igsid, text })`: POST `/v26.0/{pageId}/messages`;
   - `profile({ igsid, token })`: só o host muda.
@@ -158,7 +161,8 @@
   - Sai `notProfessional`.
 
 - [ ] **Passo 1: trocar o `transport` do fixture pelos quatro endpoints do Facebook e escrever os testes:**
-  - **sequência feliz:** GET `oauth/access_token` (code) → GET `oauth/access_token` (`fb_exchange_token`) → GET `me/accounts` → POST `{PAGE}/subscribed_apps`. O `store_…` recebe `p_ig_user_id = IG`, `p_page_id = PAGE` (`PAGE ≠ IG`), `p_token = PAGE_TOKEN`, `p_expires_at = null` e `p_account_type = null`; a resposta é `{ unit_slug, username, subscribed: true }`.
+  - **sequência feliz:** GET `oauth/access_token` (code) → GET `oauth/access_token` (`fb_exchange_token`) → GET `me/accounts` → GET `debug_token` (com `input_token = PAGE_TOKEN`) → POST `{PAGE}/subscribed_apps`. O `store_…` recebe `p_ig_user_id = IG`, `p_page_id = PAGE` (`PAGE ≠ IG`), `p_token = PAGE_TOKEN`, `p_expires_at = "2027-02-02T14:45:36.000Z"` (fixture `data_access_expires_at: 1801579536`) e `p_account_type = null`; a resposta é `{ unit_slug, username, subscribed: true }`.
+  - **prazo de acesso:** `debug_token` com `data_access_expires_at: 0` grava `p_expires_at = null`. `debug_token` com 500 ou erro do Graph **não bloqueia** a conexão: grava `p_expires_at = null` e loga `instagram_debug_token_failed` só com `errorClass`/`httpStatus` (escolha minha: a leitura é informativa, não é gate).
   - **token do usuário:** `USER_LONG`, `SHORT`, `APP_SECRET` e `CODE` não aparecem em nenhum argumento de RPC, em `harness.logs` nem em nenhum corpo de resposta. `PAGE_TOKEN` só aparece no argumento `p_token`.
   - **escolha da Página:** zero Páginas → 422 `noPage`; Página sem a tarefa → 422 `taskInsufficient`; duas → 409 com `usernames` e sem token no corpo. Nos três casos, nenhum `store_…` e nenhum `subscribed_apps`.
   - **`start`:** o `authorize_url` tem `config_id` igual ao env; sem `INSTAGRAM_LOGIN_CONFIG_ID`, ou com `"abc"`, dá 503 sem `state`.
@@ -167,7 +171,7 @@
 - [ ] **Passo 2:** `npx vitest run src/lib/instagram-connect-request.test.ts`. Esperado: FAIL.
 - [ ] **Passo 3:** implementar o adapter e a EF.
   - No `callback`, a ordem dos gates não muda até o slug.
-  - Depois: `exchangeCode` → `toLongLivedUser` → `listPages` → `choosePage` → `store_…` → `subscribePage` → `record_…`.
+  - Depois: `exchangeCode` → `toLongLivedUser` → `listPages` → `choosePage` → `debugToken` + `parseDataAccessExpiry` → `store_…` → `subscribePage` → `record_…`.
   - O comentário de topo da EF descreve o fluxo novo.
 - [ ] **Passo 4:** `npx vitest run src/lib/instagram-connect-request.test.ts src/lib/instagram-graph-core.test.ts src/lib/instagram-config-core.test.ts` e `deno check supabase/functions/instagram-connect/index.ts`. Esperado: PASS e exit 0.
 - [ ] **Passo 5:** commit `feat(instagram): conexão pelo Login do Facebook com a Página`.
@@ -228,7 +232,13 @@
     - "Você precisa administrar ou moderar essa Página.";
     - "No app do Instagram, ligue Configurações › Mensagens e respostas ao story › Controles de mensagens › Ferramentas conectadas › Permitir acesso às mensagens.";
   - o mock de `connectStart` usa `https://www.facebook.com/v26.0/dialog/oauth?…`;
-  - conta com `token_expires_at: null` não mostra "Acesso válido até";
+  - "Acesso válido até" sai do painel;
+  - conta com `token_expires_at: null` não mostra prazo nem o botão de renovar;
+  - conta conectada com prazo a mais de 14 dias mostra "Reconecte até DD/MM/AAAA para manter o acesso." (data em `America/Sao_Paulo`), sem destaque e sem botão;
+  - prazo a 14 dias ou menos: o mesmo texto em destaque (token de aviso) e o botão "Reconectar pelo Facebook", que chama o mesmo `connect` da conexão;
+  - prazo vencido: "O acesso aos dados venceu em DD/MM/AAAA. Reconecte para voltar a responder." e o botão "Reconectar pelo Facebook";
+  - o botão de `reauth_required` passa a se chamar "Reconectar pelo Facebook";
+  - os testes de prazo usam relógio fixo (`vi.useFakeTimers` + `vi.setSystemTime`);
   - callback com `error` na URL mostra "A autorização no Facebook não foi concluída. Inicie a conexão de novo se quiser conectar.";
   - callback com erro 409 da EF mostra a mensagem do backend.
 - [ ] **Passo 2:** `npx vitest run src/pages/gestao/Instagram.test.tsx src/pages/InstagramCallback.test.tsx src/hooks/useInstagram.callback.test.tsx`. Esperado: FAIL nos novos.
@@ -279,4 +289,11 @@
 - **URI de redirecionamento:** já estava cadastrado, com modo estrito ligado; nada foi mudado ali.
 - **App:** continua "Não publicado".
 - **Migration nova** renomeada para `20261104130000`: a planta aplicou `20261104120000` em produção.
-- **Pendente:** script do responsável (passos 2 e 3).
+
+**Task 0, teste de fumaça (2026-11-04).** O responsável rodou o script e colou a saída.
+- **Troca e token longo:** HTTP 200 nos dois.
+- **Token do usuário:** tipo `USER`, `expires_at` 1798987456 (2027-01-03), `data_access_expires_at` 1801579536 (2027-02-02). Escopos: `pages_show_list`, `business_management`, `instagram_basic`, `instagram_manage_messages`, `pages_read_engagement`, `public_profile`. Os `granular_scopes` apontam para a Página, a conta do Instagram e a BM Moralles.
+- **`/me/accounts`:** Página "Moralles Films" `758899170635576`, tasks `MANAGE, CREATE_CONTENT, MODERATE, MESSAGING, ADVERTISE, ANALYZE, MANAGE_LEADS`, Instagram `17841470263374765` `morallesfilmes`.
+- **Token da Página:** tipo `PAGE`, `expires_at` 0, `data_access_expires_at` 1801579536 (90 dias).
+- **Conversas do Instagram pela Página:** HTTP 200, 1 conversa.
+- **Critério:** passou, menos o `data_access_expires_at`, que não veio 0. O responsável aprovou aplicar a escolha 2 da spec: o prazo vai para `token_expires_at` na conexão (Tasks 1 e 3) e o painel avisa "Reconecte até" (Task 6). Sem worker. A doc da Meta isenta `business_management` e `pages_*` desse prazo, mas não cita `instagram_*`; o efeito real no Direct só se vê em 2027-02-02.
