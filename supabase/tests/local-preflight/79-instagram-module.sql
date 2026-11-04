@@ -48,6 +48,20 @@
 --   mensagem), e controles C-IG-8.1..C-IG-8.3 (7968, 7969, 7977). Os casos
 --   antigos que chamam set_status/record_refresh passam a geração atual
 --   (pg_temp.ig79_cat). Livre: 7979.
+-- Task 2 do plano B (login pela Página; migration
+--   20261104130000_instagram_page_login.sql): a faixa 7901–7999 esgotou, então
+--   esta Task usa a faixa NOVA 79101–79199 (contada junto com a antiga em todo
+--   filtro de t_res deste arquivo). Casos IG-9.1..IG-9.3 (79101–79103) e um
+--   controle positivo por caso, C-IG-9.1..C-IG-9.3 (79111–79113): validação de
+--   `p_page_id` e o CHECK da coluna, `page_id` gravado ao conectar e trocado ao
+--   reconectar (mesma linha, contato intacto, token novo, vencimento nulo
+--   aceito), assinatura antiga de 7 argumentos fora e ACL/forma da nova. Todos
+--   os casos antigos conectam pela assinatura de 8 argumentos
+--   (pg_temp.ig79_store_raw). O desagendamento do `instagram-token-refresh`
+--   não roda aqui (sem pg_cron; o 79 prova só que a migration aplica sem o
+--   schema `cron`) e é conferido como texto pelo gêmeo
+--   src/lib/instagram-queue-migration-twin.test.ts. Livre: 79104–79110,
+--   79114–79199.
 --
 -- BASE (banco próprio `ig79`, README seção 79):
 --   00 -> 01 -> 09a -> 106 -> 79a -> 20260905143453 -> 20261017160000
@@ -67,7 +81,7 @@
 \set ON_ERROR_STOP on
 
 create table if not exists t_res (ord int primary key, caso text, veredito text);
-delete from t_res where ord between 7901 and 7999;
+delete from t_res where ord between 7901 and 7999 or ord between 79101 and 79199;
 
 do $$
 begin
@@ -82,7 +96,6 @@ begin
   if to_regclass('public.instagram_accounts') is null
      or to_regclass('public.instagram_contacts') is null
      or to_regclass('public.instagram_contact_reservations') is null
-     or to_regprocedure('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)') is null
      or to_regprocedure('public.get_instagram_account_token(uuid)') is null
      or to_regprocedure('public.record_instagram_account_subscription(uuid,text[])') is null
      or to_regprocedure('public.disconnect_instagram_account(uuid,uuid)') is null
@@ -154,6 +167,10 @@ begin
      or to_regprocedure('public.set_instagram_account_status(uuid,text,text,timestamptz)') is null
      or to_regprocedure('public.release_instagram_message_claim(uuid,text,uuid)') is null then
     raise exception '79: objetos da Task 4.5 ausentes (whatsapp_automation_post_inner, set_instagram_account_status/record_instagram_token_refresh com CAS de connected_at, release_instagram_message_claim). Aplique as migrations 20261103120700, 20261103120800 e 20261103120900 antes (sem elas, este abort e o RED esperado).';
+  end if;
+  if to_regprocedure('public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)') is null
+     or not exists (select 1 from pg_attribute where attrelid = 'public.instagram_accounts'::regclass and attname = 'page_id' and not attisdropped) then
+    raise exception '79: login pela Pagina ausente (instagram_accounts.page_id, store_instagram_account_connection de 8 argumentos). Aplique a migration 20261104130000_instagram_page_login antes (sem ela, este abort e o RED esperado).';
   end if;
   if not exists (select 1 from public.units where id = 'a0d79000-0000-4000-8000-0000000000aa')
      or not exists (select 1 from public.platform_admins where user_id = 'a0d79000-0000-4000-8000-0000000000c1') then
@@ -532,10 +549,14 @@ end $f$;
 
 -- SQL de store_instagram_account_connection (vencimento em 60 dias), SEM
 -- efeito colateral: o IG-6.1 mede a autorização com ele.
-create or replace function pg_temp.ig79_store_raw(p_unit uuid, p_ig text, p_user text, p_token text, p_actor uuid)
+-- Plano B, Task 2: a assinatura é a de 8 argumentos (com `p_page_id` em 3º).
+-- Os casos antigos não medem a Página e passam a fixa '7900000001'; o IG-9.x
+-- passa a sua.
+create or replace function pg_temp.ig79_store_raw(p_unit uuid, p_ig text, p_user text, p_token text, p_actor uuid,
+                                                  p_page text default '7900000001')
 returns text language sql as $$
-  select format('select public.store_instagram_account_connection(%L::uuid, %L, %L, ''BUSINESS'', %L, now() + interval ''60 days'', %L::uuid)::text',
-                p_unit, p_ig, p_user, p_token, p_actor)
+  select format('select public.store_instagram_account_connection(%L::uuid, %L, %L, %L, ''BUSINESS'', %L, now() + interval ''60 days'', %L::uuid)::text',
+                p_unit, p_ig, p_page, p_user, p_token, p_actor)
 $$;
 
 -- O mesmo SQL, e ANTES (como postgres, dentro da subtransação do caso, desfeito
@@ -840,7 +861,7 @@ begin
       'case when public.set_instagram_account_status(%L::uuid, ''connected'', null, %L::timestamptz) then '''' else ''stale:'' end', acc, pg_temp.ig79_cat(acc))));
 
     foreach fn in array array[
-      'public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)',
+      'public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)',
       'public.get_instagram_account_token(uuid)',
       'public.record_instagram_account_subscription(uuid,text[])',
       'public.record_instagram_token_refresh(uuid,text,timestamptz,timestamptz)',
@@ -3251,7 +3272,7 @@ do $$
 declare
   v_def text; v_mut text; s1 text; s2 text; s3 text; d text;
 begin
-  v_def := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure);
+  v_def := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)'::regprocedure);
   begin
     v_mut := replace(pg_temp.ig79_lf(v_def), 'raise exception ''instagram_account_in_use'' using errcode = ''P0001'';', 'null;');
     if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
@@ -3288,7 +3309,7 @@ begin
           and s2 like 'FALHOU%z=ERR 23505%'
           and s3 like 'FALHOU%y2=ERR 23505%'
           and d = 'PASSOU'
-          and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_def then 'PASSOU'
+          and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_def then 'PASSOU'
          else 'FALHOU sem_recusa=' || s1 || ' sem_desconectar=' || s2 || ' sem_reaproveitar=' || s3 || ' restaurado=' || d end);
 end $$;
 
@@ -3473,7 +3494,7 @@ declare
   v_disc text; v_store text; v_mut text; s1 text; s2 text; s3 text; d text; v_trg int;
 begin
   v_disc := pg_get_functiondef('public.disconnect_instagram_account(uuid,uuid)'::regprocedure);
-  v_store := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure);
+  v_store := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)'::regprocedure);
   begin
     drop trigger instagram_accounts_audit on public.instagram_accounts;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_27();
@@ -3511,7 +3532,7 @@ begin
           and s3 like 'FALHOU%depois=connected|a0d79000-%'
           and d = 'PASSOU' and v_trg = 1
           and pg_get_functiondef('public.disconnect_instagram_account(uuid,uuid)'::regprocedure) = v_disc
-          and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_store then 'PASSOU'
+          and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_store then 'PASSOU'
          else 'FALHOU sem_trigger=' || s1 || ' sem_ator=' || s2 || ' sem_limpar=' || s3 || ' restaurado=' || d || ' trigger=' || v_trg end);
 end $$;
 
@@ -3522,7 +3543,7 @@ declare
   fns text[] := array[
     'public.get_instagram_account_token(uuid)',
     'public.record_instagram_token_refresh(uuid,text,timestamptz,timestamptz)',
-    'public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)',
+    'public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)',
     'public.disconnect_instagram_account(uuid,uuid)'];
   fn text; v_def text; v_mut text; s text; res text[] := '{}'; ok boolean := true; d text; intactas boolean := true;
   defs text[] := '{}';
@@ -3591,7 +3612,7 @@ do $$
 declare
   v_store text; v_up text; v_st text; v_mut text; s1 text; s2 text; s3 text; s4 text; s5 text; d text; v_chk int;
 begin
-  v_store := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure);
+  v_store := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)'::regprocedure);
   v_up := pg_get_functiondef('public.upsert_instagram_contact(uuid,text,text,text)'::regprocedure);
   v_st := pg_get_functiondef('public.set_instagram_account_status(uuid,text,text,timestamptz)'::regprocedure);
   begin
@@ -3652,7 +3673,7 @@ begin
           and s4 like 'FALHOU%contato_novo_desconectada=________-%'
           and s5 like 'FALHOU%last_error=ignorado%'
           and d = 'PASSOU' and v_chk = 1
-          and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_store
+          and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_store
           and pg_get_functiondef('public.upsert_instagram_contact(uuid,text,text,text)'::regprocedure) = v_up
           and pg_get_functiondef('public.set_instagram_account_status(uuid,text,text,timestamptz)'::regprocedure) = v_st then 'PASSOU'
          else 'FALHOU sem_norm_ig=' || s1 || ' sem_norm_token=' || s2 || ' sem_check=' || s3
@@ -4563,7 +4584,7 @@ declare
   leg_grant constant text := pg_temp.ig79_lf('or not exists (
        select 1 from public.unit_module_grants g');
 begin
-  v_def := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure);
+  v_def := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)'::regprocedure);
   begin
     if array_length(string_to_array(pg_temp.ig79_lf(v_def), leg_papel), 1) <> 2 then
       raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (papel)';
@@ -4610,7 +4631,7 @@ begin
           and s2 like 'FALHOU sem_grant=________-%'
           and s3 like 'FALHOU sem_grant=ERR 42501:instagram_account_forbidden pa_sem_grant=________-%'
           and d = 'PASSOU'
-          and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_def then 'PASSOU'
+          and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_def then 'PASSOU'
          else 'FALHOU sem_papel=' || s1 || ' sem_grant=' || s2 || ' admin_pula_grant=' || s3 || ' restaurado=' || d end);
 end $$;
 
@@ -6014,17 +6035,338 @@ begin
 end $$;
 drop table if exists pg_temp.t_ig53;
 
+-- ═══ Plano B, Task 2: login pela Página (20261104130000) ═══════════════════
+-- Faixa nova 79101–79199 (a 7901–7999 esgotou). A EF da Task 3 chama a RPC
+-- por argumentos nomeados, com `p_account_type` nulo e `p_expires_at` ISO ou
+-- nulo; o helper abaixo monta exatamente essa chamada.
+create or replace function pg_temp.ig79_store_page(p_unit uuid, p_ig text, p_page text, p_user text,
+                                                   p_token text, p_expires text, p_actor uuid)
+returns text language plpgsql as $$
+begin
+  insert into public.unit_module_grants (organization_id, unit_id, module, granted_by)
+  select u.organization_id, u.id, 'instagram', 'a0d79000-0000-4000-8000-0000000000c1'
+    from public.units u where u.id = p_unit
+  on conflict do nothing;
+  return format('select public.store_instagram_account_connection(p_unit_id => %L::uuid, p_ig_user_id => %L, '
+                'p_page_id => %L, p_username => %L, p_account_type => null, p_token => %L, '
+                'p_expires_at => %L::timestamptz, p_actor => %L::uuid)::text',
+                p_unit, p_ig, p_page, p_user, p_token, p_expires, p_actor);
+end $$;
+
+-- ─── IG-9.1: p_page_id validado na RPC e na coluna ───────────────────────────
+-- Nulo, vazio, só espaços, com letra, com sinal e com 65 dígitos recebem o
+-- MESMO 22023 invalid_instagram_account_argument e nada é gravado. Com espaços
+-- nas pontas a Página entra aparada. Direto na coluna (como postgres), '12a'
+-- esbarra no CHECK instagram_accounts_page_id_chk (23514) e nulo passa (linha
+-- anterior ao login pela Página).
+create or replace function pg_temp.ig79_case_91() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  f constant text := 'ERR 22023:invalid_instagram_account_argument';
+  e_nulo text; e_vazio text; e_branco text; e_letra text; e_sinal text; e_longo text;
+  n0 int; ok text; pg text; d_letra text; d_nulo text;
+begin
+  begin
+    e_nulo := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_page(ua, '79910001', null, 'conta_91', 'tok-91-A-000001', null, owner_a));
+    e_vazio := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_page(ua, '79910001', '', 'conta_91', 'tok-91-A-000001', null, owner_a));
+    e_branco := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_page(ua, '79910001', '   ', 'conta_91', 'tok-91-A-000001', null, owner_a));
+    e_letra := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_page(ua, '79910001', '12a', 'conta_91', 'tok-91-A-000001', null, owner_a));
+    e_sinal := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_page(ua, '79910001', '-1', 'conta_91', 'tok-91-A-000001', null, owner_a));
+    e_longo := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_page(ua, '79910001', repeat('1', 65), 'conta_91', 'tok-91-A-000001', null, owner_a));
+    select count(*) into n0 from public.instagram_accounts a where a.unit_id = ua and a.ig_user_id = '79910001';
+
+    ok := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_page(ua, '79910001', ' 333 ', 'conta_91', 'tok-91-A-000002', null, owner_a));
+    select a.page_id into pg from public.instagram_accounts a where a.id = pg_temp.ig79_uuid(ok);
+    d_letra := pg_temp.ig79_q(null, null, format(
+      'with u as (update public.instagram_accounts set page_id = ''12a'' where id = %L::uuid returning 1) select count(*)::text from u', pg_temp.ig79_uuid(ok)));
+    d_nulo := pg_temp.ig79_q(null, null, format(
+      'with u as (update public.instagram_accounts set page_id = null where id = %L::uuid returning 1) select count(*)::text from u', pg_temp.ig79_uuid(ok)));
+
+    raise exception using errcode = 'P0R79', message =
+      case when e_nulo = f and e_vazio = f and e_branco = f and e_letra = f and e_sinal = f and e_longo = f
+            and n0 = 0
+            and pg_temp.ig79_uuid(ok) is not null and pg = '333'
+            and d_letra like 'ERR 23514:%instagram_accounts_page_id_chk%'
+            and d_nulo = '1' then 'PASSOU'
+           else 'FALHOU nulo=' || e_nulo || ' vazio=' || e_vazio || ' branco=' || e_branco || ' letra=' || e_letra
+                || ' sinal=' || e_sinal || ' longo=' || e_longo || ' linhas_antes=' || n0
+                || ' aparado=' || ok || ' pagina=' || coalesce(pg, '<null>')
+                || ' direto_12a=' || d_letra || ' direto_nulo=' || d_nulo end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-9.2: page_id gravado ao conectar e trocado ao reconectar ─────────────
+-- Conectar com '111' (account_type nulo, vencimento nulo) grava page_id='111'.
+-- Com um contato na conta, reconectar o MESMO ig_user_id na MESMA unidade com
+-- '222' e outro token reaproveita a linha (mesmo id, uma linha só), grava
+-- '222', o username novo, o vencimento novo e o token novo (lido pelo getter),
+-- e o contato continua na conta.
+create or replace function pg_temp.ig79_case_92() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  a1 text; a2 text; s1 text; ct text; s2 text; tok text; contatos text; n int;
+begin
+  begin
+    a1 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_page(ua, '79920001', '111', 'conta_92', 'tok-92-A-000001', null, owner_a));
+    select coalesce(a.page_id, '<null>') || '|' || coalesce(a.account_type, '<null>') || '|' || (a.token_expires_at is null) || '|' || a.status
+      into s1 from public.instagram_accounts a where a.id = pg_temp.ig79_uuid(a1);
+    ct := pg_temp.ig79_q('service_role', null, format(
+      'select public.upsert_instagram_contact(%L::uuid, ''igsid-92'', ''cli_92'', ''Cliente 92'')::text', pg_temp.ig79_uuid(a1)));
+
+    a2 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_page(ua, '79920001', '222', 'conta_92b', 'tok-92-A-000002',
+                                                                     (now() + interval '60 days')::text, owner_a));
+    select coalesce(a.page_id, '<null>') || '|' || a.username || '|' || a.status || '|' || (a.token_expires_at is not null)
+      into s2 from public.instagram_accounts a where a.id = pg_temp.ig79_uuid(a1);
+    tok := pg_temp.ig79_q('service_role', null, format('select public.get_instagram_account_token(%L::uuid)', pg_temp.ig79_uuid(a1)));
+    select coalesce(string_agg(c.id::text, ','), '<nenhum>') into contatos
+      from public.instagram_contacts c where c.instagram_account_id = pg_temp.ig79_uuid(a1);
+    select count(*) into n from public.instagram_accounts a where a.unit_id = ua and a.ig_user_id = '79920001';
+
+    raise exception using errcode = 'P0R79', message =
+      case when pg_temp.ig79_uuid(a1) is not null
+            and s1 = '111|<null>|true|connected'
+            and pg_temp.ig79_uuid(ct) is not null
+            and a2 = a1 and n = 1
+            and s2 = '222|conta_92b|connected|true'
+            and tok = 'tok-92-A-000002'
+            and contatos = ct then 'PASSOU'
+           else 'FALHOU primeira=' || a1 || ' estado1=' || coalesce(s1, '<null>') || ' contato=' || ct
+                || ' reconectar=' || a2 || ' linhas=' || n || ' depois=' || coalesce(s2, '<null>')
+                || ' token=' || tok || ' contatos=' || contatos end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-9.3: catálogo da assinatura nova, da coluna e do CHECK ───────────────
+-- A assinatura de 7 argumentos não existe mais e há UMA store. A nova tem os
+-- argumentos na ordem e com os nomes que a EF usa, devolve uuid, é SECURITY
+-- DEFINER com search_path vazio, EXECUTE só para service_role (anon,
+-- authenticated e PUBLIC fora). page_id é text anulável, o CHECK está
+-- validado na forma do plano e a coluna tem o comentário.
+create or replace function pg_temp.ig79_case_93() returns text language plpgsql as $f$
+declare
+  fn constant text := 'public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)';
+  antiga boolean; n_store int; args text; forma text; ruins text := ''; r text; col text; chk text; com text;
+begin
+  begin
+    antiga := to_regprocedure('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)') is not null;
+    select count(*) into n_store from pg_proc p
+     where p.pronamespace = 'public'::regnamespace and p.proname = 'store_instagram_account_connection';
+    args := pg_get_function_identity_arguments(fn::regprocedure);
+    select p.prosecdef || '|' || (p.proconfig = array['search_path=""']) || '|' || p.prorettype::regtype::text
+      into forma from pg_proc p where p.oid = fn::regprocedure;
+    foreach r in array array['anon', 'authenticated'] loop
+      if has_function_privilege(r, fn, 'EXECUTE') then ruins := ruins || ' ' || r || '_exec'; end if;
+    end loop;
+    if not has_function_privilege('service_role', fn, 'EXECUTE') then ruins := ruins || ' service_sem_exec'; end if;
+    if exists (select 1 from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                where p.oid = fn::regprocedure and a.grantee = 0) then
+      ruins := ruins || ' public_exec';
+    end if;
+    select format_type(t.atttypid, t.atttypmod) || '|' || (not t.attnotnull)
+      into col from pg_attribute t
+     where t.attrelid = 'public.instagram_accounts'::regclass and t.attname = 'page_id' and not t.attisdropped;
+    select string_agg(c.convalidated || '|' || pg_get_constraintdef(c.oid), ',')
+      into chk from pg_constraint c
+     where c.conrelid = 'public.instagram_accounts'::regclass and c.conname = 'instagram_accounts_page_id_chk';
+    select col_description('public.instagram_accounts'::regclass, t.attnum) into com
+      from pg_attribute t where t.attrelid = 'public.instagram_accounts'::regclass and t.attname = 'page_id';
+
+    raise exception using errcode = 'P0R79', message =
+      case when not antiga and n_store = 1
+            and args = 'p_unit_id uuid, p_ig_user_id text, p_page_id text, p_username text, p_account_type text, p_token text, p_expires_at timestamp with time zone, p_actor uuid'
+            and forma = 'true|true|uuid'
+            and ruins = ''
+            and col = 'text|true'
+            and chk = 'true|CHECK (((page_id IS NULL) OR (page_id ~ ''^[0-9]{1,64}$''::text)))'
+            and com = 'Página do Facebook ligada à conta; endereço do envio. Nulo só em linha anterior ao login pela Página.' then 'PASSOU'
+           else 'FALHOU antiga=' || antiga || ' stores=' || n_store || ' args=' || coalesce(args, '<null>')
+                || ' forma=' || coalesce(forma, '<null>') || ' acl:' || ruins || ' coluna=' || coalesce(col, '<null>')
+                || ' check=' || coalesce(chk, '<null>') || ' comentario=' || coalesce(com, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+do $$
+begin
+  insert into t_res values (79101, 'IG-9.1 p_page_id nulo, vazio, so espacos, com letra, com sinal e com 65 digitos: 22023 sem gravar; aparado nas pontas; CHECK da coluna recusa 12a e aceita nulo',
+    pg_temp.ig79_case_91());
+  insert into t_res values (79102, 'IG-9.2 conectar com 111 grava page_id (tipo e vencimento nulos aceitos); reconectar a mesma conta na mesma unidade com 222 reaproveita a linha, troca pagina e token e mantem o contato',
+    pg_temp.ig79_case_92());
+  insert into t_res values (79103, 'IG-9.3 assinatura de 7 argumentos fora; a de 8 com nomes da EF, DEFINER, search_path vazio, EXECUTE so service_role; page_id text anulavel com CHECK validado e comentario',
+    pg_temp.ig79_case_93());
+end $$;
+
+-- C-IG-9.1: (a) store sem validar p_page_id; (b) sem o CHECK da coluna;
+-- (c) store sem aparar p_page_id.
+do $$
+declare
+  fn constant text := 'public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)';
+  v_def text; v_mut text; s1 text; s2 text; s3 text; d text; v_chk int;
+begin
+  v_def := pg_get_functiondef(fn::regprocedure);
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'\n     or p_page_id is null or p_page_id !~ ''^[0-9]{1,64}$'' then', ' then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_91();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    alter table public.instagram_accounts drop constraint instagram_accounts_page_id_chk;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_91();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'p_page_id := btrim(p_page_id);', 'null;');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_91();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_91();
+  raise notice 'C-IG-9.1 sem validar a pagina: %', s1;
+  raise notice 'C-IG-9.1 sem o CHECK: %', s2;
+  raise notice 'C-IG-9.1 sem aparar: %', s3;
+  select count(*) into v_chk from pg_constraint
+   where conrelid = 'public.instagram_accounts'::regclass and conname = 'instagram_accounts_page_id_chk';
+  insert into t_res values (79111, 'C-IG-9.1 store sem validar p_page_id, coluna sem o CHECK e store sem aparar: IG-9.1 reprova nos tres; restaurado passa',
+    case when s1 like 'FALHOU nulo=________-%'
+          and s2 like 'FALHOU%direto_12a=1 %'
+          and s3 like 'FALHOU%aparado=ERR 22023:invalid_instagram_account_argument%'
+          and d = 'PASSOU' and v_chk = 1
+          and pg_get_functiondef(fn::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU sem_validar=' || s1 || ' sem_check=' || s2 || ' sem_aparar=' || s3 || ' restaurado=' || d || ' check=' || v_chk end);
+end $$;
+
+-- C-IG-9.2: (a) reconexão sem gravar page_id; (b) conexão nova sem gravar
+-- page_id.
+do $$
+declare
+  fn constant text := 'public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)';
+  v_def text; v_mut text; s1 text; s2 text; d text;
+begin
+  v_def := pg_get_functiondef(fn::regprocedure);
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'\n           page_id = p_page_id,', '');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_92();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'p_expires_at, p_actor, p_page_id', 'p_expires_at, p_actor, null');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_92();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_92();
+  raise notice 'C-IG-9.2 reconexao sem page_id: %', s1;
+  raise notice 'C-IG-9.2 conexao nova sem page_id: %', s2;
+  insert into t_res values (79112, 'C-IG-9.2 reconexao sem gravar page_id e conexao nova sem gravar page_id: IG-9.2 reprova nos dois; restaurado passa',
+    case when s1 like 'FALHOU%depois=111|conta_92b|connected|true %'
+          and s2 like 'FALHOU%estado1=<null>|<null>|true|connected %'
+          and d = 'PASSOU'
+          and pg_get_functiondef(fn::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU reconexao=' || s1 || ' nova=' || s2 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-9.3: (a) EXECUTE para authenticated; (b) a assinatura de 7 argumentos
+-- de volta; (c) search_path deixa de ser vazio; (d) CHECK só NOT VALID.
+do $$
+declare
+  fn constant text := 'public.store_instagram_account_connection(uuid,text,text,text,text,text,timestamptz,uuid)';
+  v_def text; v_acl text; v_chk text; s1 text; s2 text; s3 text; s4 text; d text;
+begin
+  v_def := pg_get_functiondef(fn::regprocedure);
+  select p.proacl::text into v_acl from pg_proc p where p.oid = fn::regprocedure;
+  select c.convalidated || '|' || pg_get_constraintdef(c.oid) into v_chk from pg_constraint c
+   where c.conrelid = 'public.instagram_accounts'::regclass and c.conname = 'instagram_accounts_page_id_chk';
+  begin
+    execute format('grant execute on function %s to authenticated', fn);
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_93();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    create function public.store_instagram_account_connection(
+      p_unit_id uuid, p_ig_user_id text, p_username text, p_account_type text, p_token text, p_expires_at timestamptz, p_actor uuid)
+      returns uuid language sql security definer set search_path = '' as $b$ select null::uuid $b$;
+    revoke all on function public.store_instagram_account_connection(uuid, text, text, text, text, timestamptz, uuid) from public, anon, authenticated;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_93();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    execute format('alter function %s set search_path = public', fn);
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_93();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    alter table public.instagram_accounts drop constraint instagram_accounts_page_id_chk;
+    alter table public.instagram_accounts add constraint instagram_accounts_page_id_chk
+      check (page_id is null or page_id ~ '^[0-9]{1,64}$') not valid;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_93();
+  exception
+    when sqlstate 'P0R79' then s4 := sqlerrm;
+    when others then s4 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_93();
+  raise notice 'C-IG-9.3 EXECUTE para authenticated: %', s1;
+  raise notice 'C-IG-9.3 assinatura antiga de volta: %', s2;
+  raise notice 'C-IG-9.3 search_path public: %', s3;
+  raise notice 'C-IG-9.3 CHECK NOT VALID: %', s4;
+  insert into t_res values (79113, 'C-IG-9.3 EXECUTE para authenticated, assinatura de 7 argumentos de volta, search_path nao vazio e CHECK so NOT VALID: IG-9.3 reprova nos quatro; restaurado passa',
+    case when s1 like 'FALHOU%acl: authenticated_exec %'
+          and s2 like 'FALHOU antiga=true stores=2 %'
+          and s3 like 'FALHOU%forma=true|false|uuid %'
+          and s4 like 'FALHOU%check=false|%'
+          and d = 'PASSOU'
+          and pg_get_functiondef(fn::regprocedure) = v_def
+          and (select p.proacl::text from pg_proc p where p.oid = fn::regprocedure) is not distinct from v_acl
+          and (select c.convalidated || '|' || pg_get_constraintdef(c.oid) from pg_constraint c
+                where c.conrelid = 'public.instagram_accounts'::regclass and c.conname = 'instagram_accounts_page_id_chk') = v_chk
+          and to_regprocedure('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)') is null then 'PASSOU'
+         else 'FALHOU exec_auth=' || s1 || ' antiga=' || s2 || ' search_path=' || s3 || ' not_valid=' || s4 || ' restaurado=' || d end);
+end $$;
+
 -- ─── Resultado ───────────────────────────────────────────────────────────────
-select ord, caso, veredito from t_res where ord between 7901 and 7999 order by ord;
+-- Duas faixas: 7901–7999 (Fase 1) e 79101–79199 (plano B).
+select ord, caso, veredito from t_res
+ where ord between 7901 and 7999 or ord between 79101 and 79199 order by ord;
 select count(*) as total, count(*) filter (where veredito = 'PASSOU') as passou
-  from t_res where ord between 7901 and 7999;   -- esperado: 98 e 98
+  from t_res where ord between 7901 and 7999 or ord between 79101 and 79199;   -- esperado: 104 e 104
 
 do $$
 declare v_total int; v_ok int;
 begin
   select count(*), count(*) filter (where veredito = 'PASSOU') into v_total, v_ok
-    from t_res where ord between 7901 and 7999;
-  if v_total <> 98 or v_ok <> 98 then
-    raise exception '79: esperado 98 e 98, obtido % e %', v_total, v_ok;
+    from t_res where ord between 7901 and 7999 or ord between 79101 and 79199;
+  if v_total <> 104 or v_ok <> 104 then
+    raise exception '79: esperado 104 e 104, obtido % e %', v_total, v_ok;
   end if;
 end $$;

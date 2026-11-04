@@ -252,3 +252,113 @@ describe("migration de cron do Instagram ⇔ núcleo da fila de inbound", () => 
     expect(conferir(sabotado).some((e) => e.startsWith("jobs="))).toBe(true);
   });
 });
+
+// ─── Plano B, Task 2: fim do agendamento do refresh (20261104130000) ────────
+// O token da Página não é renovado pelo endpoint do Instagram Login: a
+// migration do login pela Página desagenda SÓ `instagram-token-refresh` (a
+// varredura e a purga ficam), e nenhuma migration posterior à 120500 volta a
+// agendá-lo. O pré-voo 79 não tem pg_cron e só prova que a migration aplica
+// sem o schema `cron`; o conteúdo do desagendamento é conferido aqui.
+const ARQUIVO_PAGINA = readdirSync(MIGRATIONS).find((f) => /^\d{14}_instagram_page_login\.sql$/.test(f));
+const SQL_PAGINA = ARQUIVO_PAGINA ? readFileSync(resolve(MIGRATIONS, ARQUIVO_PAGINA), "utf8") : "";
+const JOBS_DO_MODULO = ["instagram-inbound-sweep", "instagram-token-refresh", "instagram-inbound-purge"];
+
+/** Nomes de job desagendados por `perform cron.unschedule(jobid) from cron.job where jobname = '<nome>'` (SQL sem comentários). */
+function desagendados(sql: string): string[] {
+  const re = /perform\s+cron\.unschedule\(\s*jobid\s*\)\s+from\s+cron\.job\s+where\s+jobname\s*=\s*'([^']+)'/gi;
+  return [...semComentarios(sql).matchAll(re)].map((m) => m[1]);
+}
+
+/** Divergências da migration do login pela Página quanto ao cron (vazia = confere). */
+function conferirFimDoRefresh(sql: string): string[] {
+  const erros: string[] = [];
+  const limpo = semComentarios(sql);
+  const nomes = desagendados(sql);
+  if (JSON.stringify(nomes) !== JSON.stringify(["instagram-token-refresh"])) erros.push(`desagenda=${nomes.join(",")}`);
+  if (/cron\.unschedule\(\s*'/i.test(limpo)) erros.push("unschedule por nome (falha quando o job não existe)");
+  if (agendamentos(sql).length > 0) erros.push("agenda job");
+  const guarda = limpo.search(/if\s+exists\s*\(\s*select\s+1\s+from\s+pg_namespace\s+where\s+nspname\s*=\s*'cron'\s*\)\s*then/i);
+  const unschedule = posicaoDoUnschedule(sql, "instagram-token-refresh");
+  if (guarda === -1 || unschedule === -1 || guarda > unschedule) erros.push("unschedule fora da guarda do schema cron");
+  if (/create\s+extension[^;]*pg_cron/i.test(limpo)) erros.push("cria a extensão pg_cron");
+  return erros;
+}
+
+/** Migrations depois da 120500 que agendam `instagram-token-refresh` (SQL sem comentários). */
+function reagendamentosDoRefresh(arquivos: { nome: string; sql: string }[]): string[] {
+  return arquivos
+    .filter((a) => Number(a.nome.slice(0, 14)) > 20261103120500)
+    .filter((a) => agendamentos(a.sql).some((g) => g.nome === "instagram-token-refresh"))
+    .map((a) => a.nome);
+}
+
+const TODAS_AS_MIGRATIONS = readdirSync(MIGRATIONS)
+  .filter((f) => /^\d{14}_.*\.sql$/.test(f))
+  .map((nome) => ({ nome, sql: readFileSync(resolve(MIGRATIONS, nome), "utf8") }));
+
+describe("migration do login pela Página ⇔ fim do agendamento do refresh", () => {
+  it("o arquivo existe e vem depois da 20261103120900 (último do módulo)", () => {
+    expect(ARQUIVO_PAGINA).toBeDefined();
+    expect(Number(ARQUIVO_PAGINA!.slice(0, 14))).toBeGreaterThan(20261103120900);
+  });
+
+  it("desagenda só instagram-token-refresh, por jobid, dentro da guarda do schema cron, e não agenda nada", () => {
+    expect(conferirFimDoRefresh(SQL_PAGINA)).toEqual([]);
+  });
+
+  it("a varredura e a purga não são desagendadas por ela", () => {
+    const nomes = desagendados(SQL_PAGINA);
+    for (const job of JOBS_DO_MODULO.filter((j) => j !== "instagram-token-refresh")) expect(nomes).not.toContain(job);
+  });
+
+  it("nenhuma migration posterior à 120500 volta a agendar instagram-token-refresh", () => {
+    expect(reagendamentosDoRefresh(TODAS_AS_MIGRATIONS)).toEqual([]);
+  });
+
+  it("CONTROLE POSITIVO: sem o unschedule do refresh reprova", () => {
+    const sabotado = SQL_PAGINA.replace(
+      /perform\s+cron\.unschedule\(jobid\)\s+from\s+cron\.job\s+where\s+jobname\s*=\s*'instagram-token-refresh';/i,
+      "null;",
+    );
+    expect(sabotado).not.toBe(SQL_PAGINA);
+    expect(conferirFimDoRefresh(sabotado)).toContain("desagenda=");
+  });
+
+  it("CONTROLE POSITIVO: desagendar também a varredura ou a purga reprova", () => {
+    for (const job of ["instagram-inbound-sweep", "instagram-inbound-purge"]) {
+      const sabotado = SQL_PAGINA.replace(
+        /perform\s+cron\.unschedule\(jobid\)\s+from\s+cron\.job\s+where\s+jobname\s*=\s*'instagram-token-refresh';/i,
+        (m) => `${m}\n    perform cron.unschedule(jobid) from cron.job where jobname = '${job}';`,
+      );
+      expect(sabotado).not.toBe(SQL_PAGINA);
+      expect(conferirFimDoRefresh(sabotado)).toContain(`desagenda=instagram-token-refresh,${job}`);
+    }
+  });
+
+  it("CONTROLE POSITIVO: unschedule fora da guarda do schema cron reprova", () => {
+    const sabotado = SQL_PAGINA.replace(
+      /if\s+exists\s*\(\s*select\s+1\s+from\s+pg_namespace\s+where\s+nspname\s*=\s*'cron'\s*\)\s*then/i,
+      "if true then",
+    );
+    expect(sabotado).not.toBe(SQL_PAGINA);
+    expect(conferirFimDoRefresh(sabotado)).toContain("unschedule fora da guarda do schema cron");
+  });
+
+  it("CONTROLE POSITIVO: unschedule só em comentário não conta", () => {
+    const sabotado = SQL_PAGINA.replace(
+      /perform\s+cron\.unschedule\(jobid\)\s+from\s+cron\.job\s+where\s+jobname\s*=\s*'instagram-token-refresh';/i,
+      (m) => `-- ${m}`,
+    );
+    expect(sabotado).not.toBe(SQL_PAGINA);
+    expect(conferirFimDoRefresh(sabotado).length).toBeGreaterThan(0);
+  });
+
+  it("CONTROLE POSITIVO: migration posterior que reagenda o refresh é apontada; a 120500 não conta", () => {
+    const sintetica = {
+      nome: "20991231000000_reagenda.sql",
+      sql: "select cron.schedule('instagram-token-refresh', '40 9 * * *', $$select public.trigger_instagram_token_refresh();$$);",
+    };
+    expect(reagendamentosDoRefresh([...TODAS_AS_MIGRATIONS, sintetica])).toEqual(["20991231000000_reagenda.sql"]);
+    expect(TODAS_AS_MIGRATIONS.some((a) => agendamentos(a.sql).some((g) => g.nome === "instagram-token-refresh"))).toBe(true);
+  });
+});
