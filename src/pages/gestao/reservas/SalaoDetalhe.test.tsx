@@ -60,6 +60,15 @@ describe("SalaoDetalhe", () => {
     expect(calls.useHall[0]).toEqual(["unit-a", "h-b"]);
   });
 
+  it("controle: salão da unidade mostra as ações", () => {
+    state.hall = { id: "h-a", unit_id: "unit-a", name: "Salão A", active: true, allow_empty_seat: false, description: null };
+    renderAt();
+    expect(screen.queryByText("Salão não encontrado nesta unidade.")).toBeNull();
+    expect(screen.getByText(/Excluir salão/)).toBeTruthy();
+    expect(screen.getByText(/Editar salão/)).toBeTruthy();
+    expect(screen.getByText(/Editar planta/)).toBeTruthy();
+  });
+
   it("erro de leitura mostra a tela de erro com nova tentativa", () => {
     state.isError = true;
     renderAt();

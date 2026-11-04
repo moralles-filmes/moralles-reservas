@@ -12,6 +12,8 @@ const OWN_MESSAGES = new Set([HALL_NOT_IN_UNIT_MESSAGE, TABLE_NOT_IN_UNIT_MESSAG
 
 export function layoutErrorMessage(err: unknown, fallback: string): string {
   const e = (err ?? {}) as { code?: unknown; message?: unknown };
+  // Também 42501, mas é integridade (salão de outra unidade), não papel.
+  if (e.code === "42501" && e.message === "hall_unit_mismatch") return HALL_NOT_IN_UNIT_MESSAGE;
   if (e.code === "42501") return LAYOUT_ROLE_MESSAGE;
   if (typeof e.message === "string" && OWN_MESSAGES.has(e.message)) return e.message;
   return fallback;

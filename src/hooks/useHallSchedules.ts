@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { HallSchedule } from "@/types/reserva";
 import { HALL_NOT_IN_UNIT_MESSAGE, assertWrote } from "@/lib/layout-errors";
@@ -61,7 +61,7 @@ export function useCreateHallSchedules(unitId: string) {
       return data as HallSchedule[];
     },
     onSettled: (_data, _err, variables) => {
-      qc.invalidateQueries({ queryKey: ["hall-schedules", unitId, variables.hall_id] });
+      invalidateSchedules(qc, unitId, variables.hall_id);
     },
   });
 }
@@ -86,7 +86,7 @@ export function useUpdateHallSchedule(unitId: string) {
       return data![0] as HallSchedule;
     },
     onSettled: (_data, _err, input) => {
-      qc.invalidateQueries({ queryKey: ["hall-schedules", unitId, input.hall_id] });
+      invalidateSchedules(qc, unitId, input.hall_id);
     },
   });
 }
@@ -106,7 +106,15 @@ export function useDeleteHallSchedule(unitId: string) {
       return input;
     },
     onSettled: (_data, _err, input) => {
-      qc.invalidateQueries({ queryKey: ["hall-schedules", unitId, input.hall_id] });
+      invalidateSchedules(qc, unitId, input.hall_id);
     },
   });
+}
+
+/** Horários do salão e as leituras da unidade que derivam deles. */
+function invalidateSchedules(qc: QueryClient, unitId: string, hallId: string) {
+  qc.invalidateQueries({ queryKey: ["hall-schedules", unitId, hallId] });
+  for (const entity of ["all-hall-schedules", "halls-with-schedules", "unit-hour-range"]) {
+    qc.invalidateQueries({ queryKey: [entity, unitId] });
+  }
 }

@@ -46,9 +46,10 @@ export function useCreateWalkIn(unitId: string) {
     }) => {
       const { seated, ...fields } = payload;
       const { error } = await supabase.from("walk_ins").insert({
-        unit_id: unitId,
         ...fields,
         ...(seated ? { status: "seated", seated_at: new Date().toISOString() } : {}),
+        // Por último: o tenant é o da tela, nunca um campo que veio no payload.
+        unit_id: unitId,
       });
       if (error) throw error;
     },

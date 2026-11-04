@@ -159,8 +159,8 @@ create or replace function app_private.guard_table_hall_unit()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   if tg_table_name = 'tables' then
-    -- FOR SHARE conflita com o UPDATE de halls.unit_id (a FK só pega KEY SHARE):
-    -- mover o salão e pendurar mesa nele ao mesmo tempo não passam juntos.
+    -- FOR SHARE trava o salão contra o UPDATE concorrente de halls.unit_id, que
+    -- trava a linha antes deste trigger: mover o salão e pendurar mesa nele não passam juntos.
     if new.hall_id is not null then
       perform 1 from public.halls h where h.id = new.hall_id and h.unit_id = new.unit_id for share;
       if not found then

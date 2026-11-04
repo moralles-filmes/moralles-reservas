@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { Hall, HallSchedule } from "@/types/reserva";
 import { HALL_NOT_IN_UNIT_MESSAGE, assertWrote } from "@/lib/layout-errors";
@@ -89,17 +89,23 @@ export function useCreateHall(unitId: string) {
       if (error) throw error;
       return data as Hall;
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["halls", unitId] });
-    },
+    onSuccess: () => invalidateHallLists(qc, unitId),
   });
+}
+
+/** Listas de salão da unidade (tela de salões, horários agregados, faixa de horário, reserva manual). */
+function invalidateHallLists(qc: QueryClient, unitId: string) {
+  for (const entity of ["halls", "halls-with-schedules", "all-hall-schedules", "unit-hour-range"]) {
+    qc.invalidateQueries({ queryKey: [entity, unitId] });
+  }
 }
 
 export function useUpdateHall(unitId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { id: string } & Partial<Omit<Hall, "id" | "unit_id" | "created_at" | "updated_at">>) => {
-      const { id, ...patch } = input;
+      // `unit_id` fora do patch também em tempo de execução: mover salão de unidade não é desta tela.
+      const { id, unit_id: _unit, ...patch } = input as typeof input & { unit_id?: unknown };
       const { data, error } = await supabase
         .from("halls")
         .update(patch)
@@ -111,7 +117,7 @@ export function useUpdateHall(unitId: string) {
       return data![0] as Hall;
     },
     onSettled: (_data, _err, variables) => {
-      qc.invalidateQueries({ queryKey: ["halls", unitId] });
+      invalidateHallLists(qc, unitId);
       qc.invalidateQueries({ queryKey: ["hall", unitId, variables.id] });
     },
   });
@@ -130,8 +136,13 @@ export function useDeleteHall(unitId: string) {
       if (error) throw error;
       assertWrote(data, HALL_NOT_IN_UNIT_MESSAGE);
     },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: ["halls", unitId] });
+    onSettled: (_data, _err, id) => {
+      invalidateHallLists(qc, unitId);
+      // A cascata apaga os horários e solta as mesas do salão.
+      qc.invalidateQueries({ queryKey: ["hall", unitId, id] });
+      qc.invalidateQueries({ queryKey: ["hall-tables", unitId, id] });
+      qc.invalidateQueries({ queryKey: ["hall-schedules", unitId, id] });
+      qc.invalidateQueries({ queryKey: ["unit-tables", unitId] });
     },
   });
 }

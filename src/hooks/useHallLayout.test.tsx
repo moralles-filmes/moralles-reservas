@@ -161,6 +161,7 @@ describe("layoutErrorMessage", () => {
   it("42501 vira a mensagem de papel; o resto usa o fallback ou a mensagem própria do erro conhecido", () => {
     expect(layoutErrorMessage({ code: "42501", message: "layout_write_forbidden" }, "f")).toBe(LAYOUT_ROLE_MESSAGE);
     expect(LAYOUT_ROLE_MESSAGE).toBe("Só owner ou gerente podem alterar mesas e salões.");
+    expect(layoutErrorMessage({ code: "42501", message: "hall_unit_mismatch" }, "f")).toBe(HALL_NOT_IN_UNIT_MESSAGE);
     expect(layoutErrorMessage(new Error(HALL_NOT_IN_UNIT_MESSAGE), "f")).toBe(HALL_NOT_IN_UNIT_MESSAGE);
     expect(layoutErrorMessage({ code: "23505", message: "dup" }, "Erro ao salvar.")).toBe("Erro ao salvar.");
     expect(layoutErrorMessage(null, "Erro ao salvar.")).toBe("Erro ao salvar.");

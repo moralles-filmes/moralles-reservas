@@ -75,7 +75,7 @@ export default function SalaoDetalhe() {
     );
   }
 
-  if (hallError) {
+  if (hallError && !hall) {
     return (
       <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
         <AlertCircle className="h-8 w-8 text-destructive" />
@@ -113,7 +113,7 @@ export default function SalaoDetalhe() {
 
   const handleDeleteTable = async (table: Mesa) => {
     deleteTable.mutate(
-      { id: table.id, unit_id: table.unit_id, hall_id: table.hall_id },
+      { id: table.id, unit_id: unitId, hall_id: table.hall_id },
       {
         onSuccess: () => toast.success("Mesa removida."),
         onError: onLayoutError("Não foi possível remover (verifique reservas vinculadas)."),

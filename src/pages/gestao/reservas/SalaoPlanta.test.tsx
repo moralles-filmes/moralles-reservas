@@ -18,9 +18,10 @@ if (typeof window.PointerEvent === "undefined") {
 
 const mutate = vi.fn();
 const refetch = vi.fn();
-const state: { isGerente: boolean; isError: boolean; tables: ReturnType<typeof mesa>[] } = {
+const state: { isGerente: boolean; isError: boolean; error: Error | null; tables: ReturnType<typeof mesa>[] } = {
   isGerente: true,
   isError: false,
+  error: null,
   tables: [],
 };
 
@@ -56,6 +57,7 @@ vi.mock("@/hooks/useHallPlan", () => ({
     data: state.isError ? undefined : { hall, tables: state.tables },
     isLoading: false,
     isError: state.isError,
+    error: state.error,
     refetch,
   }),
   useSaveHallPlan: () => ({ mutate, isPending: false }),
@@ -88,10 +90,29 @@ beforeEach(() => {
   refetch.mockReset();
   state.isGerente = true;
   state.isError = false;
+  state.error = null;
   state.tables = [mesa("t1", 1, 200), mesa("t3", 3, 600)];
 });
 
 describe("SalaoPlanta", () => {
+  it("salão de outra unidade: mostra 'não encontrado', sem tentar de novo nem editor", () => {
+    state.isError = true;
+    state.error = new Error("Salão não encontrado nesta unidade.");
+    renderPage();
+    expect(screen.getByText("Salão não encontrado nesta unidade.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Tentar de novo" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Voltar para os salões" }).getAttribute("href")).toBe(
+      "/g/moralles/reservas/saloes",
+    );
+  });
+
+  it("erro comum de leitura segue com Tentar de novo", () => {
+    state.isError = true;
+    state.error = new Error("network");
+    renderPage();
+    expect(screen.getByRole("button", { name: "Tentar de novo" })).toBeTruthy();
+  });
+
   it("renderiza as mesas como botões com rótulo acessível", () => {
     renderPage();
     expect(screen.getByRole("button", { name: "Mesa 3, 4 lugares" })).toBeTruthy();

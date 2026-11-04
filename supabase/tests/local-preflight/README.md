@@ -2868,11 +2868,16 @@ docker rm -f planta82-pg
   em salão de B recebem `layout_write_forbidden`, não `hall_unit_mismatch` (o
   guard de papel dispara antes do de unidade: sem oráculo da unidade do salão);
   DELETE sem claims não apaga nada (a RLS filtra antes do trigger).
+- **H-CP4, H-CP5, H-5c, H-3d, H-8e (8448–8452):** sem `halls_write_role_guard` o
+  operador renomeia salão; sem `halls_write_unit_change_guard` salão com mesas muda
+  de unidade; operador de A que é gerente de B não move mesa de A para B
+  (unidade antiga conferida); gerente de A não cria horário em salão de B nem muda
+  a unidade de um salão para B.
 
 **Resultados observados em 04/11/2026** (imagem `supabase/postgres:17.11.0.004`,
-sem rede, contêiner novo): **18/47 antes da migration** (os 29 FAIL são a
+sem rede, contêiner novo): **18/52 antes da migration** (os 34 FAIL são a
 falha: operador gravando tudo, mesa em salão alheio, RPC sem retorno, triggers
-inexistentes nos controles), **47/47** depois e 47/47 com a migration
+inexistentes nos controles), **52/52** depois e 52/52 com a migration
 reaplicada; 81 em 83/83 nas duas rodadas.
 
 O que NÃO prova: PostgREST/JWT real nem concorrência (o `FOR SHARE` do

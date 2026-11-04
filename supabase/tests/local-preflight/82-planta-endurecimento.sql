@@ -255,6 +255,29 @@ select pg_temp.caso(8442, 'H-CP3 sem o trigger, o operador apaga horário', 'pos
      select set_config('role', 'postgres', true)$s$, 'ok',
   $c$not exists (select 1 from public.hall_schedules where id='{H1}')$c$);
 
+select pg_temp.caso(8448, 'H-CP4 sem o trigger, o operador renomeia salão', 'postgres',
+  $s$alter table public.halls disable trigger halls_write_role_guard;
+  $s$ || pg_temp.como('OPE') || $s$
+     update public.halls set name='Y' where id='{S2}';
+     select set_config('role', 'postgres', true)$s$, 'ok',
+  $c$(select name from public.halls where id='{S2}') = 'Y'$c$);
+select pg_temp.caso(8449, 'H-CP5 sem o trigger, salão com mesas muda de unidade', 'postgres',
+  $s$alter table public.halls disable trigger halls_write_unit_change_guard;
+     update public.halls set unit_id='{B}' where id='{S2}'; select 'x'$s$, 'ok',
+  $c$(select unit_id from public.halls where id='{S2}') = '{B}'$c$);
+
+-- ═══ Escopo com membership múltipla e gerente fora da unidade ═══════════════
+select pg_temp.caso(8450, 'H-5c operador de A e gerente de B move mesa de A para B', 'postgres',
+  $s$insert into public.unit_members (user_id, unit_id, role) values ('{OPE}', '{B}', 'gerente');
+  $s$ || pg_temp.como('OPE') || $s$
+     update public.tables set unit_id='{B}', hall_id=null where id='{T13}'; select 'x'$s$,
+  '42501 layout_write_forbidden');
+select pg_temp.caso(8451, 'H-3d gerente de A cria horário em salão de B', 'GER',
+  $s$insert into public.hall_schedules (hall_id, day_of_week, open_time, close_time)
+     values ('{SB}', 1, '18:00', '22:00'); select 'x'$s$, '42501 layout_write_forbidden');
+select pg_temp.caso(8452, 'H-8e gerente de A muda a unidade de um salão para B', 'GER',
+  $s$update public.halls set unit_id='{B}' where id='{S2}'; select 'x'$s$, '42501 layout_write_forbidden');
+
 -- ═══ Resultado ═══════════════════════════════════════════════════════════════
 \o
 \pset footer off
