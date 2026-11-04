@@ -225,7 +225,7 @@
 - Modify: `src/pages/gestao/Instagram.tsx`, `src/pages/InstagramCallback.tsx`
 - Test: `src/pages/gestao/Instagram.test.tsx`, `src/pages/InstagramCallback.test.tsx`
 
-- [ ] **Passo 1: testes:**
+- [x] **Passo 1: testes:**
   - o botão sem conta se chama "Conectar pelo Facebook";
   - acima dele aparecem três itens:
     - "O Instagram da loja precisa ser profissional e estar ligado a uma Página do Facebook.";
@@ -241,9 +241,9 @@
   - os testes de prazo usam relógio fixo (`vi.useFakeTimers` + `vi.setSystemTime`);
   - callback com `error` na URL mostra "A autorização no Facebook não foi concluída. Inicie a conexão de novo se quiser conectar.";
   - callback com erro 409 da EF mostra a mensagem do backend.
-- [ ] **Passo 2:** `npx vitest run src/pages/gestao/Instagram.test.tsx src/pages/InstagramCallback.test.tsx src/hooks/useInstagram.callback.test.tsx`. Esperado: FAIL nos novos.
-- [ ] **Passo 3:** implementar, com cor só por token e sem `glass`. Texto de erro do início: "Não foi possível iniciar a conexão com o Facebook. Tente novamente."
-- [ ] **Passo 4:** os mesmos testes. Esperado: PASS. Commit `feat(instagram): painel conecta pelo Facebook`.
+- [x] **Passo 2:** `npx vitest run src/pages/gestao/Instagram.test.tsx src/pages/InstagramCallback.test.tsx src/hooks/useInstagram.callback.test.tsx`. Esperado: FAIL nos novos.
+- [x] **Passo 3:** implementar, com cor só por token e sem `glass`. Texto de erro do início: "Não foi possível iniciar a conexão com o Facebook. Tente novamente."
+- [x] **Passo 4:** os mesmos testes. Esperado: PASS. Commit `feat(instagram): painel conecta pelo Facebook`.
 
 ### Task 7: documentação do release e gates
 
