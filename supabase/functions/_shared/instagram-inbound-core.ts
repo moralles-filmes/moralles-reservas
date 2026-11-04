@@ -262,6 +262,7 @@ export function buildInstagramConversationMessage(i: {
   timestamp?: number | string | null;
   receivedAt?: string;
   providerMessageIds?: string[];
+  mediaKind?: string;
   nowMs?: number;
 }): Record<string, unknown> {
   const author: InstagramMessageAuthor = i.author ??
@@ -273,6 +274,7 @@ export function buildInstagramConversationMessage(i: {
     timestamp: conversationTimestamp(i.timestamp, i.nowMs),
     author,
     ...(i.receivedAt ? { received_at: i.receivedAt } : {}),
+    ...(i.mediaKind ? { media_kind: i.mediaKind } : {}),
     ...(i.role !== "user" && i.providerMessageIds && i.providerMessageIds.length > 0
       ? { provider_message_ids: [...i.providerMessageIds] }
       : {}),

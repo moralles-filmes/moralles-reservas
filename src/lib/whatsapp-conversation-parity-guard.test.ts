@@ -54,7 +54,7 @@ describe("paridade de conversas entre providers WhatsApp", () => {
     expect(turn).toContain('author: "automation"');
     expect(turn).toContain('author: "ai"');
     expect(webhook).toContain("timestamp: inbound.timestamp");
-    expect(webhook).toContain("timestamp: media.timestamp");
+    expect(webhook).toContain("timestamp: conversationTimestamp(media.timestamp)");
     expect(webhook).toContain("eventId: `wa-in:${provider}:${inbound.providerMessageId}`");
     expect(webhook).toContain("required: true");
     // O inbound do turno chega com o timestamp e o event_id do provider, e o

@@ -3405,7 +3405,7 @@ P  < supabase/migrations/20261105130000_mesas_reservaveis_combinacoes.sql   # re
 P  < supabase/migrations/20261105130100_ocupacao_multi_mesa.sql             # reaplicar
 P  < supabase/migrations/20261105130200_links_escolha_mesa.sql              # reaplicar
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
-# E1 (anon) e E2 (Instagram com mesas juntas): sem a 120400 só os IG-M-* falham (42883).
+# E1 (anon) e E2 (Instagram com mesas juntas): sem a 130400 só os IG-M-* falham (42883).
 P  < supabase/migrations/20261105130300_fechar_anon_insert_reservations.sql
 P  < supabase/migrations/20261105130400_instagram_reserva_multi_mesa.sql
 P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN (inclui A-* e IG-M-*)
@@ -3539,7 +3539,7 @@ aplicadas em lugar nenhum):
   a janela antes da sincronia, o mesmo UPDATE dá `23P01`.
 - **A-1…A-3 (8633–8635):** anon não grava em `reservations` com ou sem mesa
   (`42501 permission denied`, migration `20261105130300`; antes dela, o guard
-  da 120100 barrava só `table_id`/`table_choice`).
+  da 130100 barrava só `table_id`/`table_choice`).
 - **R-16, R-17 (8636–8637):** o conflito da `set_occupant_tables` não mostra
   nome de cliente de outra organização; `insert_reservation_with_tables` com
   cliente de outra organização → `22023 reservation_row_invalid`.
@@ -3561,10 +3561,57 @@ O P-13a do 81 (8238) passou a usar `service_role`: o trigger
 - **A-4…A-6 (8640–8642), controles:** devolvendo INSERT e policy dentro do
   subbloco, anon sem mesa volta a gravar; só o INSERT de volta, a RLS recusa
   (cada tranca segura sozinha); com as duas de volta, anon com mesa ainda cai
-  no `reservation_table_forbidden` da 120100.
+  no `reservation_table_forbidden` da 130100.
 - **A-7 (8643):** catálogo sem a policy e `anon` sem `INSERT`.
 
 **Resultados observados em 04/11/2026** (contêiner novo): **125/130 com as três
 primeiras** (os 5 FAIL são A-1, A-2, A-3, A-5, A-7; 81 em 83/83), **130/130**
-com a 120300 e 130/130 com as quatro reaplicadas; 81 em 83/83 e 82 em 52/52
+com a 130300 e 130/130 com as quatro reaplicadas; 81 em 83/83 e 82 em 52/52
 nas duas rodadas.
+
+### 83 — Aviso de mídia na rajada
+
+Pré-voo da migration `20261105120000_conversation_media_notice.sql`: as RPCs
+`record_conversation_media` (decide `deferred | notice_now | suppressed | duplicate`
+sob `for update` da conversa) e `claim_conversation_media_notices` (`deferred` →
+`claimed`, só desde `p_since`). O `83a-conversation-media-notice-bootstrap.sql`
+cria só o mínimo de `public.conversations` (`messages`, `ai_lock_until`,
+`last_message_at`, `updated_at`) e os default privileges do Supabase. Contêiner
+novo, `--network none`; roda **da raiz do repo**. O `postgres` da imagem não é
+superusuário: `lc_messages = 'C'` vai por `alter database` como `supabase_admin`.
+
+```bash
+docker run -d --name media83-pg --network none -e POSTGRES_PASSWORD=x \
+  public.ecr.aws/supabase/postgres:17.11.0.004
+docker exec media83-pg psql -U supabase_admin -d postgres -Atc "alter database postgres set lc_messages='C'"
+P() { docker exec -i media83-pg psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1; }
+P < supabase/tests/local-preflight/83a-conversation-media-notice-bootstrap.sql
+P < supabase/tests/local-preflight/83-conversation-media-notice.sql      # RED (função inexistente)
+P < supabase/migrations/20261105120000_conversation_media_notice.sql
+P < supabase/tests/local-preflight/83-conversation-media-notice.sql      # GREEN83
+P < supabase/migrations/20261105120000_conversation_media_notice.sql     # reaplicar
+P < supabase/tests/local-preflight/83-conversation-media-notice.sql      # GREEN83 de novo
+docker rm -f media83-pg
+```
+
+Repita a migration com fins de linha CRLF (`sed 's/$/\r/'`) e LF: o resultado é o mesmo.
+
+- **8301–8305:** sem texto → `notice_now`; texto sem resposta de 3 s → `deferred`;
+  texto de 40 s com lock futuro → `deferred`; com lock livre → `notice_now` +
+  `variant`; texto já respondido → `notice_now` + `variant`.
+- **8306–8309:** `p_notice_allowed` falso → `suppressed`/`none`; `event_id`
+  repetido → `duplicate` sem segundo elemento; texto literal `[imagem]` sem
+  `media_kind` conta como texto; mensagem legada sem `received_at` usa `timestamp`.
+- **8310–8311:** o claim devolve `{image,audio}` na ordem e `{}` na segunda
+  chamada; com `p_since = now() - 120 s` ignora adiada de 10 min.
+- **8313:** chegada legada ilegível (`received_at:""`, `timestamp:"abc"`, época, `2026-13-45`) gravada direto no jsonb: `record_conversation_media` decide e o claim roda sem erro (cast tolerante `app_private.safe_timestamptz`, ilegível = nulo = "não recente").
+- **8312:** `anon`/`authenticated` sem EXECUTE, `service_role` com; `SECURITY
+  DEFINER`; `search_path=""`. O helper `app_private.safe_timestamptz` não tem EXECUTE para anon/authenticated/service_role (8312i–j).
+
+**Resultados observados em 05/11/2026** (imagem `supabase/postgres:17.11.0.004`):
+RED por "function … does not exist" antes da migration (e, com a versão sem o helper, o 8313 cai em erro de cast); `GREEN83` com a
+migration em LF e em CRLF, cada uma aplicada e reaplicada.
+
+O que NÃO prova: concorrência real entre duas sessões (a ordem vem do
+`for update`, sem caso de duas conexões) nem PostgREST/JWT. O `scripts/function-acl-allowlist.json`
+não precisa de entrada: as funções nascem só para `service_role`.
