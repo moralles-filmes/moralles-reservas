@@ -23,7 +23,7 @@ Regras confirmadas pelo dono em 2026-11-04.
 - `service_role` passa, e a sessão sem claims de API (migration, cron) passa como no `guard_plan_write`.
 - DELETE em cascata (salão → horários; salão → `tables.hall_id = null`) feito por gestor passa. O harness mede esse caso.
 - As policies `unit_member_all_*` ficam como estão: o trigger aperta sem trocar a policy, igual ao `settings_write_role_guard`.
-- Função nova: revoke de `public, anon, authenticated, service_role` e entrada na allowlist de ACL (`scripts/function-acl-allowlist.json`) na mesma mudança.
+- Função nova (trigger em `app_private`): revoke de `public, anon, authenticated, service_role`, sem grant. A allowlist de ACL (`scripts/function-acl-allowlist.json`) só cobre funções com grant a `anon`/`authenticated`; nela muda só o texto de `set_reservation_presence`.
 - Tela: 42501 vira "Só owner ou gerente podem alterar mesas e salões." nos hooks de mesa, salão e horário.
 
 ## 4. Salão de outra unidade na tela da unidade ativa

@@ -45,7 +45,7 @@
 
 **Interfaces:**
 - Produces: `public.set_reservation_presence(p_reservation_id uuid, p_action text) returns boolean` (true = gravou; false = já estava feito). Erros iguais aos de hoje.
-- Produces: `app_private.guard_layout_write()` em `tables`, `halls` e `hall_schedules` (`before insert or update or delete`, `for each row`), triggers `tables_layout_write_guard`, `halls_layout_write_guard`, `hall_schedules_layout_write_guard`.
+- Produces: `app_private.guard_layout_write()` em `tables`, `halls` e `hall_schedules` (`before insert or update or delete`, `for each row`), triggers `tables_write_role_guard`, `halls_write_role_guard`, `hall_schedules_write_role_guard` (o nome faz o trigger disparar depois do `*_plan_write_guard`, então escrita de planta pelo operador segue `plan_write_forbidden`). Triggers de unidade: `tables_write_unit_hall_guard` e `halls_write_unit_change_guard`.
 - Produces: `app_private.guard_table_hall_unit()`: em `tables` `before insert or update of hall_id, unit_id`, recusa `hall_id` cujo salão tem outro `unit_id`; em `halls` `before update of unit_id`, recusa quando há mesa ou horário no salão.
 
 Regra do `guard_layout_write` (mesma decisão de sessão do `guard_plan_write`): `auth.role()` nulo com `role` GUC fora de anon/authenticated passa; `service_role` passa; não-authenticated ou `auth.uid()` nulo → 42501; `is_platform_admin` passa; senão exige `is_unit_manager` na unidade de `old` (UPDATE/DELETE) e de `new` (INSERT/UPDATE). Em `hall_schedules`, a unidade vem do salão (`old.hall_id`, `new.hall_id`). Salão de `old` não encontrado em DELETE de `hall_schedules` = cascata do salão já apagado → passa (a direta é barrada pela RLS, que exige o salão). DELETE devolve `old`.
