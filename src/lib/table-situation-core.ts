@@ -1,4 +1,4 @@
-import type { StatusTone } from "@/components/ui/status-pill";
+import type { StatusTone } from "@/lib/status-tone";
 import type { Mesa, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 
 export type TableSituation = "blocked" | "occupied" | "late" | "arriving" | "reserved" | "free";
@@ -114,14 +114,17 @@ export function reservationLiveSituation(
   if (r.status !== "pending" && r.status !== "confirmed") return null;
   if (r.released_at) return null;
 
+  const brt = brtNow(now);
   if (r.arrived_at) {
+    // Mesma janela da planta e do "Liberar mesa": só hoje ou ontem (BRT). Chegada antiga
+    // sem liberação não é mais "Sentada", e a lista não teria como liberá-la.
+    if (r.date !== brt.date && r.date !== brt.yesterday) return null;
     // Mesma régua do `overtime` da planta: conta da chegada, não do horário reservado.
     const sinceMs = new Date(r.arrived_at).getTime();
     const over = Number.isFinite(sinceMs) && now.getTime() > sinceMs + durationMinutes * 60_000;
     return { tone: "seated", label: over ? "Sentada · passou do tempo" : "Sentada" };
   }
 
-  const brt = brtNow(now);
   if (r.date !== brt.date) return null;
   const diff = toMinutes(r.time) - brt.minutes;
   if (diff < 0) return { tone: "late", label: `Atrasada ${-diff} min` };

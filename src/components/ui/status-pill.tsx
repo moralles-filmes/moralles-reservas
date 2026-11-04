@@ -1,16 +1,8 @@
 import type { ReactNode } from "react";
+import type { StatusTone } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
 
-export type StatusTone =
-  | "free"
-  | "reserved"
-  | "arriving"
-  | "seated"
-  | "late"
-  | "pending"
-  | "destructive"
-  | "muted"
-  | "success";
+export type { StatusTone };
 
 // Classes literais (o Tailwind só gera o que vê escrito por inteiro). Só tokens, nenhuma cor fixa.
 const TONE_CLASSES: Record<StatusTone, string> = {
