@@ -4,7 +4,7 @@ import { createEdgeRequestHarness } from "../test/fixtures/edge-request-harness"
 import { chatSdkMessage } from "../test/fixtures/whatsapp-automation-fixtures";
 import { GLOBAL_PERSONA_BASELINE } from "../../supabase/functions/_shared/agent/global-prompt-core";
 import { INSTAGRAM_CHANNEL_RULES } from "../../supabase/functions/_shared/instagram-format";
-import { MEDIA_REPLY_TEXT } from "../../supabase/functions/_shared/media-reply-text";
+import { MEDIA_REPLY_TEXT, mediaNoticeText } from "../../supabase/functions/_shared/media-reply-text";
 
 /**
  * Request do `process-instagram-inbound` (Task 4.1) no harness, com o SDK
@@ -288,6 +288,44 @@ function world() {
           const list = cv.messages as Row[];
           if (!list.some((m) => m.event_id === msg.event_id)) list.push(msg);
           return { data: null, error: null };
+        }
+        // Emulação das RPCs do aviso de mídia (semântica da migration 20261105120000).
+        case "record_conversation_media": {
+          const cv = T.conversations.find((r) => r.id === args.p_conversation_id);
+          if (!cv) return { data: null, error: { code: "P0001", message: "conversation_not_found" } };
+          const message = structuredClone(args.p_message) as Row;
+          const messages = cv.messages as Row[];
+          const eventId = typeof message.event_id === "string" ? message.event_id.trim() : "";
+          if (eventId && messages.some((m) => m.event_id === eventId)) return { data: { decision: "duplicate", variant: false }, error: null };
+          const now = Date.parse(NOW_ISO);
+          const burst = Number(args.p_burst_seconds) * 1000;
+          const grace = Number(args.p_debounce_grace_seconds) * 1000;
+          const arrival = (m: Row) => Date.parse(String(m.received_at ?? m.timestamp));
+          let lastReply = -1;
+          messages.forEach((m, i) => { if (m.role === "assistant" || m.role === "human") lastReply = i; });
+          const isText = (m: Row) => m.role === "user" && !m.media_kind;
+          const unanswered = messages.slice(lastReply + 1).filter((m) => isText(m) && String(m.content ?? "").trim());
+          const newest = unanswered.length ? Math.max(...unanswered.map(arrival)) : null;
+          const variant = messages.some((m) => isText(m) && arrival(m) >= now - burst);
+          let decision: string;
+          let notice: string;
+          if (!args.p_notice_allowed) { decision = "suppressed"; notice = "none"; }
+          else if (newest !== null && newest >= now - burst && newest >= now - grace) { decision = "deferred"; notice = "deferred"; }
+          else { decision = "notice_now"; notice = "claimed"; }
+          messages.push({ ...message, media_notice: notice });
+          return { data: { decision, variant }, error: null };
+        }
+        case "claim_conversation_media_notices": {
+          const cv = T.conversations.find((r) => r.id === args.p_conversation_id);
+          const since = Date.parse(String(args.p_since));
+          const claimed: string[] = [];
+          for (const m of (cv?.messages ?? []) as Row[]) {
+            if (m.media_notice === "deferred" && Date.parse(String(m.received_at ?? m.timestamp)) >= since) {
+              m.media_notice = "claimed";
+              claimed.push(String(m.media_kind));
+            }
+          }
+          return { data: claimed, error: null };
         }
         case "try_claim_conversation_for_ai": {
           const cv = T.conversations.find((r) => r.id === args.p_conv)!;
@@ -801,6 +839,64 @@ describe("process-instagram-inbound: eco, mídia e story", () => {
     expect((w.conversation()!.messages as Row[]).map((m) => [m.role, m.content, m.provider_message_ids ?? null])).toEqual([
       ["user", "[mídia]", null], ["assistant", MEDIA_REPLY_TEXT, ["mid.out.1"]],
     ]);
+  });
+
+  it("mídia grava media_kind no histórico", async () => {
+    const w = world();
+    w.enqueue(igBody(entry(IG_A, { sender: { id: IGSID }, recipient: { id: IG_A }, timestamp: 2_000, message: { mid: "img", attachments: [{ type: "image" }] } })));
+    await w.kick();
+    expect((w.conversation()!.messages as Row[])[0]).toMatchObject({ role: "user", content: "[mídia]", media_kind: "media", author: "customer" });
+  });
+
+  it("mídia com texto da rajada sem resposta: aviso adiado, sem envio", async () => {
+    const w = world();
+    seedContact(w, { conv: { messages: [{ event_id: "t0", role: "user", content: "oi", timestamp: NOW_ISO, received_at: NOW_ISO, author: "customer" }] } });
+    w.enqueue(igBody(entry(IG_A, { sender: { id: IGSID }, recipient: { id: IG_A }, timestamp: 2_000, message: { mid: "img", attachments: [{ type: "image" }] } })));
+    await w.kick();
+    expectCleanIo(w);
+    expect(w.graphCalls.filter((c) => c.method === "POST")).toHaveLength(0);
+    expect(w.messageOutcomes()).toEqual({ img: "media_notice_deferred" });
+  });
+
+  it("notice_now com variante: envia mediaNoticeText(['media'])", async () => {
+    const w = world();
+    seedContact(w, { conv: { messages: [
+      { event_id: "t0", role: "user", content: "oi", timestamp: NOW_ISO, received_at: NOW_ISO, author: "customer" },
+      { event_id: "a0", role: "assistant", content: "Olá!", timestamp: NOW_ISO, author: "automation" },
+    ] } });
+    w.enqueue(igBody(entry(IG_A, { sender: { id: IGSID }, recipient: { id: IG_A }, timestamp: 2_000, message: { mid: "img", attachments: [{ type: "image" }] } })));
+    await w.kick();
+    expectCleanIo(w);
+    expect(w.graphCalls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([
+      { recipient: { id: IGSID }, message: { text: mediaNoticeText(["media"]) } },
+    ]);
+    expect(w.messageOutcomes()).toEqual({ img: "media_response" });
+    expect((w.conversation()!.messages as Row[]).at(-1)).toMatchObject({ role: "assistant", content: mediaNoticeText(["media"]) });
+  });
+
+  it("mesma entrega: texto responde e a mídia avisa 'seu arquivo' depois da resposta", async () => {
+    const w = world();
+    w.controls.sdk = [sdkText("Oi! Como posso ajudar?")];
+    w.enqueue(igBody(entry(IG_A,
+      textMsg("m1", "Oi", 1_000),
+      { sender: { id: IGSID }, recipient: { id: IG_A }, timestamp: 2_000, message: { mid: "img", attachments: [{ type: "image" }] } },
+    )));
+    await w.kick();
+    expectCleanIo(w);
+    expect(w.messageOutcomes()).toEqual({ m1: "success", img: "media_response" });
+    expect(w.graphCalls.filter((c) => c.method === "POST").map((c) => (c.body as { message: { text: string } }).message.text)).toEqual([
+      "Oi! Como posso ajudar?", mediaNoticeText(["media"]),
+    ]);
+    expect(mediaNoticeText(["media"])).toContain("seu arquivo");
+  });
+
+  it("mídia repetida (mesmo event_id na conversa): duplicate, sem envio", async () => {
+    const w = world();
+    seedContact(w, { conv: { messages: [{ event_id: `ig-in:${ACC_A}:img`, role: "user", content: "[mídia]", timestamp: NOW_ISO, author: "customer", media_kind: "media" }] } });
+    w.enqueue(igBody(entry(IG_A, { sender: { id: IGSID }, recipient: { id: IG_A }, timestamp: 2_000, message: { mid: "img", attachments: [{ type: "image" }] } })));
+    await w.kick();
+    expect(w.graphCalls.filter((c) => c.method === "POST")).toHaveLength(0);
+    expect(w.messageOutcomes()).toEqual({ img: "duplicate" });
   });
 
   it("mídia durante handoff humano: registra e não responde", async () => {
