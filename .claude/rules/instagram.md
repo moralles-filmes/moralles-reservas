@@ -29,7 +29,7 @@ Plano e decisões: [2026-10-20-instagram-fase-1-direct-conversas.md](../../docs/
 - **A leitura de `platform_secrets` fica no `index.ts` de cada EF, com `.from("platform_secrets")` literal (D3).** Constante ou indireção para escapar do `check-portabilidade` é proibida; o leitor é criado uma vez por isolate e cacheia só sucesso por 5 min.
 - **`INSTAGRAM_APP_ID` e `INSTAGRAM_OAUTH_STATE_SECRET` (≥32 caracteres) são Edge secrets, lidos só no `index.ts`.** Segredo do `state` curto faz o `start` responder 503. Rotação: [RUNBOOK-ROTACAO-CREDENCIAIS.md](../../docs/RUNBOOK-ROTACAO-CREDENCIAIS.md).
 - **O adapter do Graph não redige: ele nunca devolve texto remoto nem de runtime.** Quem acrescentar log com URL, corpo ou mensagem de erro passa o texto por `redactSecrets` com todas as credenciais da chamada. [instagram-graph.ts](../../supabase/functions/_shared/instagram-graph.ts).
-- **Token só no header `Authorization: Bearer`, exceto nos GETs que a Meta só aceita com query (`exchangeCode`, `toLongLivedUser`, R2-e).** POST nunca leva token na query.
+- **Token só no header `Authorization: Bearer`, exceto nos GETs que a Meta só aceita com query (`exchangeCode`, `toLongLivedUser`, `debugToken` com `input_token`, R2-e).** POST nunca leva token na query.
 
 ## Webhook e fila
 
@@ -54,7 +54,7 @@ Plano e decisões: [2026-10-20-instagram-fase-1-direct-conversas.md](../../docs/
 ## Graph e envio
 
 - **Texto enviado tem no máximo 1000 bytes UTF-8 por mensagem (`INSTAGRAM_MAX_TEXT_BYTES`), sem markdown.** O limite é em bytes, não caracteres; a divisão não quebra code point.
-- **Resultado com `ok:false` e HTTP 2xx, HTTP nulo, ou `transient` em POST é "desfecho desconhecido": a mensagem pode ter saído.** Use `isGraphOutcomeUnknown`; nunca reenviar sozinho nem gravar como "não enviada" (Tasks 4.1/4.2).
+- **Resultado com `ok:false` e HTTP 2xx, HTTP nulo, ou `transient` em POST é "desfecho desconhecido": a mensagem pode ter saído.** Use `isGraphOutcomeUnknown`; nunca reenviar sozinho nem gravar como "não enviada".
 - **Classes de erro do Graph são as da tabela do plano (`190` → `reauth_required` etc.), mais 429/17/32 → `rate_limited` e 1/2 → `transient`.** Código `10` sem permissão também cai em `window_closed`: medir no piloto. `classifyGraphError`.
 
 ## Token

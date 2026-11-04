@@ -36,6 +36,7 @@ const IG = "17841400000000001";
 const PAGE = "104000000000077";
 const PAGE_2 = "104000000000088";
 const IG_2 = "17841400000000002";
+const MANY_PAGES_MSG = "Selecione só a Página desta loja ao conectar. No diálogo do Facebook, use \"Editar acesso\" e deixe marcada só a Página desta loja.";
 const FB = "https://graph.facebook.com/v26.0";
 const URL_FN = `${env.SUPABASE_URL}/functions/v1/instagram-connect`;
 const REDIRECT = `${env.APP_BASE_URL}/instagram/callback`;
@@ -431,6 +432,14 @@ describe("instagram-connect — start", () => {
     expect(r.json.state).toBeUndefined();
   });
 
+  it("INSTAGRAM_APP_ID fora do formato (\"abc\") → 503 e loga app_id_missing", async () => {
+    const f = fixture({ env: { INSTAGRAM_APP_ID: "abc" } });
+    const r = await f.call(OWNER_A, { action: "start", unit_id: UNIT_A });
+    expect(r.status).toBe(503);
+    expect(r.json.authorize_url).toBeUndefined();
+    expect(f.harness.logs.join("\n")).toMatch(/instagram_connect_misconfigured[^\n]*app_id_missing/);
+  });
+
   it.each([undefined, "abc", "12 34"])("config_id %s → loga config_id_missing", async (value) => {
     const f = fixture({ env: { INSTAGRAM_LOGIN_CONFIG_ID: value } });
     expect((await f.call(OWNER_A, { action: "start", unit_id: UNIT_A })).status).toBe(503);
@@ -717,10 +726,64 @@ describe("instagram-connect — callback", () => {
     ] } });
     const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
     expect(r.status).toBe(409);
-    expect(r.json).toEqual({ error: "Selecione só a Página desta loja ao conectar", usernames: ["restaurante_a", "restaurante_b"] });
+    expect(r.json).toEqual({ error: MANY_PAGES_MSG, usernames: ["restaurante_a", "restaurante_b"] });
     noWrites(f);
     f.leakFree(r.text);
     f.leakFree(f.harness.logs.join("\n"));
+  });
+
+  describe("várias Páginas aptas", () => {
+    const two = () => ({ pages: { data: [
+      pageRow(),
+      pageRow({ id: PAGE_2, name: "Restaurante B", access_token: PAGE_TOKEN_2, instagram_business_account: { id: IG_2, username: "restaurante_b" } }),
+    ] } });
+    const cb = async (f: ReturnType<typeof fixture>) =>
+      f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+
+    it("(a) a unidade já tem conta igual a uma das Páginas → reconecta essa, sem 409", async () => {
+      const f = fixture(two());
+      f.seedAccount(UNIT_A, "connected", PAGE_2);
+      f.state.accounts[0].ig_user_id = IG_2;
+      const r = await cb(f);
+      expect(r.status).toBe(200);
+      expect(r.json.username).toBe("restaurante_b");
+      const store = f.state.rpcs.find((x) => x.name === "store_instagram_account_connection")!;
+      expect(store.args).toMatchObject({ p_unit_id: UNIT_A, p_page_id: PAGE_2, p_ig_user_id: IG_2, p_token: PAGE_TOKEN_2 });
+      expect(f.state.graph.some((g) => g.url.includes(`/${PAGE_2}/subscribed_apps`))).toBe(true);
+      expect(f.state.graph.some((g) => g.url.includes(`/${PAGE}/subscribed_apps`))).toBe(false);
+      f.leakFree(r.text);
+      f.leakFree(f.harness.logs.join("\n"));
+    });
+
+    it("(b) unidade sem conta → 409 como antes, nada gravado", async () => {
+      const f = fixture(two());
+      const r = await cb(f);
+      expect(r.status).toBe(409);
+      expect(r.json).toEqual({ error: MANY_PAGES_MSG, usernames: ["restaurante_a", "restaurante_b"] });
+      noWrites(f);
+    });
+
+    it("(c) conta da unidade não bate com nenhuma Página → 409, nada novo gravado", async () => {
+      const f = fixture(two());
+      f.seedAccount(UNIT_A, "connected", "104000000000099");
+      f.state.accounts[0].ig_user_id = "17841400000000099";
+      const r = await cb(f);
+      expect(r.status).toBe(409);
+      expect(f.writes()).toEqual([]);
+      expect(f.state.graph.some((g) => g.url.includes("subscribed_apps") || g.url.includes("debug_token"))).toBe(false);
+      f.leakFree(r.text);
+    });
+
+    it("(d) falha ao ler a conta → 503, sem gravar nem assinar", async () => {
+      const f = fixture(two());
+      f.state.errors.add("accounts");
+      const r = await cb(f);
+      expect(r.status).toBe(503);
+      expect(f.writes()).toEqual([]);
+      expect(f.state.graph.some((g) => g.url.includes("subscribed_apps") || g.url.includes("debug_token"))).toBe(false);
+      f.leakFree(r.text);
+      f.leakFree(f.harness.logs.join("\n"));
+    });
   });
 
   it("uma Página apta entre outras sem a tarefa conecta a apta", async () => {

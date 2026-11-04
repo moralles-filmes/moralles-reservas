@@ -91,7 +91,7 @@ describe("InstagramAdminCard", () => {
     });
     mount();
     expect(await screen.findByText(/@moralles/)).toBeInTheDocument();
-    expect(screen.getByText(/Acesso válido até 31\/12\/2026/)).toBeInTheDocument();
+    expect(screen.getByText(/Reconecte até 31\/12\/2026/)).toBeInTheDocument();
     expect(screen.queryByText("Reconectar necessário")).not.toBeInTheDocument();
   });
 

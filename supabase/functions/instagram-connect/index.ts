@@ -48,7 +48,7 @@ import { jsonLog } from "../_shared/security.ts";
 import { INSTAGRAM_SECRET_KEYS, createInstagramSecretReader } from "../_shared/instagram-config-core.ts";
 import { platformSecretRowOrThrow } from "../_shared/instagram-config.ts";
 import { readBodyWithCap } from "../_shared/instagram-webhook-core.ts";
-import { INSTAGRAM_SUBSCRIBED_FIELDS, buildAuthorizeUrl, choosePage } from "../_shared/instagram-graph-core.ts";
+import { INSTAGRAM_SUBSCRIBED_FIELDS, buildAuthorizeUrl, choosePage, type PageCandidate } from "../_shared/instagram-graph-core.ts";
 import { createInstagramGraph } from "../_shared/instagram-graph.ts";
 import { INSTAGRAM_STATE_TTL_MS, signInstagramState, verifyInstagramState } from "../_shared/instagram-oauth-state.ts";
 import {
@@ -94,7 +94,7 @@ const MSG = {
   graph: "Não foi possível concluir a conexão com o Instagram. Tente de novo.",
   noPage: "Nenhuma Página do Facebook com Instagram profissional ligado foi autorizada.",
   taskInsufficient: "Sua permissão nessa Página não basta para atender o Direct.",
-  manyPages: "Selecione só a Página desta loja ao conectar",
+  manyPages: "Selecione só a Página desta loja ao conectar. No diálogo do Facebook, use \"Editar acesso\" e deixe marcada só a Página desta loja.",
   inUse: "Esta conta do Instagram já está conectada a outra unidade",
   noAccount: "Nenhuma conta do Instagram conectada nesta unidade.",
   reauth: "A conta do Instagram precisa ser reconectada.",
@@ -224,7 +224,7 @@ async function subscribeAndRecord(ctx: Ctx, accountId: string, pageId: string, p
 async function handleStart(ctx: Ctx, unitId: string): Promise<Response> {
   const access = await checkAccess(ctx, unitId);
   if (access.ok === false) return json(ctx.req, access.status, access.body);
-  if (!INSTAGRAM_APP_ID) {
+  if (!DIGITS_RE.test(INSTAGRAM_APP_ID)) {
     jsonLog("error", { evt: "instagram_connect_misconfigured", action: ctx.action, reason: "app_id_missing" });
     return json(ctx.req, 503, { error: MSG.unavailable });
   }
@@ -278,7 +278,7 @@ async function handleCallback(ctx: Ctx, body: Record<string, unknown>): Promise<
   const code = typeof body.code === "string" ? body.code.trim() : "";
   if (code === "") return json(ctx.req, 400, { error: "Código de autorização ausente." });
 
-  if (!INSTAGRAM_APP_ID) {
+  if (!DIGITS_RE.test(INSTAGRAM_APP_ID)) {
     jsonLog("error", { evt: "instagram_connect_misconfigured", action: ctx.action, reason: "app_id_missing" });
     return json(ctx.req, 503, { error: MSG.unavailable });
   }
@@ -331,12 +331,23 @@ async function handleCallback(ctx: Ctx, body: Record<string, unknown>): Promise<
     jsonLog("warn", { evt: "instagram_connect_no_page", action: ctx.action, reason: choice.reason });
     return json(ctx.req, 422, { error: choice.reason === "insufficient_task" ? MSG.taskInsufficient : MSG.noPage });
   }
+  let page: PageCandidate;
   if (choice.kind === "many") {
-    // Só os @ que o próprio usuário acabou de autorizar; nenhum token.
-    jsonLog("warn", { evt: "instagram_connect_many_pages", action: ctx.action });
-    return json(ctx.req, 409, { error: MSG.manyPages, usernames: choice.usernames });
+    // Reconexão: se a conta já ligada a esta unidade é uma das Páginas aptas, é ela.
+    // A unidade vem do state assinado (já autorizada); leitura falha não segue.
+    const current = await activeAccountOf(unitId, ctx.action);
+    if (current.ok === false) return json(ctx.req, 503, { error: MSG.unavailable });
+    const account = current.account;
+    const matches = account ? choice.pages.filter((p) => p.igUserId === account.ig_user_id) : [];
+    if (matches.length !== 1) {
+      // Só os @ que o próprio usuário acabou de autorizar; nenhum token.
+      jsonLog("warn", { evt: "instagram_connect_many_pages", action: ctx.action });
+      return json(ctx.req, 409, { error: MSG.manyPages, usernames: choice.usernames });
+    }
+    page = matches[0];
+  } else {
+    page = choice.page;
   }
-  const page = choice.page;
 
   // 5. Prazo de acesso a dados do token da Página. Leitura informativa, não gate:
   //    qualquer falha grava prazo nulo e segue.

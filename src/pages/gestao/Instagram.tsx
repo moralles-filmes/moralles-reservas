@@ -14,6 +14,7 @@ import {
 import { redirectToAuthorize, saveOauthState } from "@/features/instagram/oauth";
 import { actionError } from "@/features/instagram/errors";
 import type { InstagramAccount } from "@/features/instagram/types";
+import { formatDateBR } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,18 +36,14 @@ const DM_NOTICE =
 
 const WARN_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
-/** DD/MM/AAAA no fuso de São Paulo, independente do fuso do navegador. */
-function formatDateBrt(ms: number) {
-  return new Date(ms).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "numeric" });
-}
-
 type Deadline = { kind: "none" } | { kind: "ok" | "soon" | "expired"; date: string };
 
 /** Prazo de acesso aos dados (90 dias da última atividade, renovado ao reconectar). */
 function deadlineOf(value: string | null | undefined, now: number): Deadline {
   const ms = value ? Date.parse(value) : NaN;
   if (!Number.isFinite(ms)) return { kind: "none" };
-  const date = formatDateBrt(ms);
+  // DD/MM/AAAA no fuso de São Paulo, independente do fuso do navegador.
+  const date = formatDateBR(value, { timeZone: "America/Sao_Paulo" });
   if (ms <= now) return { kind: "expired", date };
   return { kind: ms - now <= WARN_WINDOW_MS ? "soon" : "ok", date };
 }
@@ -181,7 +178,7 @@ function AccountPanel({ unitId, account }: { unitId: string; account: InstagramA
     );
   }
 
-  const deadline = reauth ? ({ kind: "none" } as Deadline) : deadlineOf(account.token_expires_at, Date.now());
+  const deadline = reauth ? { kind: "none" as const } : deadlineOf(account.token_expires_at, Date.now());
   const needsReconnect = reauth || deadline.kind === "soon" || deadline.kind === "expired";
 
   return (
@@ -189,7 +186,13 @@ function AccountPanel({ unitId, account }: { unitId: string; account: InstagramA
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{account.username ? `@${account.username}` : "Conta sem nome de usuário"}</span>
-          {reauth ? <Badge variant="destructive">Reconectar necessário</Badge> : <Badge variant="secondary">Conectada</Badge>}
+          {reauth ? (
+            <Badge variant="destructive">Reconectar necessário</Badge>
+          ) : deadline.kind === "expired" ? (
+            <Badge variant="destructive">Acesso vencido</Badge>
+          ) : (
+            <Badge variant="secondary">Conectada</Badge>
+          )}
         </div>
         {deadline.kind === "ok" && <p className="text-muted-foreground">Reconecte até {deadline.date} para manter o acesso.</p>}
         {deadline.kind === "soon" && <p className="font-medium text-warning">Reconecte até {deadline.date} para manter o acesso.</p>}

@@ -9,6 +9,7 @@ import {
   useSetUnitModule,
 } from "@/hooks/useInstagram";
 import type { InstagramAccount, InstagramDiagnostics } from "@/features/instagram/types";
+import { formatDateBR } from "@/lib/utils";
 import { outcomeLabel } from "@/features/instagram/outcome-labels";
 
 function formatDate(value: string | null | undefined) {
@@ -70,7 +71,9 @@ function AccountDetails({ account }: { account: InstagramAccount }) {
           <Badge variant="outline">Desconectada</Badge>
         )}
       </div>
-      {account.token_expires_at && <p>Acesso válido até {formatDate(account.token_expires_at)}</p>}
+      {account.token_expires_at && Number.isFinite(Date.parse(account.token_expires_at)) && (
+        <p>Reconecte até {formatDateBR(account.token_expires_at, { timeZone: "America/Sao_Paulo" })}</p>
+      )}
       <p className="text-muted-foreground">Conectada em {formatDate(account.connected_at)}</p>
       <p className="text-muted-foreground">Recebimento de eventos: {account.subscribed ? "ativo" : "inativo"}</p>
     </div>

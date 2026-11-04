@@ -133,7 +133,7 @@ export function parsePages(json: unknown): PageCandidate[] | null {
 export type PageChoice =
   | { kind: "one"; page: PageCandidate }
   | { kind: "none"; reason: "no_instagram" | "insufficient_task" }
-  | { kind: "many"; usernames: string[] };
+  | { kind: "many"; usernames: string[]; pages: PageCandidate[] };
 
 const REQUIRED_TASKS = ["MODERATE", "MANAGE"];
 
@@ -142,7 +142,7 @@ export function choosePage(pages: PageCandidate[]): PageChoice {
   const ok = pages.filter((p) => p.tasks.some((t) => REQUIRED_TASKS.includes(t)));
   if (ok.length === 0) return { kind: "none", reason: "insufficient_task" };
   if (ok.length === 1) return { kind: "one", page: ok[0] };
-  return { kind: "many", usernames: ok.map((p) => p.igUsername ?? p.pageName ?? p.pageId) };
+  return { kind: "many", usernames: ok.map((p) => p.igUsername ?? p.pageName ?? p.pageId), pages: ok };
 }
 
 /** `data.data_access_expires_at` (segundos) do `debug_token` em ISO; inválido ou 0 dá null. */

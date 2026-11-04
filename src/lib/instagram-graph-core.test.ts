@@ -145,7 +145,11 @@ describe("choosePage", () => {
     expect(choosePage([cand("a", ["ADVERTISE"])])).toEqual({ kind: "none", reason: "insufficient_task" });
   });
   it("dois válidos dão many; um válido dá one", () => {
-    expect(choosePage([cand("a", ["MANAGE"]), cand("b", ["MODERATE"])])).toEqual({ kind: "many", usernames: ["a", "b"] });
+    const a = cand("a", ["MANAGE"]);
+    const b = cand("b", ["MODERATE"]);
+    expect(choosePage([a, b])).toEqual({ kind: "many", usernames: ["a", "b"], pages: [a, b] });
+    // `many` carrega só as aptas: a Página sem a tarefa fica de fora.
+    expect(choosePage([a, cand("x", ["ADVERTISE"]), b])).toEqual({ kind: "many", usernames: ["a", "b"], pages: [a, b] });
     const ok = cand("a", ["MANAGE"]);
     expect(choosePage([ok, cand("b", ["ADVERTISE"])])).toEqual({ kind: "one", page: ok });
   });

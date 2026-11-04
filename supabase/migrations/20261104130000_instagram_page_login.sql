@@ -26,7 +26,8 @@
 --   * O job `instagram-token-refresh` (20261103120500) é desagendado: o token
 --     da Página não é renovado pelo endpoint do Instagram Login. Os jobs
 --     `instagram-inbound-sweep` e `instagram-inbound-purge` ficam. O wrapper
---     `trigger_instagram_token_refresh()` e a EF continuam existindo; só o
+--     `trigger_instagram_token_refresh()` e a RPC `record_instagram_token_refresh`
+--     continuam existindo; a EF de renovação foi removida, então só o
 --     agendamento sai. Onde o schema `cron` não existe (harness local), o
 --     bloco não faz nada.
 --
@@ -260,6 +261,8 @@ commit;
 --   select conname, convalidated from pg_constraint where conname = 'instagram_accounts_page_id_chk';
 --
 -- ROLLBACK (só antes de a EF passar a gravar a Página):
+--   -- Atenção: reagendar traz de volta só o cron; como a EF de renovação não existe mais,
+--   -- ele receberia 404.
 --   select cron.schedule('instagram-token-refresh', '40 9 * * *', $$select public.trigger_instagram_token_refresh();$$);
 --   drop function if exists public.store_instagram_account_connection(uuid, text, text, text, text, text, timestamptz, uuid);
 --   -- recriar a de 7 argumentos com o corpo da 20261103120100 e o revoke/grant dela

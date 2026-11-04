@@ -138,6 +138,8 @@ describe("Página Instagram da loja", () => {
       await withExpiry("2026-11-01T12:00:00Z");
       expect(screen.getByText("O acesso aos dados venceu em 01/11/2026. Reconecte para voltar a responder.")).toBeTruthy();
       expect(screen.getByRole("button", { name: "Reconectar pelo Facebook" })).toBeTruthy();
+      expect(screen.getByText("Acesso vencido")).toBeTruthy();
+      expect(screen.queryByText("Conectada")).toBeNull();
     });
   });
 
