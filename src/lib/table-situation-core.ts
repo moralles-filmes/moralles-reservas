@@ -1,5 +1,5 @@
 import type { StatusTone } from "@/components/ui/status-pill";
-import type { Mesa,Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
+import type { Mesa, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 
 export type TableSituation = "blocked" | "occupied" | "late" | "arriving" | "reserved" | "free";
 
@@ -115,8 +115,9 @@ export function reservationLiveSituation(
   if (r.released_at) return null;
 
   if (r.arrived_at) {
-    const startMs = new Date(`${r.date}T${r.time.slice(0, 5)}:00-03:00`).getTime();
-    const over = Number.isFinite(startMs) && now.getTime() > startMs + durationMinutes * 60_000;
+    // Mesma régua do `overtime` da planta: conta da chegada, não do horário reservado.
+    const sinceMs = new Date(r.arrived_at).getTime();
+    const over = Number.isFinite(sinceMs) && now.getTime() > sinceMs + durationMinutes * 60_000;
     return { tone: "seated", label: over ? "Sentada · passou do tempo" : "Sentada" };
   }
 

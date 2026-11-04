@@ -323,7 +323,15 @@ describe("reservationLiveSituation", () => {
     });
   });
 
-  it("Sentada passou do tempo depois de horário + duração", () => {
+  it("Sentada conta o tempo da chegada, como a planta", () => {
+    const at2100 = new Date("2026-10-31T00:00:00Z"); // 21:00 BRT; chegou 20:00, horário 19:00
+    expect(reservationLiveSituation({ ...base, arrived_at: "2026-10-30T23:00:00Z" }, at2100, 90)).toEqual({
+      tone: "seated",
+      label: "Sentada",
+    });
+  });
+
+  it("Sentada passou do tempo depois de chegada + duração", () => {
     const later = new Date("2026-10-31T00:31:00Z"); // 21:31 BRT
     expect(reservationLiveSituation({ ...base, arrived_at: "2026-10-30T22:00:00Z" }, later, 90)).toEqual({
       tone: "seated",
