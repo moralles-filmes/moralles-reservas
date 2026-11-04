@@ -18,6 +18,12 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { checkAvailability } from "../_shared/availability.ts";
+import { loadReservationTableIds } from "../_shared/adapters/hall-seating.ts";
+
+function sameTableSet(a: readonly string[], b: readonly string[]): boolean {
+  const sb = new Set(b);
+  return a.length === sb.size && a.every((x) => sb.has(x));
+}
 import { jsonLog } from "../_shared/security.ts";
 import { hasUnitAccess } from "../_shared/authz.ts";
 
@@ -189,6 +195,7 @@ serve(async (req) => {
           .from("tables")
           .select("hall_id")
           .eq("id", reserva.table_id)
+          .eq("unit_id", reserva.unit_id)
           .maybeSingle();
         if (tErr) {
           jsonLog("error", { evt: "update_reservation_table_lookup_failed", code: tErr.code });
@@ -197,17 +204,34 @@ serve(async (req) => {
         nextHall = currentTable?.hall_id ?? undefined;
       }
 
-      const result = await checkAvailability(supabase, {
+      // Mesas atuais (as juntadas inclusive) para mantê-las se continuarem livres.
+      const occ = await loadReservationTableIds(supabase, reserva.id, reserva.unit_id);
+      if (occ.ok === false) {
+        jsonLog("error", { evt: "update_reservation_occupant_lookup_failed", code: occ.code });
+        return jsonResponse({ error: "internal_error" }, 500);
+      }
+      const currentTableIds = [...new Set([
+        ...(reserva.table_id ? [reserva.table_id] : []),
+        ...occ.tableIds,
+      ])];
+      const availability = {
         unitId: reserva.unit_id,
         hallId: nextHall,
         date: nextDate,
         time: nextTime,
         partySize: nextParty,
-        // A própria reserva não ocupa mesa contra si mesma; a mesa atual é
-        // mantida se continuar livre no novo horário.
+        // A própria reserva não ocupa mesa contra si mesma; as mesas atuais são
+        // mantidas se continuarem livres no novo horário.
         excludeReservationId: reserva.id,
-        preferTableId: reserva.table_id,
-      });
+        preferTableIds: currentTableIds,
+      };
+      let result = await checkAvailability(supabase, availability);
+      // Este caminho grava só `table_id` (o trigger refaz occupant_tables com uma
+      // mesa): combinação NOVA não cabe aqui; a recepção junta mesas no Salão ao vivo.
+      if (result.available && (result.suggestedTableIds?.length ?? 0) > 1
+          && !sameTableSet(result.suggestedTableIds!, currentTableIds)) {
+        result = await checkAvailability(supabase, { ...availability, singleTableOnly: true });
+      }
 
       if (!result.available) {
         jsonLog("info", {
@@ -251,8 +275,10 @@ serve(async (req) => {
 
     if (upErr) {
       jsonLog("error", { evt: "update_reservation_failed", code: upErr.code, err: upErr.message });
-      // UNIQUE (table_id, date, time) ativo: outra reserva pegou a mesa entre a checagem e o UPDATE.
-      if (upErr.code === "23505") {
+      // UNIQUE (table_id, date, time) ou exclusão por janela em occupant_tables:
+      // outra reserva pegou a mesa entre a checagem e o UPDATE (ou o override
+      // apontou uma mesa já reservada nesse horário).
+      if (upErr.code === "23505" || upErr.code === "23P01") {
         return jsonResponse({ error: "Esse horário acabou de ser ocupado nesta mesa. Escolha outro horário ou mesa.", reason: "no_capacity" }, 409);
       }
       return jsonResponse({ error: "Não foi possível salvar a reserva. Tente novamente." }, 500);

@@ -1,3 +1,5 @@
+import { CombinacoesPainel } from "@/components/planta/editor/CombinacoesPainel";
+import { combinationKey, type DraftCombination } from "@/lib/table-combination-core";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
@@ -29,10 +31,11 @@ function relayout(plan: HallPlan, boxes: TableBox[], tables: Mesa[]): TableBox[]
   const mesas = tables.map((t) => {
     const b = byId.get(t.id);
     if (!b || !b.positioned) {
-      return { ...t, plan_x: null, plan_y: null, plan_w: null, plan_h: null, plan_rotation: null, plan_shape: null };
+      return { ...t, bookable: b?.bookable ?? t.bookable, plan_x: null, plan_y: null, plan_w: null, plan_h: null, plan_rotation: null, plan_shape: null };
     }
     return {
       ...t,
+      bookable: b.bookable,
       plan_x: b.x,
       plan_y: b.y,
       plan_w: b.w,
@@ -56,6 +59,11 @@ export default function SalaoPlanta() {
 
   const [plan, setPlan] = useState<HallPlan | null>(null);
   const [boxes, setBoxes] = useState<TableBox[]>([]);
+  const [combos, setCombos] = useState<DraftCombination[]>([]);
+  const [combosTouched, setCombosTouched] = useState(false);
+  const [joinMode, setJoinMode] = useState(false);
+  const [multiSelectedIds, setMultiSelectedIds] = useState<string[]>([]);
+  const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
   const [initialJson, setInitialJson] = useState("");
   const [seenKey, setSeenKey] = useState("");
   const [revision, setRevision] = useState("");
@@ -72,6 +80,11 @@ export default function SalaoPlanta() {
     if (dataKey !== keyFor(revision)) {
       const p = hallPlanFrom(data.hall);
       const b = resolveTableBoxes(p, data.tables);
+      setCombos((data.combinations ?? []).map(c => ({ key: combinationKey(c.table_ids), tableIds: c.table_ids, min: c.min_capacity, max: c.max_capacity })));
+      setCombosTouched(false);
+      setMultiSelectedIds([]);
+      setHighlightedKey(null);
+      setJoinMode(false);
       setPlan(p);
       setBoxes(b);
       setInitialJson(JSON.stringify(toSavePayload(p, b)));
@@ -81,8 +94,8 @@ export default function SalaoPlanta() {
   }
 
   const dirty = useMemo(
-    () => (plan ? JSON.stringify(toSavePayload(plan, boxes)) !== initialJson : false),
-    [plan, boxes, initialJson],
+    () => (plan ? JSON.stringify(toSavePayload(plan, boxes, combosTouched ? combos : null)) !== initialJson : false),
+    [plan, boxes, combos, combosTouched, initialJson],
   );
 
   useEffect(() => {
@@ -161,14 +174,15 @@ export default function SalaoPlanta() {
 
   const handleSave = () => {
     if (readOnly || !data || !plan) return;
-    const payload = toSavePayload(plan, boxes);
+    const payload = toSavePayload(plan, boxes, combosTouched ? combos : null);
     save.mutate(
       { expectedUpdatedAt: revision, payload },
       {
         onSuccess: (newRevision) => {
           // A revisão nova vale já: o próximo salvamento não espera o refetch.
           setRevision(newRevision);
-          setInitialJson(JSON.stringify(payload));
+          setCombosTouched(false);
+          setInitialJson(JSON.stringify(toSavePayload(plan, boxes, null)));
           toast.success("Planta salva.");
         },
         onError: (e) => toast.error(hallPlanErrorMessage(e)),
@@ -286,6 +300,10 @@ export default function SalaoPlanta() {
               onMove={moveBox}
               onResize={(id, w, h) => editBoxes(id, (b) => ({ ...applyTablePatch(b, { w, h }), positioned: true }))}
               onEntranceChange={(entrance) => changePlan({ ...plan, entrance })}
+              multiSelectedIds={multiSelectedIds}
+              joinMode={joinMode}
+              onToggleMulti={(id) => setMultiSelectedIds(prev => prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id])}
+              highlightCombination={combos.find(c => c.key === highlightedKey)?.tableIds ?? null}
               readOnly={readOnly}
             />
           )}
@@ -297,8 +315,23 @@ export default function SalaoPlanta() {
             onChange={(patch) =>
               selected && editBoxes(selected.tableId, (b) => ({ ...applyTablePatch(b, patch), positioned: true }))
             }
+            onBookableChange={(bookable) => {
+              if (!selected || readOnly) return;
+              const affected = combos.some(c => c.tableIds.includes(selected.tableId));
+              if (!bookable && affected) {
+                if (!window.confirm(`As combinações com a mesa ${selected.number} serão desfeitas. Continuar?`)) return;
+                setCombos(prev => prev.filter(c => !c.tableIds.includes(selected.tableId)));
+                setCombosTouched(true);
+              }
+              editBoxes(selected.tableId, b => ({ ...b, bookable }));
+            }}
             onRemove={() => selected && sendToTray(selected.tableId)}
           />
+          <CombinacoesPainel boxes={boxes} combinations={combos} joinMode={joinMode} onJoinModeChange={setJoinMode}
+            multiSelectedIds={multiSelectedIds} onClearMulti={() => setMultiSelectedIds([])}
+            onAdd={drafts => { setCombos(prev => [...prev, ...drafts]); setCombosTouched(true); }}
+            onRemove={key => { setCombos(prev => prev.filter(c => c.key !== key)); setCombosTouched(true); if (highlightedKey === key) setHighlightedKey(null); }}
+            highlightedKey={highlightedKey} onHighlight={setHighlightedKey} readOnly={readOnly} />
           <BandejaSemPosicao
             boxes={boxes}
             readOnly={readOnly}

@@ -11,6 +11,21 @@
 // deno-lint-ignore-file no-explicit-any
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  pickSeat,
+  type SeatChoice,
+  seatOptions,
+  type SeatPick,
+} from "./availability-core.ts";
+import {
+  insertWithTables,
+  loadHallSeating,
+  loadPlanHall,
+  readFailed,
+  unitHasActiveHall,
+} from "./adapters/hall-seating.ts";
+
+export type { SeatChoice } from "./availability-core.ts";
 
 export type AvailabilityReason =
   | "closed_day"
@@ -19,7 +34,9 @@ export type AvailabilityReason =
   | "below_min_advance"
   | "no_capacity"
   | "all_blocked"
-  | "ambiguous_hall";
+  | "ambiguous_hall"
+  /** A mesa ou combinação escolhida pelo cliente não está livre (ou não é do salão). */
+  | "seat_unavailable";
 
 export interface AvailabilityParams {
   unitId: string;
@@ -34,11 +51,21 @@ export interface AvailabilityParams {
   /** Alteração de reserva: mesa atual, mantida se continuar livre e compatível;
    *  senão vale o first-fit. Ausente = comportamento de reserva nova. */
   preferTableId?: string | null;
+  /** Alteração de reserva: todas as mesas atuais (mesas juntas). Vence `preferTableId`. */
+  preferTableIds?: string[] | null;
+  /** Escolha do cliente (página ou WhatsApp): ela ou `seat_unavailable`, nunca outra mesa nem flutuante. */
+  choice?: SeatChoice | null;
+  /** Só mesas sozinhas (caminho que grava uma mesa só, como o hook do Instagram). */
+  singleTableOnly?: boolean;
 }
 
 export interface AvailabilityResult {
   available: boolean;
+  /** Primeira de `suggestedTableIds` (a principal, gravada em `reservations.table_id`). */
   suggestedTableId?: string;
+  /** Mesas da reserva: uma, ou as da combinação. Vazio = flutuante. */
+  suggestedTableIds?: string[];
+  combinationId?: string | null;
   suggestedHallId?: string;
   reason?: AvailabilityReason;
   message: string;
@@ -94,12 +121,13 @@ async function loadDurationMinutes(
   supabase: SupabaseClient,
   unitId: string,
 ): Promise<number> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("settings")
     .select("value")
     .eq("unit_id", unitId)
     .eq("key", "reservation_duration_minutes")
     .maybeSingle();
+  if (error) readFailed("settings:reservation_duration_minutes");
 
   const raw = data?.value;
   if (typeof raw === "number" && raw > 0) return Math.floor(raw);
@@ -132,12 +160,13 @@ async function loadBookingWindowDays(
   supabase: SupabaseClient,
   unitId: string,
 ): Promise<number | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("settings")
     .select("value")
     .eq("unit_id", unitId)
     .eq("key", "booking_window_days")
     .maybeSingle();
+  if (error) readFailed("settings:booking_window_days");
   const raw = data?.value;
   if (typeof raw === "number" && raw > 0) return Math.floor(raw);
   if (typeof raw === "string") {
@@ -156,13 +185,14 @@ async function findActiveMacroBlock(
   startISO: string,
   endISO: string,
 ): Promise<string | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("table_blocks")
     .select("title, reason, hall_id")
     .eq("unit_id", unitId)
     .is("table_id", null)
     .lt("blocked_from", endISO)
     .gt("blocked_to", startISO);
+  if (error) readFailed("table_blocks:macro");
 
   for (const row of data ?? []) {
     // Macro global (hall_id null) bloqueia todos os halls.
@@ -199,7 +229,7 @@ async function loadSpecialDateOverrides(
   unitId: string,
   date: string,
 ): Promise<SpecialOverride[]> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("special_dates")
     .select(
       "hall_id, is_closed, open_time, close_time, max_party_size, slot_minutes, min_advance_minutes, discount_percent",
@@ -207,6 +237,7 @@ async function loadSpecialDateOverrides(
     .eq("unit_id", unitId)
     .lte("date", date)
     .gte("end_date", date);
+  if (error) readFailed("special_dates");
 
   const out: SpecialOverride[] = [];
   for (const row of data ?? []) {
@@ -294,10 +325,33 @@ export async function checkAvailability(
     .order("sort_order", { ascending: true });
   if (hallId) hallsQuery = hallsQuery.eq("id", hallId);
 
-  const { data: hallsData } = await hallsQuery;
+  const { data: hallsData, error: hallsErr } = await hallsQuery;
+  if (hallsErr) readFailed("halls");
   const halls: HallRow[] = (hallsData ?? []) as HallRow[];
 
-  // Caminho legacy: nenhum hall configurado — cai pra business_hours
+  // Salão pedido que não é da unidade (ou inativo) não cai no legado quando a
+  // unidade tem salões: o legado ignoraria o salão e escolheria mesa em qualquer um.
+  if (halls.length === 0 && hallId) {
+    if (await unitHasActiveHall(supabase, unitId)) {
+      return {
+        available: false,
+        reason: params.choice ? "seat_unavailable" : "no_capacity",
+        message: "Este salão não está disponível para reservas.",
+        durationMinutes: duration,
+      };
+    }
+  }
+
+  // Caminho legacy: nenhum hall configurado — cai pra business_hours.
+  // Sem salão não há planta: escolha de mesa não se aplica.
+  if (halls.length === 0 && params.choice) {
+    return {
+      available: false,
+      reason: "seat_unavailable",
+      message: "Essa mesa não está disponível nesse horário.",
+      durationMinutes: duration,
+    };
+  }
   if (halls.length === 0) {
     const fallbackOverride = overrides.find((o) => o.hallId === null) ?? null;
     return checkAvailabilityLegacy(supabase, params, duration, fallbackOverride);
@@ -337,7 +391,11 @@ export async function checkAvailability(
       duration,
       allowOverbooking,
       excludeReservationId: params.excludeReservationId,
-      preferTableId: params.preferTableId ?? undefined,
+      preferTableIds: params.preferTableIds && params.preferTableIds.length > 0
+        ? params.preferTableIds
+        : params.preferTableId ? [params.preferTableId] : null,
+      choice: params.choice ?? null,
+      singleTableOnly: params.singleTableOnly,
       // `=== false` (não `!closed`): com strict:false o tsc só estreita a união assim.
       specialOverride:
         override && override.closed === false
@@ -378,7 +436,8 @@ function pickPreferredTable<T extends { id: string; max_capacity: number }>(
   );
 }
 
-async function tryHall(args: {
+/** Janela do salão no dia: special_date > hall_schedule, antecedência e bloqueio macro. */
+async function hallWindowGate(args: {
   supabase: SupabaseClient;
   hall: HallRow;
   unitId: string;
@@ -386,11 +445,7 @@ async function tryHall(args: {
   dow: number;
   time: string;
   requestedMin: number;
-  partySize: number;
   duration: number;
-  allowOverbooking: boolean;
-  excludeReservationId?: string;
-  preferTableId?: string;
   specialOverride: {
     openMin: number;
     closeMin: number;
@@ -398,10 +453,11 @@ async function tryHall(args: {
     minAdvanceMinutes?: number | null;
     discountPercent?: number | null;
   } | null;
-}): Promise<AvailabilityResult> {
-  const { supabase, hall, unitId, date, dow, time, requestedMin, partySize, duration, allowOverbooking, excludeReservationId, preferTableId, specialOverride } = args;
+}): Promise<{ ok: true; appliedDiscountPercent: number | null } | { ok: false; result: AvailabilityResult }> {
+  const { supabase, hall, unitId, date, dow, time, requestedMin, duration, specialOverride } = args;
+  const fail = (reason: AvailabilityReason, message: string) =>
+    ({ ok: false as const, result: { available: false, reason, message, durationMinutes: duration } });
 
-  // 3.1 — Determinar janela: special_date override > hall_schedule
   let openMin: number;
   let closeMin: number;
   let minAdvance = 0;
@@ -415,38 +471,23 @@ async function tryHall(args: {
     }
     appliedDiscountPercent = specialOverride.discountPercent ?? null;
   } else {
-    const { data: schedules } = await supabase
+    const { data: schedules, error: schedErr } = await supabase
       .from("hall_schedules")
       .select("id, hall_id, open_time, close_time, slot_minutes, min_advance_minutes, discount_percent")
       .eq("hall_id", hall.id)
       .eq("day_of_week", dow);
+    if (schedErr) readFailed("hall_schedules");
 
     const sched: HallScheduleRow[] = (schedules ?? []) as HallScheduleRow[];
-    if (sched.length === 0) {
-      return {
-        available: false,
-        reason: "closed_day",
-        message: `${hall.name}: fechado neste dia da semana.`,
-        durationMinutes: duration,
-      };
-    }
+    if (sched.length === 0) return fail("closed_day", `${hall.name}: fechado neste dia da semana.`);
 
-    // Encontrar a janela que contém o horário pedido.
     // close_time = última reserva aceita (inclusive). Sem buffer fixo.
     const matched = sched.find((s) => {
       const o = parseTimeToMinutes(s.open_time);
       const c = parseTimeToMinutes(s.close_time);
       return requestedMin >= o && requestedMin <= c;
     });
-
-    if (!matched) {
-      return {
-        available: false,
-        reason: "outside_hours",
-        message: `${hall.name}: este horário está fora das janelas configuradas.`,
-        durationMinutes: duration,
-      };
-    }
+    if (!matched) return fail("outside_hours", `${hall.name}: este horário está fora das janelas configuradas.`);
 
     openMin = parseTimeToMinutes(matched.open_time);
     closeMin = parseTimeToMinutes(matched.close_time);
@@ -454,49 +495,73 @@ async function tryHall(args: {
     appliedDiscountPercent = matched.discount_percent ?? null;
   }
 
-  // close_time = última reserva aceita (inclusive). Não há buffer fixo.
   if (requestedMin < openMin || requestedMin > closeMin) {
-    return {
-      available: false,
-      reason: "outside_hours",
-      message: `${hall.name}: este horário está fora do atendimento.`,
-      durationMinutes: duration,
-    };
+    return fail("outside_hours", `${hall.name}: este horário está fora do atendimento.`);
   }
 
-  // 3.2 — Antecedência mínima
-  if (minAdvance > 0) {
-    const remaining = minutesUntil(date, time);
-    if (remaining < minAdvance) {
-      return {
-        available: false,
-        reason: "below_min_advance",
-        message: `${hall.name}: precisa reservar com no mínimo ${minAdvance} min de antecedência.`,
-        durationMinutes: duration,
-      };
-    }
+  if (minAdvance > 0 && minutesUntil(date, time) < minAdvance) {
+    return fail("below_min_advance", `${hall.name}: precisa reservar com no mínimo ${minAdvance} min de antecedência.`);
   }
 
-  // 3.3 — Mesas do hall com capacidade compatível
-  const minRequired = hall.allow_empty_seat ? Math.max(1, partySize) : partySize;
-  // allow_empty_seat: aceita mesa cuja min_capacity seja partySize+1 (sobra 1 cadeira)
-  // Lógica de filtro:
-  //   sem flag: min_capacity <= partySize <= max_capacity
-  //   com flag: (min_capacity - 1) <= partySize <= max_capacity   (admite 1 cadeira vazia)
-  const { data: tablesRaw } = await supabase
-    .from("tables")
-    .select("id, hall_id, min_capacity, max_capacity")
-    .eq("hall_id", hall.id)
-    .eq("active", true)
-    .gte("max_capacity", partySize)
-    .order("max_capacity", { ascending: true });
+  // Offset BRT explícito: a Edge Function roda em UTC; sem offset, `time`
+  // seria lido como UTC e o intervalo da reserva ficaria 3h fora do fuso.
+  const startISO = new Date(`${date}T${time}:00-03:00`).toISOString();
+  const endISO = new Date(
+    new Date(`${date}T${time}:00-03:00`).getTime() + duration * 60 * 1000,
+  ).toISOString();
+  const macroTitle = await findActiveMacroBlock(supabase, unitId, hall.id, startISO, endISO);
+  if (macroTitle) return fail("closed_day", `${hall.name}: bloqueado neste horário (${macroTitle}).`);
 
-  const tables: TableRow[] = (tablesRaw ?? []).filter((t: TableRow) => {
-    const lower = hall.allow_empty_seat ? t.min_capacity - 1 : t.min_capacity;
-    return partySize >= Math.max(1, lower) && partySize <= t.max_capacity;
+  return { ok: true, appliedDiscountPercent };
+}
+
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const sb = new Set(b);
+  return a.length === sb.size && a.every((x) => sb.has(x));
+}
+
+async function tryHall(args: {
+  supabase: SupabaseClient;
+  hall: HallRow;
+  unitId: string;
+  date: string;
+  dow: number;
+  time: string;
+  requestedMin: number;
+  partySize: number;
+  duration: number;
+  allowOverbooking: boolean;
+  excludeReservationId?: string;
+  preferTableIds?: string[] | null;
+  choice?: SeatChoice | null;
+  singleTableOnly?: boolean;
+  specialOverride: {
+    openMin: number;
+    closeMin: number;
+    slotMinutes?: number | null;
+    minAdvanceMinutes?: number | null;
+    discountPercent?: number | null;
+  } | null;
+}): Promise<AvailabilityResult> {
+  const { supabase, hall, unitId, date, time, requestedMin, partySize, duration, allowOverbooking, excludeReservationId, choice } = args;
+
+  const gate = await hallWindowGate(args);
+  if (gate.ok === false) return gate.result;
+  const { appliedDiscountPercent } = gate;
+
+  const seating = await loadHallSeating(supabase, {
+    unitId, hallId: hall.id, date, time, requestedMin, duration, excludeReservationId,
+    singleTableOnly: args.singleTableOnly,
   });
+  const base = {
+    tables: seating.tables,
+    combinations: seating.combinations,
+    partySize,
+    allowEmptySeat: hall.allow_empty_seat,
+  };
 
-  if (tables.length === 0) {
+  const fitting = seatOptions({ ...base, occupied: seating.blocked });
+  if (fitting.length === 0) {
     return {
       available: false,
       reason: "no_capacity",
@@ -504,42 +569,7 @@ async function tryHall(args: {
       durationMinutes: duration,
     };
   }
-  void minRequired; // reservado para uso futuro
-
-  // 3.4 — Bloqueios
-  // Offset BRT explícito: a Edge Function roda em UTC; sem offset, `time`
-  // seria lido como UTC e o intervalo da reserva ficaria 3h fora do fuso do
-  // restaurante — bloqueios parciais (ex: 19h-22h BRT) escapavam na borda
-  // inicial. Mesma convenção usada por `minutesUntil` acima.
-  const startISO = new Date(`${date}T${time}:00-03:00`).toISOString();
-  const endISO = new Date(
-    new Date(`${date}T${time}:00-03:00`).getTime() + duration * 60 * 1000,
-  ).toISOString();
-
-  // 3.4a — Bloqueio macro (sem table_id) afetando este hall: trava tudo.
-  const macroTitle = await findActiveMacroBlock(supabase, unitId, hall.id, startISO, endISO);
-  if (macroTitle) {
-    return {
-      available: false,
-      reason: "closed_day",
-      message: `${hall.name}: bloqueado neste horário (${macroTitle}).`,
-      durationMinutes: duration,
-    };
-  }
-
-  // 3.4b — Bloqueios de mesa específica
-  const tableIds = tables.map((t) => t.id);
-  const { data: blocksRaw } = await supabase
-    .from("table_blocks")
-    .select("table_id")
-    .in("table_id", tableIds)
-    .lt("blocked_from", endISO)
-    .gt("blocked_to", startISO);
-
-  const blockedTableIds = new Set((blocksRaw ?? []).map((b: any) => b.table_id));
-  const usableTables = tables.filter((t) => !blockedTableIds.has(t.id));
-
-  if (usableTables.length === 0) {
+  if (!fitting.some((o) => o.available)) {
     return {
       available: false,
       reason: "all_blocked",
@@ -548,63 +578,48 @@ async function tryHall(args: {
     };
   }
 
-  // 3.5 — Reservas conflitantes (com table_id no hall + floating na unit)
-  const { data: pinnedRaw } = await supabase
-    .from("reservations")
-    .select("id, time, party_size, table_id")
-    .eq("unit_id", unitId)
-    .eq("date", date)
-    .in("status", ["pending", "confirmed"])
-    .in("table_id", tableIds);
+  const occupied = new Set<string>([...seating.blocked, ...seating.pinned]);
+  let pick: SeatPick | null = null;
 
-  const conflicting = (pinnedRaw ?? []).filter((r: any) => {
-    if (r.id === excludeReservationId) return false;
-    const otherMin = parseTimeToMinutes(r.time);
-    return Math.abs(otherMin - requestedMin) < duration;
-  });
+  if (choice) {
+    // Escolha do cliente: a própria escolha ou nada (nunca outra mesa, nunca flutuante).
+    pick = pickSeat({ ...base, occupied, choice });
+    if (!pick) {
+      return {
+        available: false,
+        reason: "seat_unavailable",
+        message: "Essa mesa acabou de ser reservada. Escolha outra.",
+        durationMinutes: duration,
+      };
+    }
+  } else {
+    // A mesa (ou o conjunto) atual da reserva alterada entra antes das flutuantes.
+    if (args.preferTableIds && args.preferTableIds.length > 0) {
+      const kept = pickSeat({ ...base, occupied, preferTableIds: args.preferTableIds });
+      if (kept && sameSet(kept.tableIds, args.preferTableIds)) pick = kept;
+    }
+    if (pick) for (const id of pick.tableIds) occupied.add(id);
 
-  const { data: floatingRaw } = await supabase
-    .from("reservations")
-    .select("id, time, party_size")
-    .eq("unit_id", unitId)
-    .eq("date", date)
-    .is("table_id", null)
-    .in("status", ["pending", "confirmed"]);
+    // Flutuantes: alocação best-effort, maior grupo primeiro, na menor mesa reservável que cabe.
+    const singles = [...seating.tables]
+      .filter((t) => t.bookable)
+      .sort((a, b) => a.maxCapacity - b.maxCapacity || a.number - b.number);
+    for (const party of [...seating.floating].sort((a, b) => b - a)) {
+      const fit = singles.find((t) => !occupied.has(t.id) && t.maxCapacity >= party);
+      if (fit) occupied.add(fit.id);
+    }
 
-  const floatingConflict = (floatingRaw ?? []).filter((r: any) => {
-    if (r.id === excludeReservationId) return false;
-    const otherMin = parseTimeToMinutes(r.time);
-    return Math.abs(otherMin - requestedMin) < duration;
-  });
-
-  // 3.6 — Alocação first-fit (a mesa preferida da reserva alterada entra antes
-  // das flutuantes, que são alocação best-effort e nunca recusam o pedido)
-  const occupied = new Set<string>();
-  for (const r of conflicting) if (r.table_id) occupied.add(r.table_id);
-
-  const preferred = pickPreferredTable(usableTables, occupied, preferTableId, partySize);
-  if (preferred) occupied.add(preferred.id);
-
-  const sortedFloating = [...floatingConflict].sort(
-    (a: any, b: any) => b.party_size - a.party_size,
-  );
-  for (const r of sortedFloating) {
-    const fit = usableTables.find(
-      (t) => !occupied.has(t.id) && t.max_capacity >= r.party_size,
-    );
-    if (fit) occupied.add(fit.id);
+    if (!pick) pick = pickSeat({ ...base, occupied });
   }
 
-  const suggested = preferred ?? usableTables.find(
-    (t) => !occupied.has(t.id) && t.max_capacity >= partySize,
-  );
-
-  if (!suggested) {
+  if (!pick) {
     if (allowOverbooking) {
       // Overbooking: cria reserva floating (sem table_id) — operador aloca depois.
       return {
         available: true,
         suggestedTableId: undefined,
+        suggestedTableIds: [],
+        combinationId: null,
         suggestedHallId: hall.id,
         message: `${hall.name}: sem mesa disponível, mas overbooking está habilitado — reserva criada como flutuante.`,
         durationMinutes: duration,
@@ -621,11 +636,134 @@ async function tryHall(args: {
 
   return {
     available: true,
-    suggestedTableId: suggested.id,
+    suggestedTableId: pick.tableIds[0],
+    suggestedTableIds: pick.tableIds,
+    combinationId: pick.combinationId,
     suggestedHallId: hall.id,
     message: `Há mesa disponível em ${hall.name} para ${partySize} pessoa(s) em ${date} às ${time}.`,
     durationMinutes: duration,
     appliedDiscountPercent,
+  };
+}
+
+// ─── Mapa de mesas (página do cliente e link do WhatsApp) ────────────────────
+
+export interface SeatMap {
+  hall: {
+    id: string;
+    name: string;
+    plan: { widthCm: number; depthCm: number; entranceWall: string | null; entranceOffsetCm: number | null; windowWalls: string[] } | null;
+  };
+  tables: Array<{
+    id: string;
+    number: number;
+    plan: { x: number; y: number; w: number; h: number; rotation: number; shape: string } | null;
+    bookable: boolean;
+    available: boolean;
+  }>;
+  options: ReturnType<typeof seatOptions>;
+}
+
+/**
+ * Geometria e disponibilidade de um salão para o cliente escolher a mesa.
+ * Mesma regra de janela, dia especial, antecedência e bloqueio de `tryHall`.
+ * Só ids, números, capacidades e posições: nada de reserva, cliente ou horário
+ * de terceiros. `hall.plan` é nulo quando o salão não tem medidas ou nenhuma
+ * mesa reservável tem posição (sem planta não há "Ver o salão").
+ */
+export async function loadSeatMap(
+  supabase: SupabaseClient,
+  args: { unitId: string; hallId: string; date: string; time: string; partySize: number },
+): Promise<SeatMap | { error: AvailabilityReason }> {
+  const { unitId, hallId, date, partySize } = args;
+  const time = args.time.slice(0, 5);
+  const requestedMin = parseTimeToMinutes(time);
+  const [duration, bookingWindowDays, overrides] = await Promise.all([
+    loadDurationMinutes(supabase, unitId),
+    loadBookingWindowDays(supabase, unitId),
+    loadSpecialDateOverrides(supabase, unitId, date),
+  ]);
+
+  if (bookingWindowDays != null) {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const diffDays = Math.floor((new Date(`${date}T00:00:00Z`).getTime() - today.getTime()) / 86_400_000);
+    if (diffDays > bookingWindowDays) return { error: "outside_window" };
+  }
+  if (overrides.some((o) => o.closed && o.hallId === null)) return { error: "closed_day" };
+
+  const hallRow = await loadPlanHall(supabase, unitId, hallId);
+  if (!hallRow) return { error: "no_capacity" };
+  const hall = hallRow as HallRow & {
+    plan_width_cm: number | null;
+    plan_depth_cm: number | null;
+    plan_entrance_wall: string | null;
+    plan_entrance_offset_cm: number | null;
+    plan_window_walls: string[] | null;
+  };
+
+  const override = pickOverrideForHall(overrides, hall.id);
+  if (override?.closed) return { error: "closed_day" };
+  if (override && override.closed === false && override.maxPartySize != null && partySize > override.maxPartySize) {
+    return { error: "no_capacity" };
+  }
+
+  const gate = await hallWindowGate({
+    supabase, hall, unitId, date, dow: dayOfWeek(date), time, requestedMin, duration,
+    specialOverride: override && override.closed === false
+      ? {
+          openMin: override.openMin,
+          closeMin: override.closeMin,
+          slotMinutes: override.slotMinutes,
+          minAdvanceMinutes: override.minAdvanceMinutes,
+          discountPercent: override.discountPercent,
+        }
+      : null,
+  });
+  if (gate.ok === false) return { error: gate.result.reason ?? "no_capacity" };
+
+  const seating = await loadHallSeating(supabase, { unitId, hallId: hall.id, date, time, requestedMin, duration });
+  const occupied = new Set<string>([...seating.blocked, ...seating.pinned]);
+  const options = seatOptions({
+    tables: seating.tables,
+    combinations: seating.combinations,
+    occupied,
+    partySize,
+    allowEmptySeat: hall.allow_empty_seat,
+  });
+
+  const tables = seating.rows.map((t) => {
+    const hasPlan = t.plan_x != null && t.plan_y != null && t.plan_w != null && t.plan_h != null;
+    const bookable = t.bookable !== false;
+    return {
+      id: t.id,
+      number: Number(t.number) || 0,
+      plan: hasPlan
+        ? { x: t.plan_x!, y: t.plan_y!, w: t.plan_w!, h: t.plan_h!, rotation: t.plan_rotation ?? 0, shape: t.plan_shape ?? "square" }
+        : null,
+      bookable,
+      available: bookable && !occupied.has(t.id),
+    };
+  });
+  const hasDims = hall.plan_width_cm != null && hall.plan_depth_cm != null;
+  const anyPlaced = tables.some((t) => t.bookable && t.plan !== null);
+
+  return {
+    hall: {
+      id: hall.id,
+      name: hall.name,
+      plan: hasDims && anyPlaced
+        ? {
+            widthCm: hall.plan_width_cm!,
+            depthCm: hall.plan_depth_cm!,
+            entranceWall: hall.plan_entrance_wall,
+            entranceOffsetCm: hall.plan_entrance_offset_cm,
+            windowWalls: hall.plan_window_walls ?? [],
+          }
+        : null,
+    },
+    tables,
+    options,
   };
 }
 
@@ -667,12 +805,13 @@ async function checkAvailabilityLegacy(
     appliedDiscountPercent = special.discountPercent ?? null;
   } else {
     const dow = dayOfWeek(date);
-    const { data: hour } = await supabase
+    const { data: hour, error: hourErr } = await supabase
       .from("business_hours")
       .select("open_time, close_time, is_closed")
       .eq("unit_id", unitId)
       .eq("day_of_week", dow)
       .maybeSingle();
+    if (hourErr) readFailed("business_hours");
 
     if (!hour || hour.is_closed) {
       return {
@@ -697,13 +836,14 @@ async function checkAvailabilityLegacy(
     };
   }
 
-  const { data: tablesRaw } = await supabase
+  const { data: tablesRaw, error: tablesErr } = await supabase
     .from("tables")
     .select("id, max_capacity")
     .eq("unit_id", unitId)
     .eq("active", true)
     .gte("max_capacity", partySize)
     .order("max_capacity", { ascending: true });
+  if (tablesErr) readFailed("tables:legacy");
 
   const tables: Array<{ id: string; max_capacity: number }> = tablesRaw ?? [];
   if (tables.length === 0) {
@@ -722,12 +862,13 @@ async function checkAvailabilityLegacy(
   ).toISOString();
   const tableIds = tables.map((t) => t.id);
 
-  const { data: blocksRaw } = await supabase
+  const { data: blocksRaw, error: blocksErr } = await supabase
     .from("table_blocks")
     .select("table_id")
     .in("table_id", tableIds)
     .lt("blocked_from", endISO)
     .gt("blocked_to", startISO);
+  if (blocksErr) readFailed("table_blocks:legacy");
 
   const blockedTableIds = new Set((blocksRaw ?? []).map((b: any) => b.table_id));
   const usableTables = tables.filter((t) => !blockedTableIds.has(t.id));
@@ -741,12 +882,13 @@ async function checkAvailabilityLegacy(
     };
   }
 
-  const { data: existingRaw } = await supabase
+  const { data: existingRaw, error: existingErr } = await supabase
     .from("reservations")
     .select("id, time, party_size, table_id")
     .eq("unit_id", unitId)
     .eq("date", date)
     .in("status", ["pending", "confirmed"]);
+  if (existingErr) readFailed("reservations:legacy");
 
   const conflicting = (existingRaw ?? []).filter((r: any) => {
     if (r.id === params.excludeReservationId) return false;
@@ -810,14 +952,18 @@ export interface ReserveSlotParams extends AvailabilityParams {
    *  quando true e a validação normal recusa (sem mesa, fora de horário,
    *  bloqueio etc), cria a reserva mesmo assim como flutuante (table_id null). */
   override?: boolean;
-  /** Substitui só o INSERT (mesma linha, mesmo select de volta). Sem hook, o insert direto de sempre. */
+  /** Como a reserva ganhou a mesa (`reservations.table_choice`). Padrão: "customer" com `choice`, senão "system". */
+  tableChoice?: "customer" | "system";
+  /** Substitui só o INSERT (mesma linha, mesmo select de volta). Sem hook, o insert direto de sempre.
+   *  Com mesa, a linha leva `table_choice`; com mesas juntas, também `table_ids` (a principal primeiro). */
   insertReservation?: (row: ReservationInsertRow) => Promise<{ data: { id: string; status: string; payment_status: string | null } | null; error: { code?: string } | null }>;
 }
 
 /**
  * A linha que `reserveSlot` grava em `reservations`, exatamente como o INSERT
  * direto a monta. O hook `insertReservation` a recebe sem mudança; a RPC do
- * Instagram (`create_instagram_contact_reservation`) insere só estas colunas.
+ * Instagram (`create_instagram_contact_reservation`) insere só estas colunas
+ * e grava as mesas extras de `table_ids` em occupant_tables na mesma transação.
  */
 export interface ReservationInsertRow {
   customer_id: string;
@@ -834,6 +980,10 @@ export interface ReservationInsertRow {
   payment_expires_at?: null;
   applied_discount_percent: number | null;
   source: "web" | "whatsapp" | "instagram";
+  /** Presente quando a reserva tem mesa: como ganhou a mesa. */
+  table_choice?: "customer" | "system";
+  /** Só com mesas juntas (2+): todas as mesas, a primeira igual a `table_id`. */
+  table_ids?: string[];
 }
 
 export type ReserveSlotResult =
@@ -841,10 +991,13 @@ export type ReserveSlotResult =
       success: true;
       reservationId: string;
       reservationCode: string;
-      reservationStatus: string;
+      /** null = reserva gravada, estado não lido (ver insertWithTables). */
+      reservationStatus: string | null;
       paymentStatus: string | null;
       /** Pode ser undefined em casos de overbooking (reserva floating). */
       tableId: string | undefined;
+      /** Todas as mesas gravadas (a primeira é `tableId`); vazio = flutuante. */
+      tableIds: string[];
       hallId?: string;
       durationMinutes: number;
       appliedDiscountPercent: number | null;
@@ -868,7 +1021,9 @@ export async function reserveSlot(
   supabase: SupabaseClient,
   params: ReserveSlotParams,
 ): Promise<ReserveSlotResult> {
-  let check = await checkAvailability(supabase, params);
+  const checkParams: AvailabilityParams = params;
+  const tableChoice = params.tableChoice ?? (params.choice ? "customer" : "system");
+  let check = await checkAvailability(supabase, checkParams);
   if (!check.available) {
     // Sem override: recusa como sempre. Com override (reserva manual forçada
     // pelo operador): segue como flutuante (sem mesa) — table_id null não
@@ -925,13 +1080,21 @@ export async function reserveSlot(
       applied_discount_percent: appliedDiscountPercent,
       source: params.source ?? "web",
     };
+    const tableIds = check.suggestedTableIds && check.suggestedTableIds.length > 0
+      ? check.suggestedTableIds
+      : check.suggestedTableId ? [check.suggestedTableId] : [];
     // Com hook (identidade declarada do Instagram), a porta grava reserva e
-    // ledger numa transação; o retry de 23505 abaixo vale para os dois caminhos.
+    // ledger numa transação; o retry de 23505/23P01 abaixo vale para todos os caminhos.
+    const seatedRow: ReservationInsertRow = tableIds.length === 0
+      ? row
+      : { ...row, table_choice: tableChoice, ...(tableIds.length > 1 ? { table_ids: tableIds } : {}) };
     const { data, error } = params.insertReservation
-      ? await params.insertReservation(row)
+      ? await params.insertReservation(seatedRow)
+      : tableIds.length > 1
+      ? await insertWithTables(supabase, row, tableIds, tableChoice)
       : await supabase
         .from("reservations")
-        .insert(row)
+        .insert(seatedRow)
         .select("id,status,payment_status")
         .single();
 
@@ -943,6 +1106,7 @@ export async function reserveSlot(
         reservationStatus: data.status,
         paymentStatus: data.payment_status,
         tableId: check.suggestedTableId,
+        tableIds,
         hallId: check.suggestedHallId,
         durationMinutes: check.durationMinutes,
         appliedDiscountPercent,
@@ -950,11 +1114,14 @@ export async function reserveSlot(
     }
 
     lastInsertErr = error;
-    const code23505 = (error as { code?: string } | null)?.code === "23505";
-    if (!code23505) break;
+    // 23505: índice único (table_id, date, time). 23P01: exclusão por janela em
+    // occupant_tables (outra reserva pegou uma das mesas entre a checagem e o INSERT).
+    const errCode = (error as { code?: string } | null)?.code;
+    if (errCode !== "23505" && errCode !== "23P01") break;
 
-    // Mesa ficou ocupada entre check e insert (race). Re-checa pra pegar outra.
-    const recheck = await checkAvailability(supabase, params);
+    // Mesa ficou ocupada entre check e insert (race). Re-checa pra pegar outra;
+    // com escolha do cliente, a re-checagem devolve seat_unavailable.
+    const recheck = await checkAvailability(supabase, checkParams);
     if (!recheck.available) {
       return {
         success: false,

@@ -1,3 +1,4 @@
+import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { CampoNumero } from "./CampoNumero";
 import { cn } from "@/lib/utils";
@@ -6,6 +7,7 @@ import type { PlanShape, TableBox } from "@/lib/hall-plan-core";
 interface Props {
   box: TableBox | null;
   onChange: (patch: Partial<Pick<TableBox, "shape" | "w" | "h" | "rotation">>) => void;
+  onBookableChange: (bookable: boolean) => void;
   onRemove: () => void;
   readOnly?: boolean;
 }
@@ -16,7 +18,7 @@ const SHAPES: Array<{ value: PlanShape; label: string }> = [
   { value: "rect", label: "Retangular" },
 ];
 
-export function MesaPropriedades({ box, onChange, onRemove, readOnly = false }: Props) {
+export function MesaPropriedades({ box, onChange, onRemove, onBookableChange, readOnly = false }: Props) {
   if (!box) {
     return (
       <section className="surface rounded-lg border border-border p-4">
@@ -33,6 +35,12 @@ export function MesaPropriedades({ box, onChange, onRemove, readOnly = false }: 
         <span className="font-normal text-muted-foreground">{` · ${box.capacity} ${box.capacity === 1 ? "lugar" : "lugares"}`}</span>
       </h3>
 
+      {!readOnly && <div className="space-y-1">
+        <label htmlFor="mesa-bookable" className="flex min-h-11 items-center justify-between gap-2 text-sm">Disponível para reservas
+          <Switch id="mesa-bookable" checked={box.bookable} disabled={readOnly} onCheckedChange={onBookableChange} />
+        </label>
+        <p className="text-xs text-muted-foreground">Fora de reserva: cliente, IA e escolha automática não usam esta mesa; a recepção usa normalmente.</p>
+      </div>}
       <div className="space-y-1">
         <span id="mesa-forma" className="text-sm font-medium">Forma</span>
         <div role="radiogroup" aria-labelledby="mesa-forma" className="flex gap-1">

@@ -3373,6 +3373,202 @@ duas sessões). Os triggers são DEFINER e só leem `unit_members`,
 `platform_admins`, `halls`, `tables`, `hall_schedules`, `table_blocks` e
 `special_dates`.
 
+### 83 — Escolha de mesa
+
+Pré-voo das migrations da escolha de mesa (spec
+`docs/superpowers/specs/2026-11-04-escolha-de-mesa-design.md`). Mesmo contêiner,
+motor e fixtures do 81/82; o `83a-escolha-de-mesa-bootstrap.sql` só acrescenta
+tabelas que o 81a/82a não projetam, e fixtures que mudariam contagens do 81/82
+(como a mesa T14 em S1) nascem dentro da transação desfeita do 83. Roda **da
+raiz do repo**.
+
+```bash
+docker run -d --name mesa83-pg --network none -e POSTGRES_PASSWORD=x \
+  public.ecr.aws/supabase/postgres:17.11.0.004
+P()  { docker exec -i mesa83-pg psql -U postgres       -d postgres -X -q -v ON_ERROR_STOP=1; }
+PA() { docker exec -i mesa83-pg psql -U supabase_admin -d postgres -X -q -v ON_ERROR_STOP=1; }
+PA < supabase/tests/local-preflight/81a-planta-do-salao-bootstrap.sql
+P  < supabase/migrations/20261030120000_planta_do_salao_layout.sql
+P  < supabase/migrations/20261030120100_planta_do_salao_presenca.sql
+P  < supabase/tests/local-preflight/82a-planta-endurecimento-bootstrap.sql
+P  < supabase/migrations/20261104120000_planta_endurecimento.sql
+P  < supabase/tests/local-preflight/83a-escolha-de-mesa-bootstrap.sql
+P  < supabase/migrations/20261105130000_mesas_reservaveis_combinacoes.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED da Task 2 (só C-* passam)
+P  < supabase/migrations/20261105130100_ocupacao_multi_mesa.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED da Task 3 (só K-* falham)
+P  < supabase/migrations/20261105130200_links_escolha_mesa.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN
+P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # segue verde
+P  < supabase/tests/local-preflight/82-planta-endurecimento.sql       # segue verde
+P  < supabase/migrations/20261105130000_mesas_reservaveis_combinacoes.sql   # reaplicar
+P  < supabase/migrations/20261105130100_ocupacao_multi_mesa.sql             # reaplicar
+P  < supabase/migrations/20261105130200_links_escolha_mesa.sql              # reaplicar
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
+# E1 (anon) e E2 (Instagram com mesas juntas): sem a 130400 só os IG-M-* falham (42883).
+P  < supabase/migrations/20261105130300_fechar_anon_insert_reservations.sql
+P  < supabase/migrations/20261105130400_instagram_reserva_multi_mesa.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN (inclui A-* e IG-M-*)
+P  < supabase/migrations/20261105130400_instagram_reserva_multi_mesa.sql    # reaplicar
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
+docker rm -f mesa83-pg
+```
+
+Para o RED da Task 1, rode o 83 antes da 20261105130000 (só os C-* contam).
+
+**Backfill** (contêiner próprio: a semente fica gravada e mudaria as contagens
+do 81/82/83). Mesma base até o 83a, então:
+
+```bash
+P  < supabase/migrations/20261105130000_mesas_reservaveis_combinacoes.sql
+P  < supabase/tests/local-preflight/83b-backfill-semente.sql
+P  < supabase/migrations/20261105130100_ocupacao_multi_mesa.sql   # NOTICE com as contagens
+P  < supabase/tests/local-preflight/83c-backfill-confere.sql      # "83c: PASS"
+```
+
+- **C-1 (8501–8505):** gerente salva combinações pela `save_hall_plan`; salvar
+  o mesmo conjunto (em qualquer ordem) mantém o id e só atualiza a faixa; lista
+  vazia desativa sem apagar; combinações podem dividir mesas; a que sai vira
+  inativa e a nova nasce com id novo.
+- **C-2, C-3 (8506–8510):** operador → `42501 hall_plan_forbidden`; mesa de
+  outro salão, de outra unidade ou inexistente → o mesmo `42501`, sem gravar
+  nada do payload (C-3d).
+- **C-4 (8511–8513):** mesa não reservável (já desligada ou desligada no mesmo
+  payload) ou inativa → `42501 combination_invalid`.
+- **C-5 (8514–8521):** uma mesa só, conjunto repetido, mesa repetida, faixa em
+  texto ou não inteira, chave faltando, objeto em vez de array, id que não é
+  uuid, `bookable` que não é boolean → `22023 hall_plan_invalid`; faixa
+  invertida → `23514` do CHECK.
+- **C-6 (8522–8525):** desligar, desativar, mudar de salão ou apagar a mesa
+  desativa as combinações dela; `bookable` ausente no payload não muda a mesa.
+- **C-7 (8526):** a chamada nomeada de 4 argumentos (front publicado) resolve
+  para a função nova e não mexe nas combinações.
+- **C-8, C-9 (8527–8530, 8541–8542):** anon sem privilégio nas duas tabelas;
+  outsider e gerente de B não veem; operador de A vê; platform_admin sem
+  membership salva.
+- **C-10 (8531–8538):** escrita direta pela API: operador e gerente de B →
+  `layout_write_forbidden` (o guard de papel vem antes da RLS); salão de B,
+  mesa de outro salão, reativar ou mover combinação → `combination_invalid`;
+  `DELETE` sem privilégio; salão com combinação não muda de unidade.
+- **C-CP1, C-CP2 (8539–8540), controles:** sem o guard de membro a mesa não
+  reservável entra; sem o trigger de desativação a combinação segue ativa.
+
+**Resultados observados em 05/11/2026** (imagem `supabase/postgres:17.11.0.004`,
+sem rede, contêiner novo): **0/42 antes da migration**, **42/42** depois e
+42/42 com a migration reaplicada; 81 em 83/83 e 82 em 52/52 com ela aplicada.
+
+Task 2 (migration `20261105130100_ocupacao_multi_mesa.sql`). O 83a projeta
+`settings` (duração 90 em A, B sem a chave) e as colunas de bloqueio por mesa
+de `table_blocks` (nullable só aqui, para o 82 seguir inserindo só o vínculo).
+Horários relativos ao `now()` da transação em BRT (tokens D1, DN0/TN0,
+DN30/TN30), então o resultado não depende do relógio do contêiner.
+
+- **S-1…S-7, S-CP (8550–8559), sincronia:** INSERT com mesa cria a linha que
+  bloqueia com janela [data+hora BRT, +90 min); trocar `table_id` troca a linha;
+  nulo apaga; `seat_waitlist_entry` e passante sentado criam linha sem janela;
+  backfill das reservas, passantes e fila do 81a; cancelar zera `blocks_slot`;
+  mesa de outra unidade na reserva → `42501 table_unit_mismatch`; mudar a hora
+  recalcula a janela. Controle: sem o trigger de sincronia, nenhuma linha nasce.
+- **X-1…X-4 (8560–8564), exclusão:** 19:00 e 19:30 na mesma mesa → `23P01
+  occupant_tables_no_overlap`; 19:00 e 20:30 passam; combinação T13+T14 e T14
+  sozinha sobrepostas via `insert_reservation_with_tables` → `23P01` sem deixar
+  linha da segunda (X-3b). Controle: sem a exclusão, o X-1 grava.
+- **R-1…R-15 (8570–8599, 8611–8620), RPCs da recepção:** operador junta
+  mesas (`table_choice='staff'`, evento com números antes/depois, `status`
+  igual); repetir é `noop` sem evento; mesa ou reserva de B e id inexistente no
+  mesmo `42501 seat_forbidden`; reserva de outro na janela → `conflict` sem
+  gravar, e com `p_allow_overlap` grava com `overlap_ok` só na mesa em
+  conflito; mudar a hora da sobreposta desfaz o `overlap_ok` e a exclusão volta
+  (R-5d); bloqueio da mesa → `seat_blocked`; ajuste de pessoas guarda o
+  original na primeira mudança e devolve `false` quando igual; mesa com
+  passante sentado ou reserva que já chegou → `seat_taken`, passante liberado
+  não segura; reserva cancelada → `seat_action_invalid`; anon sem EXECUTE,
+  outsider `seat_forbidden`; `insert_reservation_with_tables` só service_role,
+  recusa mesa não reservável e coluna fora da lista; platform_admin sem
+  membership age; R-12 contagens por status idênticas depois de trocar, juntar
+  e ajustar reserva, passante e fila; a recepção usa mesa não reservável e de
+  outro salão; `occupant_tables`/`occupancy_events` sem escrita direta, sem
+  leitura para anon e outsider, e só da própria unidade.
+- **Backfill (83b/83c):** sobreposição por duração já existente vira
+  `overlap_ok` na reserva pedida depois; cancelada entra sem bloquear; mesa de
+  outra unidade, reserva de antes de ontem e passante esquecido sentado há
+  dias ficam de fora.
+
+**Resultados observados em 05/11/2026** (mesma imagem, contêiner novo): **42/97
+com só a 20261105130000** (os 55 FAIL são os casos da Task 2), **97/97** com a
+20261105130100 e 97/97 com as duas reaplicadas; 81 em 83/83 e 82 em 52/52 nas
+duas rodadas; backfill `7 reservas, 1 com overlap_ok, 1 com mesa de outra
+unidade ignoradas` e 83c PASS.
+
+O que NÃO prova: PostgREST/JWT real e concorrência de duas sessões (a exclusão
+`gist` e o `FOR NO KEY UPDATE` das mesas na `set_occupant_tables` não têm caso
+de duas conexões). O caminho legado sentar passante pela tela não confere
+`seat_taken`: só a RPC da recepção confere.
+
+Task 3 (migration `20261105130200_links_escolha_mesa.sql`). O 83a projeta
+`whatsapp_channels` mínimo (id, unit_id, display_phone), alvo da FK do link;
+os canais de A e B nascem dentro da transação desfeita do 83.
+
+- **K-1, K-2 (8601–8610, 8621–8622), `seat_choice_links`:** anon e gerente de
+  A não leem nem gravam (sem privilégio); service_role grava e lê pelo hash;
+  salão de B, canal de B e salão inexistente num link de A → o mesmo `42501
+  seat_link_invalid`; service_role não altera link (sem UPDATE); token cru no
+  lugar do hash, validade acima de 24 h e 51 pessoas caem nos CHECKs.
+- **K-3 (8623–8629), `check_public_seat_map_rate_limit`:** anon e
+  authenticated sem EXECUTE; 30 chamadas em 60 s passam e a 31ª não; outro IP,
+  outra unidade e o modo token (`p_unit_id` nulo) têm balde próprio; chamada
+  de mais de 60 s não conta e a de mais de 1 h é apagada; chave com o prefixo
+  da fila de espera → `22023`; service_role sem acesso direto à contagem.
+- **K-CP (8630), controle:** sem o trigger `seat_choice_links_guard`, o salão
+  de B entra num link de A.
+
+**Resultados observados em 05/11/2026** (mesma imagem, contêiner novo):
+**97/117 com as duas primeiras** (os 20 FAIL são os K-*), **117/117** com a
+20261105130200 e 117/117 com as três reaplicadas; 81 em 83/83 e 82 em 52/52.
+
+O que NÃO prova: o advisory lock do limite contra duas sessões simultâneas
+(mesmo desenho da `check_public_waitlist_rate_limit`) e a leitura do link pela
+EF (Task 6).
+
+Correções dos gates `saas-shield-br` da E1 (nas três migrations, ainda não
+aplicadas em lugar nenhum):
+
+- **X-5 (8631–8632):** UPDATE legado que troca hora e mesa juntas, com a mesa
+  antiga ocupada na hora nova, passa (o trigger da janela agora se chama
+  `reservations_occupant_sync_slot` e roda depois da sincronia). Controle: com
+  a janela antes da sincronia, o mesmo UPDATE dá `23P01`.
+- **A-1…A-3 (8633–8635):** anon não grava em `reservations` com ou sem mesa
+  (`42501 permission denied`, migration `20261105130300`; antes dela, o guard
+  da 130100 barrava só `table_id`/`table_choice`).
+- **R-16, R-17 (8636–8637):** o conflito da `set_occupant_tables` não mostra
+  nome de cliente de outra organização; `insert_reservation_with_tables` com
+  cliente de outra organização → `22023 reservation_row_invalid`.
+- **K-4 (8638–8639):** salão com link de escolha não muda de unidade;
+  controle: o mesmo salão sem link muda.
+
+**Resultados observados em 05/11/2026** (contêiner novo): **126/126** com as
+três migrations e 126/126 com as três reaplicadas; 81 em 83/83 e 82 em 52/52;
+backfill `7 reservas, 1 com overlap_ok, 1 com mesa de outra unidade ignoradas`
+e 83c PASS.
+
+Migration `20261105130300_fechar_anon_insert_reservations.sql` (drop da policy
+`anon_insert_reservations` da 023b + `revoke insert` de anon em
+`reservations`). Aplicar depois das três acima e rodar o 83, 81 e 82 de novo.
+O P-13a do 81 (8238) passou a usar `service_role`: o trigger
+`born_with_presence` é o que ele prova, e anon já não chega lá.
+
+- **A-1…A-3 (8633–8635):** ver acima.
+- **A-4…A-6 (8640–8642), controles:** devolvendo INSERT e policy dentro do
+  subbloco, anon sem mesa volta a gravar; só o INSERT de volta, a RLS recusa
+  (cada tranca segura sozinha); com as duas de volta, anon com mesa ainda cai
+  no `reservation_table_forbidden` da 130100.
+- **A-7 (8643):** catálogo sem a policy e `anon` sem `INSERT`.
+
+**Resultados observados em 04/11/2026** (contêiner novo): **125/130 com as três
+primeiras** (os 5 FAIL são A-1, A-2, A-3, A-5, A-7; 81 em 83/83), **130/130**
+com a 130300 e 130/130 com as quatro reaplicadas; 81 em 83/83 e 82 em 52/52
+nas duas rodadas.
+
 ### 83 — Aviso de mídia na rajada
 
 Pré-voo da migration `20261105120000_conversation_media_notice.sql`: as RPCs

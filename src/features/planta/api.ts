@@ -1,11 +1,11 @@
 import { supabase } from "@/lib/supabase";
-import type { Hall, Mesa, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
+import type { Hall, Mesa, TableCombination, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 import type { BlockWindow } from "@/lib/table-situation-core";
 import { HALL_NOT_IN_UNIT_MESSAGE } from "@/lib/layout-errors";
 
 /** Colunas de `Mesa`, com a planta (`plan_*`). */
 export const TABLE_COLUMNS =
-  "id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active, plan_x, plan_y, plan_w, plan_h, plan_rotation, plan_shape";
+  "id, unit_id, hall_id, number, capacity, min_capacity, max_capacity, location, active, plan_x, plan_y, plan_w, plan_h, plan_rotation, plan_shape, bookable";
 
 /** Payload de `save_hall_plan`, como `toSavePayload` monta. */
 export interface SaveHallPlanArgs {
@@ -24,15 +24,19 @@ export interface SaveHallPlanArgs {
     h: number | null;
     rotation: number | null;
     shape: "round" | "square" | "rect" | null;
+    /** Ausente = não muda. */
+    bookable?: boolean;
   }>;
+  /** Nulo ou ausente = não mexe; array = conjunto ativo de combinações do salão. */
+  p_combinations?: Array<{ min: number; max: number; table_ids: string[] }> | null;
 }
 
 /**
  * Salão e mesas ativas dele, só da unidade dada. O erro do PostgREST sobe como está;
  * salão de outra unidade ou inexistente sobe como `Error(HALL_NOT_IN_UNIT_MESSAGE)`.
  */
-export async function fetchHallPlan(unitId: string, hallId: string): Promise<{ hall: Hall; tables: Mesa[] }> {
-  const [hallRes, tablesRes] = await Promise.all([
+export async function fetchHallPlan(unitId: string, hallId: string): Promise<{ hall: Hall; tables: Mesa[]; combinations: TableCombination[] }> {
+  const [hallRes, tablesRes, combinationsRes] = await Promise.all([
     supabase.from("halls").select("*").eq("id", hallId).eq("unit_id", unitId).maybeSingle(),
     supabase
       .from("tables")
@@ -41,11 +45,16 @@ export async function fetchHallPlan(unitId: string, hallId: string): Promise<{ h
       .eq("hall_id", hallId)
       .eq("active", true)
       .order("number", { ascending: true }),
+    supabase.from("table_combinations").select("id, unit_id, hall_id, min_capacity, max_capacity, active, table_combination_members(table_id)").eq("unit_id", unitId).eq("hall_id", hallId).eq("active", true),
   ]);
   if (hallRes.error) throw hallRes.error;
   if (!hallRes.data) throw new Error(HALL_NOT_IN_UNIT_MESSAGE);
   if (tablesRes.error) throw tablesRes.error;
-  return { hall: hallRes.data as Hall, tables: (tablesRes.data ?? []) as Mesa[] };
+  if (combinationsRes.error) throw combinationsRes.error;
+  const combinations = (combinationsRes.data ?? []).map(({ table_combination_members, ...combination }) => ({
+    ...combination, table_ids: table_combination_members.map((member) => member.table_id),
+  })) as TableCombination[];
+  return { hall: hallRes.data as Hall, tables: (tablesRes.data ?? []) as Mesa[], combinations };
 }
 
 /**
@@ -63,6 +72,7 @@ export async function saveHallPlan(
     p_expected_updated_at: expectedUpdatedAt,
     p_hall: payload.p_hall,
     p_tables: payload.p_tables,
+    ...(payload.p_combinations !== undefined ? { p_combinations: payload.p_combinations } : {}),
   });
   if (error) throw error;
   return data as string;

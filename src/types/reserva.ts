@@ -173,6 +173,8 @@ export interface WalkIn {
   seated_at: string | null;
   /** Mesa liberada na planta. O status fica `seated` para as métricas. */
   released_at?: string | null;
+  /** Pessoas antes do primeiro ajuste na recepção. */
+  original_party_size?: number | null;
   created_at: string;
   updated_at: string;
   table?: { number: number } | null;
@@ -196,6 +198,8 @@ export interface WaitlistEntry {
   table_id?: string | null;
   seated_at?: string | null;
   released_at?: string | null;
+  /** Pessoas antes do primeiro ajuste na recepção. */
+  original_party_size?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -304,6 +308,19 @@ export interface Mesa {
   plan_h?: number | null;
   plan_rotation?: number | null;
   plan_shape?: "round" | "square" | "rect" | null;
+  /** false = "Não disponível para reservas" (cliente, IA e automático não usam; a recepção sim). */
+  bookable?: boolean;
+}
+
+/** Mesas juntas cadastradas no editor, com a faixa de pessoas digitada pelo restaurante. */
+export interface TableCombination {
+  id: string;
+  unit_id: string;
+  hall_id: string;
+  min_capacity: number;
+  max_capacity: number;
+  active: boolean;
+  table_ids: string[];
 }
 
 export type PlanWall = "top" | "right" | "bottom" | "left";
@@ -526,11 +543,41 @@ export interface Reserva {
   /** Carimbos de presença da planta: chegada e mesa liberada. Não mudam o status. */
   arrived_at?: string | null;
   released_at?: string | null;
+  /** Como a reserva ganhou a mesa; nulo nas reservas anteriores à escolha de mesa. */
+  table_choice?: TableChoice | null;
+  /** Pessoas antes do primeiro ajuste na recepção (histórico; os totais usam party_size). */
+  original_party_size?: number | null;
   created_at: string;
   updated_at: string;
   customer?: Customer;
   table?: Mesa;
 }
+
+export type TableChoice = "customer" | "system" | "staff";
+
+/** Uma linha por mesa física de cada ocupante (a principal é o `table_id` dele). */
+export interface OccupantTable {
+  table_id: string;
+  reservation_id: string | null;
+  walk_in_id: string | null;
+  waitlist_id: string | null;
+  overlap_ok: boolean;
+}
+
+export type OccupantKind = "reservation" | "walk_in" | "waitlist";
+
+export interface SeatConflict {
+  reservation_id: string;
+  /** HH:MM */
+  time: string;
+  customer_name: string;
+  table_number: number;
+}
+
+/** Retorno de `set_occupant_tables`. */
+export type SeatActionResult =
+  | { status: "ok" | "noop" }
+  | { status: "conflict"; conflicts: SeatConflict[] };
 
 export type ConversationStatus = "ai_active" | "awaiting_human" | "human_active" | "resolved";
 

@@ -94,6 +94,7 @@ const REASON_MESSAGES: Record<string, string> = {
   rate_limited: "Muitas tentativas. Aguarde um instante e tente novamente.",
   invalid_input: "Dados da reserva inválidos.",
   unit_invalid: "Unidade inválida.",
+  seat_unavailable: "Essa mesa acabou de ser reservada. Escolha outra.",
 };
 
 export function useCreateReserva() {
@@ -290,6 +291,11 @@ export function useUpdateReservaStatus(unitId: string) {
         .eq("id", id)
         .select()
         .single();
+      // Reativar reserva cuja mesa já foi reservada no mesmo horário: a exclusão
+      // por janela em occupant_tables recusa (23P01).
+      if (error?.code === "23P01") {
+        throw new Error("Essa mesa já está reservada nesse horário. Troque a mesa da reserva antes de mudar a situação.");
+      }
       if (error) throw error;
 
       if (status === "cancelled") {

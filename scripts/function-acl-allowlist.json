@@ -138,6 +138,11 @@
     "get_whatsapp_v2_service_route(text,uuid)"
   ],
 
+  "_service_only_escolha_de_mesa": [
+    "insert_reservation_with_tables(jsonb,uuid[])",
+    "check_public_seat_map_rate_limit(uuid,text)"
+  ],
+
   "_expected_advisor": {
     "_doc": [
       "Total de WARN que o Security Advisor deve reportar para os lints 0028 e",
@@ -249,11 +254,12 @@
       "pelas versões com CAS de connected_at e acrescenta",
       "release_instagram_message_claim, as três só service_role: projeção",
       "9/48/57 inalterada.",
+      "DELTA ocupação multi-mesa (20261105130100): duas RPCs DEFINER authenticated da recepção (set_occupant_tables e set_occupant_party_size) com membership ou platform_admin resolvidos pelo ocupante, somadas às do Instagram: projeção 9/50/59. insert_reservation_with_tables e check_public_seat_map_rate_limit são só service_role e não contam.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,
-    "0029": 48,
-    "total": 57
+    "0029": 50,
+    "total": 59
   },
 
   "public_anon": [
@@ -681,7 +687,15 @@
       "name": "save_hall_plan",
       "args": "p_hall_id uuid, p_expected_updated_at timestamptz, p_hall jsonb, p_tables jsonb",
       "roles": ["authenticated"],
-      "why": "Owner/gerente/admin salva a planta do salão da própria unidade; INVOKER sobre RLS; ids validados contra o salão. O papel é decidido pelo trigger app_private.guard_plan_write em modo estrito (GUC local), pois authenticated não tem USAGE em app_private; salão alheio ou inexistente e mesa de outro salão dão o mesmo 42501 hall_plan_forbidden. Medido no pré-voo 81 (L-9 a L-13, L-16, L-18) com controles L-CP e L-CP2.",
+      "why": "Assinatura de 4 argumentos concedida pela 20261030120000 e DROPADA pela 20261105130000 (substituída pela de 5 argumentos abaixo); a entrada fica só para classificar o grant histórico na checagem estática das migrations posteriores à 085. Owner/gerente/admin salva a planta do salão da própria unidade; INVOKER sobre RLS; ids validados contra o salão. O papel é decidido pelo trigger app_private.guard_plan_write em modo estrito (GUC local), pois authenticated não tem USAGE em app_private; salão alheio ou inexistente e mesa de outro salão dão o mesmo 42501 hall_plan_forbidden. Medido no pré-voo 81 (L-9 a L-13, L-16, L-18) com controles L-CP e L-CP2.",
+      "security_definer": false,
+      "advisor_lints": []
+    },
+    {
+      "name": "save_hall_plan",
+      "args": "p_hall_id uuid, p_expected_updated_at timestamptz, p_hall jsonb, p_tables jsonb, p_combinations jsonb",
+      "roles": ["authenticated"],
+      "why": "Owner/gerente/admin salva a planta do salão da própria unidade; INVOKER sobre RLS; ids validados contra o salão. O papel é decidido pelo trigger app_private.guard_plan_write em modo estrito (GUC local), pois authenticated não tem USAGE em app_private; salão alheio ou inexistente e mesa de outro salão dão o mesmo 42501 hall_plan_forbidden. Criada na 20261105130000 (drop da assinatura de 4 argumentos + create com p_combinations default null, revoke/grant repetidos; a chamada nomeada de 4 argumentos do front publicado resolve para esta): também grava bookable por mesa e o conjunto ativo de combinações do salão; mesa de outro salão/unidade em combinação dá 42501 hall_plan_forbidden, mesa não reservável ou inativa 42501 combination_invalid (trigger app_private.guard_combination_member), e o papel nas tabelas de combinação é do app_private.guard_layout_write. Medido no pré-voo 81 (L-9 a L-13, L-16, L-18) com controles L-CP e L-CP2, e no 83 (C-1 a C-10, controles C-CP1 e C-CP2).",
       "security_definer": false,
       "advisor_lints": []
     },
@@ -700,6 +714,22 @@
       "why": "Planta do salão: senta uma entrada da fila numa mesa, na própria linha de waitlist (status seated pela transição já existente, table_id). Não muda status além disso nem cria linha; carimbo de presença. INVOKER sobre a RLS (waitlist com FORCE RLS); mesa de outra unidade recusada pelo trigger app_private.guard_same_unit_table. Medido no pré-voo 81 (P-8, P-12, P-14).",
       "security_definer": false,
       "advisor_lints": []
+    },
+    {
+      "name": "set_occupant_tables",
+      "args": "p_kind text, p_id uuid, p_table_ids uuid[], p_allow_overlap boolean",
+      "roles": ["authenticated"],
+      "why": "Salão ao vivo: a recepção troca ou junta mesas de uma reserva, passante ou fila sentada. DEFINER porque occupant_tables e occupancy_events não têm escrita direta (FORCE RLS, só SELECT). Unidade resolvida pelo próprio ocupante (FOR UPDATE), caller membro de qualquer papel ou platform_admin pelo JWT real; alheio, inexistente e mesa de outra unidade ou inativa dão o mesmo 42501 seat_forbidden. Não muda status nem cria linha de reserva/passante/fila. Sobreposição com reserva posterior só com p_allow_overlap (overlap_ok); sem ele devolve o conflito sem gravar. Criada na 20261105130100; medido no pré-voo 83 (R-1 a R-15, R-12 contagens por status).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "set_occupant_party_size",
+      "args": "p_kind text, p_id uuid, p_party_size integer",
+      "roles": ["authenticated"],
+      "why": "Salão ao vivo: a recepção ajusta o número de pessoas (1..50) de reserva, passante ou fila, com a mesma resolução de unidade e autorização da set_occupant_tables (42501 seat_forbidden). DEFINER porque grava occupancy_events, sem escrita direta. Guarda original_party_size na primeira mudança; não muda status nem caução. Criada na 20261105130100; medido no pré-voo 83 (R-7, R-9, R-12).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
     },
     {
       "name": "release_waitlist_entry",

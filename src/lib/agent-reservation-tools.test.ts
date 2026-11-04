@@ -114,13 +114,36 @@ describe("updateReservationScoped", () => {
     expect(res).toEqual({ success: true, message: "Reserva atualizada com sucesso!" });
   });
 
+  it("23P01 no UPDATE (exclusão por janela) vira horário ocupado, sem erro de banco", async () => {
+    const { db } = fakeDb(CURRENT, HALL, { data: null, error: { code: "23P01" } });
+    const { deps } = availability();
+    const res = await updateReservationScoped(db, { reservation_code: "ABCD2345", party_size: 6 }, scope, deps);
+    expect(res).toMatchObject({ success: false, available: false });
+    expect(res.message).toContain("acabou de ser ocupado");
+  });
+
+  it("combinação nova não é gravada por este caminho: re-checa só com mesas sozinhas", async () => {
+    const { db } = fakeDb(CURRENT, HALL, UPDATED);
+    const seen: AvailabilityParams[] = [];
+    const deps = {
+      checkAvailability: async (p: AvailabilityParams): Promise<AvailabilityResult> => {
+        seen.push(p);
+        return p.singleTableOnly
+          ? { available: true, suggestedTableId: "t-8", suggestedTableIds: ["t-8"], message: "ok", durationMinutes: 90 }
+          : { available: true, suggestedTableId: "t-1", suggestedTableIds: ["t-1", "t-2"], combinationId: "c", message: "ok", durationMinutes: 90 };
+      },
+    };
+    await updateReservationScoped(db, { reservation_code: "ABCD2345", party_size: 8 }, scope, deps);
+    expect(seen.map((p) => p.singleTableOnly ?? false)).toEqual([false, true]);
+  });
+
   it("mudar pessoas revalida no salão atual, ignorando a própria reserva e preferindo a mesa atual", async () => {
     const { db, calls } = fakeDb(CURRENT, HALL, UPDATED);
     const { deps, seen } = availability({ suggestedTableId: "t-6a" });
     await updateReservationScoped(db, { reservation_code: "ABCD2345", party_size: 6 }, scope, deps);
     expect(seen).toEqual([{
       unitId: "unit-a", hallId: "hall-1", date: "2026-10-24", time: "20:00", partySize: 6,
-      excludeReservationId: "r1", preferTableId: "t-4a",
+      excludeReservationId: "r1", preferTableIds: ["t-4a"],
     }]);
     expect(calls).toContainEqual(["update", expect.objectContaining({ party_size: 6, table_id: "t-6a" })]);
   });
