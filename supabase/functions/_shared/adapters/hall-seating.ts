@@ -271,13 +271,16 @@ export async function loadReservationTableIds(
 }
 
 /** Reserva com 2+ mesas numa transação (RPC só service_role). A RPC devolve o id;
- *  status e pagamento vêm da linha gravada, como no INSERT direto. */
+ *  status e pagamento vêm da linha gravada, como no INSERT direto. Se só essa leitura
+ *  falhar, a reserva JÁ existe: devolve o id com estado desconhecido (null), para o
+ *  chamador responder "criada, estado não confirmado" em vez de convidar a tentar de
+ *  novo (o que criaria outra reserva ou recusaria a mesa pela própria reserva). */
 export async function insertWithTables(
   supabase: SupabaseClient,
   row: ReservationInsertRow,
   tableIds: string[],
   tableChoice: "customer" | "system",
-): Promise<{ data: { id: string; status: string; payment_status: string | null } | null; error: { code?: string } | null }> {
+): Promise<{ data: { id: string; status: string | null; payment_status: string | null } | null; error: { code?: string } | null }> {
   const { table_id: _principal, ...rest } = row;
   const { data: id, error } = await supabase.rpc("insert_reservation_with_tables", {
     p_row: { ...rest, table_choice: tableChoice },
@@ -290,6 +293,12 @@ export async function insertWithTables(
     .eq("id", id)
     .eq("unit_id", row.unit_id)
     .single();
-  if (readErr || !data) return { data: null, error: readErr ?? { code: "no_row" } };
+  if (readErr || !data) {
+    console.error(JSON.stringify({
+      evt: "reserve_with_tables_readback_failed",
+      code: typeof readErr?.code === "string" ? readErr.code : "no_row",
+    }));
+    return { data: { id, status: null, payment_status: null }, error: null };
+  }
   return { data, error: null };
 }

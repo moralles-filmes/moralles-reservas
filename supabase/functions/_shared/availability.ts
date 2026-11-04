@@ -21,6 +21,7 @@ import {
   insertWithTables,
   loadHallSeating,
   loadPlanHall,
+  readFailed,
   unitHasActiveHall,
 } from "./adapters/hall-seating.ts";
 
@@ -120,12 +121,13 @@ async function loadDurationMinutes(
   supabase: SupabaseClient,
   unitId: string,
 ): Promise<number> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("settings")
     .select("value")
     .eq("unit_id", unitId)
     .eq("key", "reservation_duration_minutes")
     .maybeSingle();
+  if (error) readFailed("settings:reservation_duration_minutes");
 
   const raw = data?.value;
   if (typeof raw === "number" && raw > 0) return Math.floor(raw);
@@ -158,12 +160,13 @@ async function loadBookingWindowDays(
   supabase: SupabaseClient,
   unitId: string,
 ): Promise<number | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("settings")
     .select("value")
     .eq("unit_id", unitId)
     .eq("key", "booking_window_days")
     .maybeSingle();
+  if (error) readFailed("settings:booking_window_days");
   const raw = data?.value;
   if (typeof raw === "number" && raw > 0) return Math.floor(raw);
   if (typeof raw === "string") {
@@ -182,13 +185,14 @@ async function findActiveMacroBlock(
   startISO: string,
   endISO: string,
 ): Promise<string | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("table_blocks")
     .select("title, reason, hall_id")
     .eq("unit_id", unitId)
     .is("table_id", null)
     .lt("blocked_from", endISO)
     .gt("blocked_to", startISO);
+  if (error) readFailed("table_blocks:macro");
 
   for (const row of data ?? []) {
     // Macro global (hall_id null) bloqueia todos os halls.
@@ -225,7 +229,7 @@ async function loadSpecialDateOverrides(
   unitId: string,
   date: string,
 ): Promise<SpecialOverride[]> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("special_dates")
     .select(
       "hall_id, is_closed, open_time, close_time, max_party_size, slot_minutes, min_advance_minutes, discount_percent",
@@ -233,6 +237,7 @@ async function loadSpecialDateOverrides(
     .eq("unit_id", unitId)
     .lte("date", date)
     .gte("end_date", date);
+  if (error) readFailed("special_dates");
 
   const out: SpecialOverride[] = [];
   for (const row of data ?? []) {
@@ -320,7 +325,8 @@ export async function checkAvailability(
     .order("sort_order", { ascending: true });
   if (hallId) hallsQuery = hallsQuery.eq("id", hallId);
 
-  const { data: hallsData } = await hallsQuery;
+  const { data: hallsData, error: hallsErr } = await hallsQuery;
+  if (hallsErr) readFailed("halls");
   const halls: HallRow[] = (hallsData ?? []) as HallRow[];
 
   // Salão pedido que não é da unidade (ou inativo) não cai no legado quando a
@@ -465,11 +471,12 @@ async function hallWindowGate(args: {
     }
     appliedDiscountPercent = specialOverride.discountPercent ?? null;
   } else {
-    const { data: schedules } = await supabase
+    const { data: schedules, error: schedErr } = await supabase
       .from("hall_schedules")
       .select("id, hall_id, open_time, close_time, slot_minutes, min_advance_minutes, discount_percent")
       .eq("hall_id", hall.id)
       .eq("day_of_week", dow);
+    if (schedErr) readFailed("hall_schedules");
 
     const sched: HallScheduleRow[] = (schedules ?? []) as HallScheduleRow[];
     if (sched.length === 0) return fail("closed_day", `${hall.name}: fechado neste dia da semana.`);
@@ -798,12 +805,13 @@ async function checkAvailabilityLegacy(
     appliedDiscountPercent = special.discountPercent ?? null;
   } else {
     const dow = dayOfWeek(date);
-    const { data: hour } = await supabase
+    const { data: hour, error: hourErr } = await supabase
       .from("business_hours")
       .select("open_time, close_time, is_closed")
       .eq("unit_id", unitId)
       .eq("day_of_week", dow)
       .maybeSingle();
+    if (hourErr) readFailed("business_hours");
 
     if (!hour || hour.is_closed) {
       return {
@@ -828,13 +836,14 @@ async function checkAvailabilityLegacy(
     };
   }
 
-  const { data: tablesRaw } = await supabase
+  const { data: tablesRaw, error: tablesErr } = await supabase
     .from("tables")
     .select("id, max_capacity")
     .eq("unit_id", unitId)
     .eq("active", true)
     .gte("max_capacity", partySize)
     .order("max_capacity", { ascending: true });
+  if (tablesErr) readFailed("tables:legacy");
 
   const tables: Array<{ id: string; max_capacity: number }> = tablesRaw ?? [];
   if (tables.length === 0) {
@@ -853,12 +862,13 @@ async function checkAvailabilityLegacy(
   ).toISOString();
   const tableIds = tables.map((t) => t.id);
 
-  const { data: blocksRaw } = await supabase
+  const { data: blocksRaw, error: blocksErr } = await supabase
     .from("table_blocks")
     .select("table_id")
     .in("table_id", tableIds)
     .lt("blocked_from", endISO)
     .gt("blocked_to", startISO);
+  if (blocksErr) readFailed("table_blocks:legacy");
 
   const blockedTableIds = new Set((blocksRaw ?? []).map((b: any) => b.table_id));
   const usableTables = tables.filter((t) => !blockedTableIds.has(t.id));
@@ -872,12 +882,13 @@ async function checkAvailabilityLegacy(
     };
   }
 
-  const { data: existingRaw } = await supabase
+  const { data: existingRaw, error: existingErr } = await supabase
     .from("reservations")
     .select("id, time, party_size, table_id")
     .eq("unit_id", unitId)
     .eq("date", date)
     .in("status", ["pending", "confirmed"]);
+  if (existingErr) readFailed("reservations:legacy");
 
   const conflicting = (existingRaw ?? []).filter((r: any) => {
     if (r.id === params.excludeReservationId) return false;
@@ -980,7 +991,8 @@ export type ReserveSlotResult =
       success: true;
       reservationId: string;
       reservationCode: string;
-      reservationStatus: string;
+      /** null = reserva gravada, estado não lido (ver insertWithTables). */
+      reservationStatus: string | null;
       paymentStatus: string | null;
       /** Pode ser undefined em casos de overbooking (reserva floating). */
       tableId: string | undefined;

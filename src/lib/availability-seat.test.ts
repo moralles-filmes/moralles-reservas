@@ -213,6 +213,62 @@ describe("falha de leitura", () => {
       spy.mockRestore();
     }
   });
+
+  // Toda leitura de gate (configuração, calendário, horário, ocupação) falha fechada:
+  // erro nunca vira "dia aberto" nem "mesa livre" (AGENTS §8).
+  function failing(db: ReturnType<typeof memoryDb>, table: string) {
+    const realFrom = db.from.bind(db);
+    db.from = (t: string) => {
+      const b = realFrom(t) as Record<string, unknown>;
+      if (t === table) {
+        const err = { data: null, error: { code: "57014" } };
+        b.then = (resolve: (v: unknown) => unknown) => resolve(err);
+        b.maybeSingle = () => Promise.resolve(err);
+      }
+      return b as ReturnType<typeof realFrom>;
+    };
+    return db;
+  }
+
+  async function expectReadFailed(run: () => Promise<unknown>) {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(run()).rejects.toThrow("availability_read_failed");
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it.each(["settings", "special_dates", "halls", "hall_schedules"])("erro ao ler %s falha fechado", async (t) => {
+    const db = failing(memoryDb(base()), t);
+    await expectReadFailed(() => check(db, { time: "21:00", partySize: 2 }));
+  });
+
+  it("erro ao ler special_dates falha fechado também no mapa público", async () => {
+    const db = failing(memoryDb(base({ plan: true })), "special_dates");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expectReadFailed(() => loadSeatMap(db as any, { unitId: UNIT, hallId: "hall-1", date: DATE, time: "21:00", partySize: 2 }));
+  });
+
+  describe("unidade sem salões (caminho legado)", () => {
+    const legacy = () => ({
+      ...base(),
+      halls: [],
+      business_hours: [{ unit_id: UNIT, day_of_week: new Date(`${DATE}T12:00:00Z`).getUTCDay(), open_time: "12:00:00", close_time: "23:00:00", is_closed: false }],
+      tables: [{ id: "t-l", unit_id: UNIT, active: true, max_capacity: 4 }],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const checkLegacy = (db: ReturnType<typeof memoryDb>) => checkAvailability(db as any, { unitId: UNIT, date: DATE, time: "21:00", partySize: 2 } as any);
+
+    it("lê normalmente sem erro", async () => {
+      const out = await checkLegacy(memoryDb(legacy()));
+      expect(out.available).toBe(true);
+    });
+
+    it.each(["business_hours", "tables", "table_blocks", "reservations"])("erro ao ler %s falha fechado", async (t) => {
+      await expectReadFailed(() => checkLegacy(failing(memoryDb(legacy()), t)));
+    });
+  });
 });
 
 describe("salão de outra unidade", () => {
@@ -243,6 +299,32 @@ describe("reserveSlot com várias mesas", () => {
     expect(call.args.p_table_ids).toEqual(["t-a", "t-b"]);
     expect(call.args.p_row).not.toHaveProperty("table_id");
     expect(call.args.p_row).toMatchObject({ table_choice: "customer", unit_id: UNIT, party_size: 6 });
+  });
+
+  it("RPC gravou e só a leitura de volta falhou: sucesso com o id e estado desconhecido, sem nova tentativa", async () => {
+    const tables = base();
+    const db = memoryDb(tables, {
+      insert_reservation_with_tables: () => {
+        tables.reservations.push(res("r-new", "t-a", "21:00:00", 6));
+        return { data: "r-new", error: null };
+      },
+    });
+    const realFrom = db.from.bind(db);
+    db.from = (t: string) => {
+      const b = realFrom(t) as Record<string, unknown>;
+      if (t === "reservations") b.single = () => Promise.resolve({ data: null, error: { code: "57014" } });
+      return b as ReturnType<typeof realFrom>;
+    };
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const out = await reserveSlot(db as any, { ...params, choice: { kind: "combination", id: "c-ab" } } as any);
+      expect(out).toMatchObject({ success: true, reservationId: "r-new", reservationStatus: null, paymentStatus: null, tableIds: ["t-a", "t-b"] });
+      expect(db.calls.filter((c) => c.name === "insert_reservation_with_tables")).toHaveLength(1);
+      expect(spy.mock.calls.some(([m]) => String(m).includes("reserve_with_tables_readback_failed"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("seat_unavailable em 23P01: re-checa e, com escolha, não cai em outra mesa", async () => {
