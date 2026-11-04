@@ -2403,10 +2403,28 @@ async function handleWebhookRequest(
       }
       if (!mediaConv) throw new Error("media_conversation_lookup_failed");
 
+      // Gate de serviço, nas duas dimensões (§6.5 da spec). Lido ANTES de gravar:
+      // se a leitura falhar, lança antes do RPC e a reentrega ainda vê a mídia
+      // como nova (o aviso não se perde). Bloqueado significa ZERO chamada à
+      // Z-API, mas a mídia é gravada mesmo assim (sem aviso). Reusa o helper
+      // central; não reimplementa os sete estados.
+      let mediaGateVerdict: ReturnType<typeof decideInboundAutoReply> = "REPLY";
+      let mediaGateLog: Record<string, unknown> = {};
+      if (orgId2) {
+        const waGate = await resolveWhatsAppGateByOrg(supabase, orgId2);
+        mediaGateVerdict = decideInboundAutoReply({
+          systemBlocked: waGate.systemBlocked,
+          enforcedSending: waGate.enforced.sending,
+        });
+        mediaGateLog = { state: waGate.state, reason: waGate.reason };
+      }
+      const mediaGateBlocked = mediaGateVerdict !== "REPLY";
+
       // Grava a mídia pelo RPC atômico, que decide aviso agora, adiado (o turno
-      // de texto responde e avisa depois), suprimido (handoff) ou duplicado.
+      // de texto responde e avisa depois), suprimido (handoff/gate) ou duplicado.
       // Erro lança `media_message_persist_failed` e força reentrega.
-      const mediaNoticeAllowed = !(mediaConv.status === "human_active" || mediaConv.status === "awaiting_human");
+      const mediaNoticeAllowed = !mediaGateBlocked
+        && !(mediaConv.status === "human_active" || mediaConv.status === "awaiting_human");
       const mediaRecord = await recordInboundMedia(supabase, {
         conversationId: mediaConv.id,
         message: {
@@ -2421,42 +2439,30 @@ async function handleWebhookRequest(
         noticeAllowed: mediaNoticeAllowed,
       });
 
+      if (mediaRecord.decision === "duplicate") {
+        await finish("duplicate");
+        return new Response("ok");
+      }
+      if (mediaGateBlocked) {
+        const outcome = mediaGateVerdict === "SILENT_SYSTEM_BLOCKED"
+          ? "org_billing_blocked"
+          : "whatsapp_service_suspended";
+        jsonLog("warn", {
+          requestId, evt: "media_reply_suppressed", unitId, organizationId: orgId2,
+          ...mediaGateLog, verdict: mediaGateVerdict,
+        });
+        await finish(outcome, undefined, { media: true, mediaKind: media.mediaKind, verdict: mediaGateVerdict });
+        return new Response("ok");
+      }
       if (mediaRecord.decision === "suppressed") {
         jsonLog("info", { requestId, evt: "media_during_handoff", mediaKind: media.mediaKind, phone: phoneHash });
         await finish("media_during_handoff", null, { mediaKind: media.mediaKind });
-        return new Response("ok");
-      }
-      if (mediaRecord.decision === "duplicate") {
-        await finish("duplicate");
         return new Response("ok");
       }
       if (mediaRecord.decision === "deferred") {
         jsonLog("info", { requestId, evt: "media_notice_deferred", mediaKind: media.mediaKind, phone: phoneHash });
         await finish("media_notice_deferred", null, { mediaKind: media.mediaKind });
         return new Response("ok");
-      }
-
-      // Gate de serviço, nas duas dimensões (§6.5 da spec). Vem DEPOIS do
-      // append na conversa — a mensagem recebida nunca se perde — e ANTES do
-      // sendOutbound: bloqueado significa ZERO chamada à Z-API. Reusa o helper
-      // central; não reimplementa os sete estados.
-      if (orgId2) {
-        const waGate = await resolveWhatsAppGateByOrg(supabase, orgId2);
-        const verdict = decideInboundAutoReply({
-          systemBlocked: waGate.systemBlocked,
-          enforcedSending: waGate.enforced.sending,
-        });
-        if (verdict !== "REPLY") {
-          const outcome = verdict === "SILENT_SYSTEM_BLOCKED"
-            ? "org_billing_blocked"
-            : "whatsapp_service_suspended";
-          jsonLog("warn", {
-            requestId, evt: "media_reply_suppressed", unitId, organizationId: orgId2,
-            state: waGate.state, reason: waGate.reason, verdict,
-          });
-          await finish(outcome, undefined, { media: true, mediaKind: media.mediaKind, verdict });
-          return new Response("ok");
-        }
       }
 
       externalSideEffectStarted = true;
