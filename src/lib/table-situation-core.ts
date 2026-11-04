@@ -1,3 +1,4 @@
+import type { StatusTone } from "@/components/ui/status-pill";
 import type { Mesa, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 
 export type TableSituation = "blocked" | "occupied" | "late" | "arriving" | "reserved" | "free";
@@ -99,6 +100,35 @@ function pushTo<T>(map: Map<string, T[]>, key: string | null | undefined, value:
   const list = map.get(key);
   if (list) list.push(value);
   else map.set(key, [value]);
+}
+
+/**
+ * Situação ao vivo de uma reserva para as listas (pílula ao lado do status gravado).
+ * Só vale para `pending|confirmed`; as mesmas janelas de `deriveTableStates`.
+ */
+export function reservationLiveSituation(
+  r: Pick<Reserva, "date" | "time" | "status" | "arrived_at" | "released_at">,
+  now: Date,
+  durationMinutes: number,
+): { tone: StatusTone; label: string } | null {
+  if (r.status !== "pending" && r.status !== "confirmed") return null;
+  if (r.released_at) return null;
+
+  if (r.arrived_at) {
+    // Mesma régua do `overtime` da planta: conta da chegada, não do horário reservado.
+    const sinceMs = new Date(r.arrived_at).getTime();
+    const over = Number.isFinite(sinceMs) && now.getTime() > sinceMs + durationMinutes * 60_000;
+    return { tone: "seated", label: over ? "Sentada · passou do tempo" : "Sentada" };
+  }
+
+  const brt = brtNow(now);
+  if (r.date !== brt.date) return null;
+  const diff = toMinutes(r.time) - brt.minutes;
+  if (diff < 0) return { tone: "late", label: `Atrasada ${-diff} min` };
+  if (r.status === "confirmed" && diff <= ARRIVING_WINDOW_MIN) {
+    return { tone: "arriving", label: `Chega em ${diff} min` };
+  }
+  return null;
 }
 
 export function deriveTableStates(input: SituationInput): Map<string, TableState> {
