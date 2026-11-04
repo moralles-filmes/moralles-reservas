@@ -63,7 +63,7 @@ Regras do `claim_conversation_media_notices`:
 - Sob `for update`, troca `media_notice` de `deferred` para `claimed` em todo elemento com chegada ≥ `p_since`.
 - Devolve os `media_kind`. A segunda chamada com o mesmo `p_since` devolve `{}`.
 
-- [ ] **Step 1: escrever o pré-voo 83 (deve falhar antes da migration)** com os casos, cada um com `raise exception` em caso de erro e o marcador `GREEN83` no fim:
+- [x] **Step 1: escrever o pré-voo 83 (deve falhar antes da migration)** com os casos, cada um com `raise exception` em caso de erro e o marcador `GREEN83` no fim:
   - 8301: sem texto, `notice_allowed` → `notice_now`, `variant` falso, elemento com `media_kind` e `media_notice = 'claimed'`;
   - 8302: texto sem resposta de 3 s atrás e lock livre → `deferred`;
   - 8303: texto sem resposta de 40 s atrás com `ai_lock_until` no futuro → `deferred`;
@@ -76,10 +76,10 @@ Regras do `claim_conversation_media_notices`:
   - 8310: o claim devolve `{image,audio}` para duas adiadas e `{}` na segunda chamada;
   - 8311: o claim com `p_since = now() - 120 s` ignora uma adiada de 10 min atrás;
   - 8312: ACL: `has_function_privilege` falso para `anon` e `authenticated` e verdadeiro para `service_role` nas duas funções; `prosecdef` verdadeiro; `proconfig` com `search_path=""`.
-- [ ] **Step 2: rodar o pré-voo sem a migration.** No cluster descartável da receita do README, com `lc_messages = 'C'`, rode `83a` → `83`. Esperado: erro "function … does not exist".
-- [ ] **Step 3: escrever a migration** com as duas funções, os `revoke`/`grant`, um `comment on function` em cada e o bloco `-- ROLLBACK` comentado (`drop function` das duas).
-- [ ] **Step 4: rodar o pré-voo com a migration.** Esperado: `GREEN83`, duas vezes seguidas, com as migrations em CRLF e em LF. Rode também `npx vitest run scripts/function-acl-allowlist.test.ts` (gate estático do CI). Esperado: PASS.
-- [ ] **Step 5: commit** `feat(db): RPCs atômicos do aviso de mídia na rajada`.
+- [x] **Step 2: rodar o pré-voo sem a migration.** No cluster descartável da receita do README, com `lc_messages = 'C'`, rode `83a` → `83`. Esperado: erro "function … does not exist".
+- [x] **Step 3: escrever a migration** com as duas funções, os `revoke`/`grant`, um `comment on function` em cada e o bloco `-- ROLLBACK` comentado (`drop function` das duas).
+- [x] **Step 4: rodar o pré-voo com a migration.** Esperado: `GREEN83`, duas vezes seguidas, com as migrations em CRLF e em LF. Rode também `npx vitest run scripts/function-acl-allowlist.test.ts` (gate estático do CI). Esperado: PASS.
+- [x] **Step 5: commit** `feat(db): RPCs atômicos do aviso de mídia na rajada`.
 
 ### Task 2: texto variante e adapter
 
@@ -98,15 +98,15 @@ Regras do `claim_conversation_media_notices`:
   - `recordInboundMedia(supabase: SupabaseClient, input: { conversationId: string; message: Record<string, unknown>; noticeAllowed: boolean }): Promise<{ decision: MediaDecision; variant: boolean }>`, que lança `media_message_persist_failed` em erro do RPC ou resposta fora do contrato;
   - `claimDeferredMediaNotices(supabase: SupabaseClient, conversationId: string, sinceIso: string): Promise<string[]>`, que lança em erro.
 
-- [ ] **Step 1: testes que falham:**
+- [x] **Step 1: testes que falham:**
   - `mediaNoticeText(["image"])` dá o texto exato com `sua foto`; `["audio","audio"]` dá `seu áudio`; `["image","audio"]` e `["media"]` dão `seu arquivo`;
   - `MEDIA_NOTICE_TEXTS` tem 8 entradas distintas e inclui as três acima;
   - `recordInboundMedia` chama `rpc("record_conversation_media", { p_conversation_id, p_message, p_notice_allowed, p_burst_seconds: 60, p_debounce_grace_seconds: 11 })` e devolve a decisão; erro do RPC e `decision` desconhecida lançam `media_message_persist_failed`;
   - `claimDeferredMediaNotices` passa `p_since` e devolve `[]` para `data: null`.
-- [ ] **Step 2:** `npx vitest run src/lib/media-notice.test.ts`. Esperado: FAIL (módulo inexistente).
-- [ ] **Step 3: implementar.** `MEDIA_DEBOUNCE_GRACE_SECONDS` é derivado de `INBOUND_DEBOUNCE_WINDOW_MS` (`_shared/whatsapp-inbound-queue-core.ts`), nunca redigitado.
-- [ ] **Step 4:** o mesmo comando, depois `node scripts/check-portabilidade.mjs`. Esperado: PASS e 489.
-- [ ] **Step 5: commit** `feat(agent): texto variante do aviso de mídia e adapter dos RPCs`.
+- [x] **Step 2:** `npx vitest run src/lib/media-notice.test.ts`. Esperado: FAIL (módulo inexistente).
+- [x] **Step 3: implementar.** `MEDIA_DEBOUNCE_GRACE_SECONDS` é derivado de `INBOUND_DEBOUNCE_WINDOW_MS` (`_shared/whatsapp-inbound-queue-core.ts`), nunca redigitado.
+- [x] **Step 4:** o mesmo comando, depois `node scripts/check-portabilidade.mjs`. Esperado: PASS e 489.
+- [x] **Step 5: commit** `feat(agent): texto variante do aviso de mídia e adapter dos RPCs`.
 
 ### Task 3: núcleo do turno (`turn.ts`)
 
@@ -128,7 +128,7 @@ O passo novo do caminho `success` vem depois do `appendToConversation` final e a
 3. com `kinds` não vazio: `sendAutomatic(mediaNoticeText(kinds))` e, se der certo, `appendToConversation(..., "assistant", texto, { author: "automation" })`;
 4. erro no claim ou no envio: log `media_notice_failed` e o turno segue `success`. Nunca lança.
 
-- [ ] **Step 1: testes que falham** em `agent-turn-media-burst.test.ts`, pelo webhook real no harness:
+- [x] **Step 1: testes que falham** em `agent-turn-media-burst.test.ts`, pelo webhook real no harness:
   - `mídia mais nova não supera o texto`: o histórico ganha `{role:'user', content:'[imagem]', media_kind:'image', media_notice:'deferred', received_at: depois do texto}` durante o sleep do debounce. Esperado: desfecho `success`, o LLM recebe o texto sem `[imagem]`, e saem duas mensagens nesta ordem: a resposta e `mediaNoticeText(['image'])`;
   - `texto mais novo continua superando`: um texto mais novo durante o sleep dá `debounced_superseded`;
   - `cliente digitou [imagem]`: um elemento `user` `[imagem]` **sem** `media_kind` supera o turno como texto;
@@ -138,11 +138,11 @@ O passo novo do caminho `success` vem depois do `appendToConversation` final e a
   - `empty_response`, `send_error` e `ai_reply_suppressed_by_human` com uma adiada: nenhum `rpc:claim_conversation_media_notices` no trace e nenhum aviso;
   - `p_since` do claim ≥ `now − 120 s`, mesmo com um `pendingUserMsgs` antigo semeado;
   - claim que falha: desfecho `success`, log `media_notice_failed`, nenhum aviso.
-- [ ] **Step 2:** `npx vitest run src/lib/agent-turn-media-burst.test.ts --testTimeout=30000`. Esperado: FAIL.
-- [ ] **Step 3: implementar no `turn.ts`.** Acrescente `MEDIA_NOTICE_TEXTS` ao `HARDCODED_AGENT_NOISE` pela lista, nunca redigitando os textos.
-- [ ] **Step 4:** o mesmo comando, depois `npx vitest run src/lib/agent-core-channel.test.ts src/lib/instagram-inbound-request.test.ts --testTimeout=30000`. Esperado: PASS. A paridade falha só pela entrada nova do claim nos cenários `success`.
-- [ ] **Step 5: commit do código** `fix(agent): mídia não supera o texto da rajada; aviso depois da resposta`.
-- [ ] **Step 6: regravar a paridade em commit próprio.** Rode `npx vitest run src/lib/agent-turn-parity.test.ts -u --testTimeout=30000` e confira com `git diff` do `.snap` que só entrou `rpc:claim_conversation_media_notices` nos cenários `success`. Commit `test(agent): paridade com o claim do aviso de mídia`, com essa justificativa no corpo.
+- [x] **Step 2:** `npx vitest run src/lib/agent-turn-media-burst.test.ts --testTimeout=30000`. Esperado: FAIL.
+- [x] **Step 3: implementar no `turn.ts`.** Acrescente `MEDIA_NOTICE_TEXTS` ao `HARDCODED_AGENT_NOISE` pela lista, nunca redigitando os textos.
+- [x] **Step 4:** o mesmo comando, depois `npx vitest run src/lib/agent-core-channel.test.ts src/lib/instagram-inbound-request.test.ts --testTimeout=30000`. Esperado: PASS. A paridade falha só pela entrada nova do claim nos cenários `success`.
+- [x] **Step 5: commit do código** `fix(agent): mídia não supera o texto da rajada; aviso depois da resposta`.
+- [x] **Step 6: regravar a paridade em commit próprio.** Rode `npx vitest run src/lib/agent-turn-parity.test.ts -u --testTimeout=30000` e confira com `git diff` do `.snap` que só entrou `rpc:claim_conversation_media_notices` nos cenários `success`. Commit `test(agent): paridade com o claim do aviso de mídia`, com essa justificativa no corpo.
 
 ### Task 4: caminho de mídia do WhatsApp
 
@@ -163,17 +163,17 @@ Ordem nova:
    - `duplicate` → `duplicate`;
    - `notice_now` → gates de serviço como hoje → envio de `variant ? mediaNoticeText([mediaKind]) : MEDIA_REPLY_TEXT` → append do assistant como hoje.
 
-- [ ] **Step 1: testes que falham:**
+- [x] **Step 1: testes que falham:**
   - mídia sem texto: `MEDIA_REPLY_TEXT`, `media_response`, elemento com `media_kind: 'audio'`;
   - mídia com texto sem resposta recente (fake devolve `deferred`): nada enviado, `media_notice_deferred`;
   - `notice_now` com `variant`: `mediaNoticeText(['audio'])`;
   - handoff: `media_during_handoff`, sem envio;
   - gates bloqueados: desfechos de hoje, sem envio;
   - erro do RPC: reentrega (status e desfecho iguais aos de hoje para `required` que falha).
-- [ ] **Step 2:** `npx vitest run src/lib/whatsapp-media-burst-request.test.ts --testTimeout=30000`. Esperado: FAIL.
-- [ ] **Step 3: implementar.**
-- [ ] **Step 4:** o mesmo comando, mais `npx vitest run src/lib/agent-turn-parity.test.ts src/lib/whatsapp-ad-touchpoint-coupling.test.ts src/lib/ai-budget-wiring-guard.test.ts --testTimeout=30000` e `npx -y deno@2.9.6 check supabase/functions/webhook-whatsapp/index.ts`. Esperado: PASS e exit 0.
-- [ ] **Step 5: commit** `fix(whatsapp): mídia na rajada respeita o turno do texto`.
+- [x] **Step 2:** `npx vitest run src/lib/whatsapp-media-burst-request.test.ts --testTimeout=30000`. Esperado: FAIL.
+- [x] **Step 3: implementar.**
+- [x] **Step 4:** o mesmo comando, mais `npx vitest run src/lib/agent-turn-parity.test.ts src/lib/whatsapp-ad-touchpoint-coupling.test.ts src/lib/ai-budget-wiring-guard.test.ts --testTimeout=30000` e `npx -y deno@2.9.6 check supabase/functions/webhook-whatsapp/index.ts`. Esperado: PASS e exit 0.
+- [x] **Step 5: commit** `fix(whatsapp): mídia na rajada respeita o turno do texto`.
 
 ### Task 5: caminho de mídia do Instagram
 
@@ -188,17 +188,17 @@ Ordem nova:
 
 O ramo de billing bloqueado não muda (continua no `appendToConversation`). O ramo de mídia segue a mesma ordem da Task 4, sem gates de serviço do WhatsApp; os gates do IG já rodaram antes.
 
-- [ ] **Step 1: testes que falham:**
+- [x] **Step 1: testes que falham:**
   - o caso atual "mídia recebe MEDIA_REPLY_TEXT" continua `media_response`, agora com `media_kind: 'media'` no histórico;
   - `deferred` → `media_notice_deferred`, sem envio;
   - `notice_now` com `variant` → `mediaNoticeText(['media'])`;
   - **mesma entrega:** texto e mídia no mesmo corpo, em sequência. O texto sai `success`, e a mídia sai `media_response` com `seu arquivo` depois da resposta;
   - o caso atual de handoff continua `media_during_handoff`;
   - o cartão `template` continua `ignored_auto_card`.
-- [ ] **Step 2:** `npx vitest run src/lib/instagram-inbound-request.test.ts src/lib/instagram-inbound-core.test.ts --testTimeout=30000`. Esperado: FAIL nos novos.
-- [ ] **Step 3: implementar.**
-- [ ] **Step 4:** o mesmo comando, mais `npx -y deno@2.9.6 check supabase/functions/process-instagram-inbound/index.ts`. Esperado: PASS e exit 0.
-- [ ] **Step 5: commit** `fix(instagram): mídia na rajada respeita o turno do texto`.
+- [x] **Step 2:** `npx vitest run src/lib/instagram-inbound-request.test.ts src/lib/instagram-inbound-core.test.ts --testTimeout=30000`. Esperado: FAIL nos novos.
+- [x] **Step 3: implementar.**
+- [x] **Step 4:** o mesmo comando, mais `npx -y deno@2.9.6 check supabase/functions/process-instagram-inbound/index.ts`. Esperado: PASS e exit 0.
+- [x] **Step 5: commit** `fix(instagram): mídia na rajada respeita o turno do texto`.
 
 ### Task 6: regras, gates e release
 
@@ -209,8 +209,8 @@ O ramo de billing bloqueado não muda (continua no `appendToConversation`). O ra
   - `.claude/rules/instagram.md`: o mesmo na linha de mídia;
   - este plano: Evidências.
 
-- [ ] **Step 1:** atualize as três regras (formato do AGENTS §3, uma frase com o porquê e o ponteiro) e faça o commit `docs(rules): aviso de mídia na rajada`.
-- [ ] **Step 2: gates locais.** Rode `npm run typecheck`, `npm run lint`, `npm run build`, `npm run test`, `node scripts/check-padrao.mjs`, `node scripts/check-portabilidade.mjs` (489), `node scripts/ef-import-graph.mjs` para cada arquivo de `_shared` tocado, o `deno check` das EFs da matriz e o pré-voo 83. Falhas aceitas: só as preexistentes, que falham igual num checkout limpo de `origin/main`. Registre as contagens nas Evidências.
+- [x] **Step 1:** atualize as três regras (formato do AGENTS §3, uma frase com o porquê e o ponteiro) e faça o commit `docs(rules): aviso de mídia na rajada`.
+- [x] **Step 2: gates locais.** Rode `npm run typecheck`, `npm run lint`, `npm run build`, `npm run test`, `node scripts/check-padrao.mjs`, `node scripts/check-portabilidade.mjs` (489), `node scripts/ef-import-graph.mjs` para cada arquivo de `_shared` tocado, o `deno check` das EFs da matriz e o pré-voo 83. Falhas aceitas: só as preexistentes, que falham igual num checkout limpo de `origin/main`. Registre as contagens nas Evidências.
 - [ ] **Step 3: review e gates de segurança.** Review da branch inteira (`superpowers:requesting-code-review`). Depois, `saas-shield-br:migration-validator` na migration, `integration-reliability-auditor` (webhooks e fila) e `tenant-isolation-auditor` (RPC `service_role` por `conversation_id` resolvido do recurso).
 - [ ] **Step 4: parar e pedir autorização para cada passo do release, na ordem:**
   1. push e PR, conferindo `acl-estatico`;
@@ -228,4 +228,15 @@ O ramo de billing bloqueado não muda (continua no `appendToConversation`). O ra
 
 ## Evidências
 
-_(preencher na execução)_
+**Gates locais (Task 6, Step 2), 05/11/2026:**
+
+- `npm run typecheck`: exit 0. `npm run build`: exit 0. `npm run lint`: 0 erros, 20 avisos (nenhum arquivo desta branch).
+- `npm run test`: 308 arquivos, 5847 testes. As falhas vistas em rodadas completas têm duas causas, nenhuma de lógica:
+  - `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` ausentes no worktree (sem `.env.local`): `OfficialConnectionCard`, `SalaoDetalhe`, `SalaoPlanta` falham ao importar; passam com as duas variáveis definidas. Preexistente.
+  - Timeout de 5 s em testes pesados do harness quando a máquina está carregada (rodada completa ou 4 comandos em paralelo): `agent-turn-parity`, `agent-turn-media-burst`, `edge-request-harness`, `whatsapp-automation-receipts-request`, `whatsapp-reservation-automation-routing`, `whatsapp-survey-tenant-routing`. Cada arquivo isolado passa (com 30 s e com o padrão de 5 s); o `origin/main` isolado passa igual.
+- Falha real achada e corrigida: `whatsapp-conversation-parity-guard` esperava `timestamp: media.timestamp` no webhook; a Task 4 passou a usar `conversationTimestamp(media.timestamp)`. Guarda atualizada (commit `test(whatsapp): guarda de paridade acompanha conversationTimestamp na mídia`). Os 6 arquivos que falharam na 1ª rodada passam isolados (89 testes) e os 5 da 2ª (210 testes).
+- `node scripts/check-padrao.mjs`: ok (manifest v3.2). `node scripts/check-portabilidade.mjs`: 489 (= linha de base).
+- `ef-import-graph` (`media-reply-text.ts`, `adapters/conversation-media-notice.ts`, `agent/turn.ts`: `process-instagram-inbound`, `webhook-whatsapp`; `instagram-inbound-core.ts`: `process-instagram-inbound`). **Matriz de redeploy = `webhook-whatsapp` + `process-instagram-inbound`.**
+- `npx -y deno@2.9.6 check` em `webhook-whatsapp/index.ts` e `process-instagram-inbound/index.ts`: sem erros.
+- Pré-voo 83 (`supabase/postgres:17.11.0.004`, `--network none`): RED por "function public.record_conversation_media(...) does not exist" antes da migration; `GREEN83` após aplicar, após reaplicar e após aplicar em CRLF.
+- **Correções pós-review da branch inteira (05/11/2026):** cast tolerante `app_private.safe_timestamptz` na migration (pré-voo 83 com 8313 e 8312i–j: RED por erro de cast com a migration anterior; `GREEN83` aplicada, reaplicada e em CRLF); gate de serviço lido antes de gravar a mídia no `webhook-whatsapp` (3 testes novos); teste texto → mídia → texto; regra `agente-ia.md` precisada. Verificação: 10 arquivos / 331 testes (mídia, instagram, paridade, ACL, guarda estática) verdes sem regravar paridade; typecheck exit 0; lint 0 erros; portabilidade 489; `deno check` ok.

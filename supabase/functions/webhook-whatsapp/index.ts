@@ -10,7 +10,8 @@ import { createAgentTurn } from "../_shared/agent/turn.ts";
 import { buildAgentUnit } from "../_shared/agent/unit-context.ts";
 import { isOrgBillingBlocked } from "../_shared/org-billing-gate-core.ts";
 // Mesmo texto do Direct (process-instagram-inbound): uma constante, dois canais.
-import { MEDIA_REPLY_TEXT } from "../_shared/media-reply-text.ts";
+import { MEDIA_REPLY_TEXT, mediaNoticeText } from "../_shared/media-reply-text.ts";
+import { recordInboundMedia } from "../_shared/adapters/conversation-media-notice.ts";
 import { checkFlagEnabled } from "../_shared/platform-flags.ts";
 // ─── Ingestão assíncrona (Fase C) ────────────────────────────────────────────
 // Adapter de I/O; NENHUMA decisão desta fase é redigitada aqui. `vitest` não
@@ -2397,68 +2398,83 @@ async function handleWebhookRequest(
       const mediaReceivedAt = new Date().toISOString();
       // deno-lint-ignore no-explicit-any
       let mediaConv: any = null;
-      // deno-lint-ignore no-explicit-any
-      let mediaMessages: any[] = [];
       if (mediaCustomer && unitId) {
         mediaConv = await getOrCreateConversation(mediaCustomer.id, unitId, media.contactName, inboundChatLid);
-        if (mediaConv) {
-          const mediaAppend = await appendToConversation(
-            mediaConv.id,
-            mediaConv.messages || [],
-            "user",
-            userPlaceholder,
-            {
-              author: "customer",
-              timestamp: media.timestamp,
-              receivedAt: mediaReceivedAt,
-              eventId: `wa-in:${provider}:${media.providerMessageId}`,
-              required: true,
-            },
-          );
-          mediaMessages = mediaAppend.messages;
-        }
       }
       if (!mediaConv) throw new Error("media_conversation_lookup_failed");
 
-      // Conversa em handoff humano? Não responde — atendente assume.
-      if (mediaConv && (mediaConv.status === "human_active" || mediaConv.status === "awaiting_human")) {
+      // Gate de serviço, nas duas dimensões (§6.5 da spec). Lido ANTES de gravar:
+      // se a leitura falhar, lança antes do RPC e a reentrega ainda vê a mídia
+      // como nova (o aviso não se perde). Bloqueado significa ZERO chamada à
+      // Z-API, mas a mídia é gravada mesmo assim (sem aviso). Reusa o helper
+      // central; não reimplementa os sete estados.
+      let mediaGateVerdict: ReturnType<typeof decideInboundAutoReply> = "REPLY";
+      let mediaGateLog: Record<string, unknown> = {};
+      if (orgId2) {
+        const waGate = await resolveWhatsAppGateByOrg(supabase, orgId2);
+        mediaGateVerdict = decideInboundAutoReply({
+          systemBlocked: waGate.systemBlocked,
+          enforcedSending: waGate.enforced.sending,
+        });
+        mediaGateLog = { state: waGate.state, reason: waGate.reason };
+      }
+      const mediaGateBlocked = mediaGateVerdict !== "REPLY";
+
+      // Grava a mídia pelo RPC atômico, que decide aviso agora, adiado (o turno
+      // de texto responde e avisa depois), suprimido (handoff/gate) ou duplicado.
+      // Erro lança `media_message_persist_failed` e força reentrega.
+      const mediaNoticeAllowed = !mediaGateBlocked
+        && !(mediaConv.status === "human_active" || mediaConv.status === "awaiting_human");
+      const mediaRecord = await recordInboundMedia(supabase, {
+        conversationId: mediaConv.id,
+        message: {
+          event_id: `wa-in:${provider}:${media.providerMessageId}`,
+          role: "user",
+          content: userPlaceholder,
+          timestamp: conversationTimestamp(media.timestamp),
+          author: "customer",
+          received_at: mediaReceivedAt,
+          media_kind: media.mediaKind,
+        },
+        noticeAllowed: mediaNoticeAllowed,
+      });
+
+      if (mediaRecord.decision === "duplicate") {
+        await finish("duplicate");
+        return new Response("ok");
+      }
+      if (mediaGateBlocked) {
+        const outcome = mediaGateVerdict === "SILENT_SYSTEM_BLOCKED"
+          ? "org_billing_blocked"
+          : "whatsapp_service_suspended";
+        jsonLog("warn", {
+          requestId, evt: "media_reply_suppressed", unitId, organizationId: orgId2,
+          ...mediaGateLog, verdict: mediaGateVerdict,
+        });
+        await finish(outcome, undefined, { media: true, mediaKind: media.mediaKind, verdict: mediaGateVerdict });
+        return new Response("ok");
+      }
+      if (mediaRecord.decision === "suppressed") {
         jsonLog("info", { requestId, evt: "media_during_handoff", mediaKind: media.mediaKind, phone: phoneHash });
         await finish("media_during_handoff", null, { mediaKind: media.mediaKind });
         return new Response("ok");
       }
-
-      // Gate de serviço, nas duas dimensões (§6.5 da spec). Vem DEPOIS do
-      // append na conversa — a mensagem recebida nunca se perde — e ANTES do
-      // sendOutbound: bloqueado significa ZERO chamada à Z-API. Reusa o helper
-      // central; não reimplementa os sete estados.
-      if (orgId2) {
-        const waGate = await resolveWhatsAppGateByOrg(supabase, orgId2);
-        const verdict = decideInboundAutoReply({
-          systemBlocked: waGate.systemBlocked,
-          enforcedSending: waGate.enforced.sending,
-        });
-        if (verdict !== "REPLY") {
-          const outcome = verdict === "SILENT_SYSTEM_BLOCKED"
-            ? "org_billing_blocked"
-            : "whatsapp_service_suspended";
-          jsonLog("warn", {
-            requestId, evt: "media_reply_suppressed", unitId, organizationId: orgId2,
-            state: waGate.state, reason: waGate.reason, verdict,
-          });
-          await finish(outcome, undefined, { media: true, mediaKind: media.mediaKind, verdict });
-          return new Response("ok");
-        }
+      if (mediaRecord.decision === "deferred") {
+        jsonLog("info", { requestId, evt: "media_notice_deferred", mediaKind: media.mediaKind, phone: phoneHash });
+        await finish("media_notice_deferred", null, { mediaKind: media.mediaKind });
+        return new Response("ok");
       }
 
       externalSideEffectStarted = true;
-      const sendRes = await sendOutbound(provider, credentials, { toPhone: mediaPhone, text: MEDIA_REPLY_TEXT });
+      const mediaNotice = mediaRecord.variant ? mediaNoticeText([media.mediaKind]) : MEDIA_REPLY_TEXT;
+      const sendRes = await sendOutbound(provider, credentials, { toPhone: mediaPhone, text: mediaNotice });
       let historyPersisted = true;
       if (sendRes.ok && mediaConv) {
         const replyAppend = await appendToConversation(
           mediaConv.id,
-          mediaMessages,
+          [], // o RPC não devolve o histórico; ninguém encadeia depois
           "assistant",
-          MEDIA_REPLY_TEXT,
+          mediaNotice,
           { author: "automation" },
         );
         historyPersisted = replyAppend.persisted;

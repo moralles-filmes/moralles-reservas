@@ -86,7 +86,8 @@ import {
   SWEEP_SELECT_LIMIT,
 } from "../_shared/whatsapp-inbound-queue-core.ts";
 import { isOrgBillingBlocked } from "../_shared/org-billing-gate-core.ts";
-import { MEDIA_REPLY_TEXT } from "../_shared/media-reply-text.ts";
+import { MEDIA_REPLY_TEXT, mediaNoticeText } from "../_shared/media-reply-text.ts";
+import { recordInboundMedia } from "../_shared/adapters/conversation-media-notice.ts";
 import { validateBrPhone } from "../_shared/public-br-phone.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
@@ -706,17 +707,45 @@ function createEventWorker(a: {
       }
 
       if (item.kind === "media") {
-        const appended = await appendToConversation(conv.id, conv.messages, "user", inboundText, {
-          author: "customer", timestamp: item.timestamp, receivedAt, eventId: inboundEventId, required: true,
-        });
-        if (conv.status === "human_active" || conv.status === "awaiting_human") {
+        // RPC atômica: grava a mídia e decide aviso agora, adiado (o turno de
+        // texto responde e avisa depois), suprimido (handoff) ou duplicado.
+        const noticeAllowed = !(conv.status === "human_active" || conv.status === "awaiting_human");
+        let record: Awaited<ReturnType<typeof recordInboundMedia>>;
+        try {
+          record = await recordInboundMedia(supabase, {
+            conversationId: conv.id,
+            message: buildInstagramConversationMessage({
+              role: "user",
+              content: inboundText,
+              eventId: inboundEventId,
+              author: "customer",
+              timestamp: item.timestamp,
+              receivedAt,
+              mediaKind: "media",
+            }),
+            noticeAllowed,
+          });
+        } catch {
+          throw new RetryableItemError("conversation_message_persist_failed");
+        }
+        if (record.decision === "suppressed") {
           await finish("media_during_handoff");
           return "done";
         }
+        if (record.decision === "duplicate") {
+          await finish("duplicate");
+          return "done";
+        }
+        if (record.decision === "deferred") {
+          jsonLog("info", { evt: "instagram_media_notice_deferred", requestId, unitId });
+          await finish("media_notice_deferred");
+          return "done";
+        }
         externalSideEffect = true;
-        const sendRes = await send(MEDIA_REPLY_TEXT);
+        const noticeText = record.variant ? mediaNoticeText(["media"]) : MEDIA_REPLY_TEXT;
+        const sendRes = await send(noticeText);
         if (sendRes.ok) {
-          await appendToConversation(conv.id, appended.messages, "assistant", MEDIA_REPLY_TEXT, { author: "automation" });
+          await appendToConversation(conv.id, [], "assistant", noticeText, { author: "automation" });
           await finish("media_response");
         } else {
           await finish("send_error", sendRes.error ?? null);

@@ -34,6 +34,8 @@ const OUTCOME_LABELS: Record<string, string> = {
   org_billing_blocked: "Bloqueada por cobrança",
   media_during_handoff: "Mídia durante atendimento humano",
   media_response: "Mídia respondida com aviso",
+  media_notice_deferred: "Mídia: aviso depois da resposta",
+  duplicate: "Mensagem duplicada",
   send_error: "Erro no envio",
   send_outcome_unknown: "Envio com resultado desconhecido",
   conversation_tenant_mismatch: "Conversa de outra unidade",

@@ -2307,6 +2307,13 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       },
     },
     {
+      "operation": "rpc:claim_conversation_media_notices",
+      "value": {
+        "p_conversation_id": "88888888-0000-4000-8000-000000000001",
+        "p_since": "2026-10-05T15:00:00.000Z",
+      },
+    },
+    {
       "operation": "rpc:complete_processed_whatsapp_message",
       "value": {
         "p_claim_id": "synthetic-claim",
@@ -3833,6 +3840,13 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "assistant",
           "timestamp": "2026-10-05T15:00:06.000Z",
         },
+      },
+    },
+    {
+      "operation": "rpc:claim_conversation_media_notices",
+      "value": {
+        "p_conversation_id": "88888888-0000-4000-8000-000000000001",
+        "p_since": "2026-10-05T15:00:00.000Z",
       },
     },
     {
@@ -5976,6 +5990,13 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       },
     },
     {
+      "operation": "rpc:claim_conversation_media_notices",
+      "value": {
+        "p_conversation_id": "88888888-0000-4000-8000-000000000001",
+        "p_since": "2026-10-05T15:00:00.000Z",
+      },
+    },
+    {
       "operation": "rpc:complete_processed_whatsapp_message",
       "value": {
         "p_claim_id": "synthetic-claim",
@@ -7204,6 +7225,13 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "assistant",
           "timestamp": "2026-10-05T15:00:06.000Z",
         },
+      },
+    },
+    {
+      "operation": "rpc:claim_conversation_media_notices",
+      "value": {
+        "p_conversation_id": "88888888-0000-4000-8000-000000000001",
+        "p_since": "2026-10-05T15:00:00.000Z",
       },
     },
     {
@@ -8974,6 +9002,13 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "assistant",
           "timestamp": "2026-10-05T15:00:06.000Z",
         },
+      },
+    },
+    {
+      "operation": "rpc:claim_conversation_media_notices",
+      "value": {
+        "p_conversation_id": "88888888-0000-4000-8000-000000000001",
+        "p_since": "2026-10-05T15:00:00.000Z",
       },
     },
     {

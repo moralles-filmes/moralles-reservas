@@ -54,7 +54,7 @@ describe("webhook-whatsapp captura o referral nos DOIS caminhos, no ponto certo"
     expect(claim).toBeGreaterThan(0);
     expect(midia.idx).toBeGreaterThan(claim);
     expect(midia.idx).toBeLessThan(WEBHOOK.indexOf('"media_unit_lookup_failed"'));
-    expect(midia.idx).toBeLessThan(WEBHOOK.indexOf("toPhone: mediaPhone, text: MEDIA_REPLY_TEXT"));
+    expect(midia.idx).toBeLessThan(WEBHOOK.indexOf("toPhone: mediaPhone, text: mediaNotice"));
     expect(midia.texto).toContain("inboundProviderMessageId: media.providerMessageId");
   });
 
