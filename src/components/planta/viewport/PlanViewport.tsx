@@ -1,7 +1,7 @@
-import { useEffect, useId, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { PlanViewportControls } from "./PlanViewportControls";
-import { usePlanViewport } from "./usePlanViewport";
+import { usePlanViewport, type PlanViewportApi } from "./usePlanViewport";
 
 interface PlanViewportProps {
   children: ReactNode;
@@ -12,6 +12,8 @@ interface PlanViewportProps {
   resetKey?: string | number;
   /** Classes extras do div que recebe o transform (ex.: pointer-events-none na cena 3D). */
   contentClassName?: string;
+  /** Opcional: recebe a api do viewport (centerOn etc.) para quem precisa comandá-lo. */
+  apiRef?: MutableRefObject<PlanViewportApi | null>;
   "data-testid"?: string;
 }
 
@@ -22,11 +24,16 @@ export function PlanViewport({
   label = "Planta do salão",
   resetKey,
   contentClassName,
+  apiRef,
   "data-testid": testId,
 }: PlanViewportProps) {
   const vp = usePlanViewport();
   const hintId = useId();
   const { reset } = vp;
+
+  useEffect(() => {
+    if (apiRef) apiRef.current = vp;
+  });
 
   useEffect(() => {
     reset();

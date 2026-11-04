@@ -1,40 +1,30 @@
-import { Component, type ReactNode } from "react";
-import type { PlanWall } from "@/lib/hall-plan-core";
+import { Component, useRef, type ReactNode } from "react";
 import { PlanViewport } from "../viewport/PlanViewport";
-import { MesaBotao } from "./MesaBotao";
+import type { PlanViewportApi } from "../viewport/usePlanViewport";
 import { PlantaCena2D, type CenaProps } from "./PlantaCena2D";
-import {
-  SCENE_PERSPECTIVE,
-  SCENE_ROT_X,
-  SCENE_ROT_Z,
-  WINDOW_STRIPES,
-  entranceRect,
-  fitSceneScale,
-  projectedSpanCm,
-  wallRect,
-} from "./scene-geometry";
+import { useFocusTable } from "./useFocusTable";
+import { SalaoPlano3D } from "./SalaoPlano3D";
+import { SCENE_PERSPECTIVE, SCENE_ROT_X, SCENE_ROT_Z, fitSceneScale, projectedSpanCm } from "./scene-geometry";
 import { useContainerWidth, useViewportHeight } from "./useContainerWidth";
 
-const WALL_PX = 6;
-const WALL_RISE_PX = 18;
-const RAISED: PlanWall[] = ["top", "right"];
-
-function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSelect, now }: CenaProps) {
+function PlantaCena3DInner({ halls, layout, showLabels, states, timeLabels, selectedId, onSelect, now, focus }: CenaProps) {
   const { ref, width } = useContainerWidth();
+  const apiRef = useRef<PlanViewportApi | null>(null);
+  useFocusTable(apiRef, focus);
   // Altura disponível: no máximo 70% da janela e 640 px; a escala cabe a caixa projetada nos dois eixos.
   const viewportH = useViewportHeight();
   const maxH = Math.min(viewportH * 0.7, 640);
-  const scale = fitSceneScale(plan.widthCm, plan.depthCm, width, maxH);
-  const span = projectedSpanCm(plan.widthCm, plan.depthCm);
+  const scale = fitSceneScale(layout.widthCm, layout.depthCm, width, maxH);
+  const span = projectedSpanCm(layout.widthCm, layout.depthCm);
   const height = Math.min(maxH, Math.max(240, span.h * scale + 64));
-  const wPx = plan.widthCm * scale;
-  const dPx = plan.depthCm * scale;
-  const entrance = entranceRect(plan, scale, WALL_PX + 2);
+  const wPx = layout.widthCm * scale;
+  const dPx = layout.depthCm * scale;
 
   return (
     <div ref={ref} className="w-full">
       <PlanViewport
         data-testid="planta-3d"
+        apiRef={apiRef}
         className="w-full"
         style={{ height }}
         contentClassName="pointer-events-none"
@@ -60,45 +50,16 @@ function PlantaCena3DInner({ plan, boxes, states, timeLabels, selectedId, onSele
               transformStyle: "preserve-3d",
             }}
           >
-            <div aria-hidden="true" className="surface pointer-events-none absolute inset-0 rounded-md" />
-            {RAISED.map((wall) => (
-              <div key={wall} aria-hidden="true" className="pointer-events-none absolute inset-0" style={{ transformStyle: "preserve-3d" }}>
-                <div className="pointer-events-none absolute bg-muted-foreground/30" style={wallRect(wall, WALL_PX)} />
-                <div
-                  className="pointer-events-none absolute bg-muted-foreground/60"
-                  style={{ ...wallRect(wall, WALL_PX), transform: `translateZ(${WALL_RISE_PX}px)` }}
-                />
-              </div>
-            ))}
-            {plan.windowWalls.map((wall) => (
-              <div
-                key={wall}
-                aria-hidden="true"
-                className="pointer-events-none absolute"
-                style={{
-                  ...wallRect(wall, WALL_PX),
-                  backgroundImage: WINDOW_STRIPES,
-                  transform: `translateZ(${RAISED.includes(wall) ? WALL_RISE_PX + 1 : 1}px)`,
-                }}
-              />
-            ))}
-            {entrance && (
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute rounded-sm bg-foreground"
-                style={{ ...entrance, transform: "translateZ(2px)" }}
-              />
-            )}
-            {boxes.map((box) => (
-              <MesaBotao
-                key={box.tableId}
-                variant="3d"
-                box={box}
-                state={states.get(box.tableId)}
+            {halls.map((hall) => (
+              <SalaoPlano3D
+                key={hall.id}
+                hall={hall}
                 scale={scale}
-                selected={box.tableId === selectedId}
+                showLabel={showLabels}
+                states={states}
+                timeLabels={timeLabels}
+                selectedId={selectedId}
                 onSelect={onSelect}
-                timeLabel={timeLabels.get(box.tableId)}
                 now={now}
               />
             ))}

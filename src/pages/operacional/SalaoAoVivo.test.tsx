@@ -195,6 +195,63 @@ describe("SalaoAoVivo", () => {
     expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 6");
   });
 
+  describe("modo Todos", () => {
+    const hall2 = { ...hall, id: "h2", name: "Varanda", sort_order: 1, plan_width_cm: null, plan_depth_cm: null };
+    const t6 = { ...mk("t6", 6), hall_id: "h2" };
+    const twoHalls = () => ({
+      ...hookData,
+      halls: [hall, hall2],
+      tables: [...tables, t6],
+      reservations: [...hookData.reservations, res("r6", "t6", "18:00")],
+    });
+
+    it("com 1 salão não há botão Todos", () => {
+      renderPage();
+      expect(screen.queryByRole("button", { name: "Todos" })).toBeNull();
+    });
+
+    it("abre no salão individual, sem etiquetas", () => {
+      current = twoHalls();
+      renderPage();
+      expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.queryByRole("button", { name: /^Mesa 6,/ })).toBeNull();
+    });
+
+    it("Todos mostra as mesas dos dois salões, os nomes, soma a legenda e grava a preferência", () => {
+      current = twoHalls();
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Todos" }));
+      expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: /^Mesa 3,/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^Mesa 6,/ })).toBeInTheDocument();
+      expect(screen.getByTestId("planta-3d")).toHaveTextContent("Varanda");
+      expect(screen.getByTestId("planta-3d")).toHaveTextContent("Varanda · grade automática");
+      expect(screen.getByText("6 mesas")).toBeInTheDocument();
+      const legend = screen.getByRole("list", { name: "Situação das mesas" });
+      expect(within(legend).getByText("Reservada").closest("li")).toHaveTextContent("2");
+      expect(localStorage.getItem("salao-ao-vivo:hall:u1")).toBe("all");
+      expect(screen.queryByText(/Planta ainda não desenhada/)).toBeNull();
+    });
+
+    it("recarregar com all salvo abre em Todos", () => {
+      current = twoHalls();
+      localStorage.setItem("salao-ao-vivo:hall:u1", "all");
+      renderPage();
+      expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: /^Mesa 6,/ })).toBeInTheDocument();
+    });
+
+    it("próxima chegada em Todos não sai do modo Todos e seleciona a mesa", () => {
+      current = twoHalls();
+      localStorage.setItem("salao-ao-vivo:hall:u1", "all");
+      renderPage();
+      fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r6").closest("button")!);
+      expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 6");
+      expect(localStorage.getItem("salao-ao-vivo:hall:u1")).toBe("all");
+    });
+  });
+
   it("o painel só anuncia a troca de mesa, não o conteúdo que muda por minuto", () => {
     renderPage();
     const painel = screen.getByTestId("painel-mesa");
