@@ -1,22 +1,32 @@
 /**
- * instagram-connect — conexão da conta pelo Instagram Login (Task 2.4, C1/C2/C6).
+ * instagram-connect — conexão do Instagram pela Página do Facebook (Login do
+ * Facebook para Empresas, plano B; C1/C2/C6).
  *
  * POST { action, unit_id?, code?, state? }, chamado pelo painel autenticado
  * (`verify_jwt = true` + `getUser()` aqui). Ações:
  * - `start { unit_id }` → `{ authorize_url, state }` (o painel guarda e compara o state) com `state` assinado de 10 min,
- *   preso a usuário + unidade (`_shared/instagram-oauth-state.ts`).
+ *   preso a usuário + unidade (`_shared/instagram-oauth-state.ts`). O diálogo é
+ *   o do Facebook com `config_id` (`INSTAGRAM_LOGIN_CONFIG_ID`, só dígitos;
+ *   ausente ou inválido → 503, falha fechado).
  * - `callback { code, state }` → `{ unit_slug, username, subscribed }`. O
  *   `state` é conferido ANTES de qualquer Graph; `state.userId` tem de ser o
  *   usuário da sessão; a unidade vem SÓ do `state` (o `unit_id` do corpo é
- *   ignorado); papel e grant são reconferidos. Sequência: troca do código →
- *   token longo → `me` (Business/Media_Creator) → `store_…` → `subscribe` →
- *   `record_…`. Falha na assinatura responde 200 com `subscribed:false`.
+ *   ignorado); papel e grant são reconferidos; o slug é lido antes de gastar o
+ *   código. Sequência: troca do código → token longo do usuário →
+ *   `/me/accounts` → escolha da Página (`choosePage`: zero → 422, sem a tarefa
+ *   MODERATE/MANAGE → 422, mais de uma → 409 com os @) → `debug_token` do token
+ *   da Página (só informativo: falha grava prazo nulo e não bloqueia) →
+ *   `store_…` (conta pelo id do INSTAGRAM, `page_id` à parte, token da Página)
+ *   → `subscribePage` → `record_…`. Falha na assinatura responde 200 com
+ *   `subscribed:false`. O token do usuário morre nesta requisição: nunca vai a
+ *   Vault, banco, log nem resposta.
  * - `status { unit_id }` → `{ account }`, pela RPC chamada com o JWT do
  *   usuário (C6; com service role `auth.uid()` é nulo e a RPC recusa).
  * - `disconnect { unit_id }` → `disconnect_instagram_account` da conta ativa da
  *   unidade (o SQL reconfere o papel na unidade DA CONTA). Sem conta ativa: 200
  *   idempotente `{ disconnected: true }` (duplo clique não vira erro).
- * - `resubscribe { unit_id }` → `subscribe` + `record_…` com o token do cofre.
+ * - `resubscribe { unit_id }` → `subscribePage` com o `page_id` da conta e o
+ *   token do cofre, + `record_…`. Conta sem `page_id` → 409 "reconectar", sem Graph.
  *
  * Acesso (`_shared/instagram-access-core.ts`): owner/gerente da unidade ou
  * platform_admin; operador e não membro sempre 403 com o mesmo corpo; grant
@@ -27,8 +37,9 @@
  * Nenhum token, segredo, texto da Meta ou mensagem do Postgres sai em resposta
  * ou log: logs só com `evt`, `action`, `errorClass`/`httpStatus`/`code`.
  * `Deno.env` só aqui (`APP_BASE_URL`, `INSTAGRAM_APP_ID`,
- * `INSTAGRAM_OAUTH_STATE_SECRET`); o segredo do app vem de `platform_secrets`,
- * sem fallback de env.
+ * `INSTAGRAM_LOGIN_CONFIG_ID`, `INSTAGRAM_OAUTH_STATE_SECRET`); o segredo do
+ * app (chave secreta do app Moralles Reservas) vem de `platform_secrets`, sem
+ * fallback de env.
  */
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -37,7 +48,7 @@ import { jsonLog } from "../_shared/security.ts";
 import { INSTAGRAM_SECRET_KEYS, createInstagramSecretReader } from "../_shared/instagram-config-core.ts";
 import { platformSecretRowOrThrow } from "../_shared/instagram-config.ts";
 import { readBodyWithCap } from "../_shared/instagram-webhook-core.ts";
-import { INSTAGRAM_SUBSCRIBED_FIELDS, buildAuthorizeUrl } from "../_shared/instagram-graph-core.ts";
+import { INSTAGRAM_SUBSCRIBED_FIELDS, buildAuthorizeUrl, choosePage } from "../_shared/instagram-graph-core.ts";
 import { createInstagramGraph } from "../_shared/instagram-graph.ts";
 import { INSTAGRAM_STATE_TTL_MS, signInstagramState, verifyInstagramState } from "../_shared/instagram-oauth-state.ts";
 import {
@@ -52,6 +63,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const APP_BASE_URL = (Deno.env.get("APP_BASE_URL") ?? "https://reservas.moralles.com.br").replace(/\/+$/, "");
 const INSTAGRAM_APP_ID = Deno.env.get("INSTAGRAM_APP_ID") ?? "";
+const LOGIN_CONFIG_ID = Deno.env.get("INSTAGRAM_LOGIN_CONFIG_ID") ?? "";
 const STATE_SECRET = Deno.env.get("INSTAGRAM_OAUTH_STATE_SECRET") ?? "";
 const REDIRECT_URI = `${APP_BASE_URL}/instagram/callback`;
 
@@ -69,7 +81,9 @@ const graph = createInstagramGraph((input, init) => fetch(input, init));
 
 const MAX_BODY_BYTES = 16_384;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PROFESSIONAL_TYPES = new Set(["Business", "Media_Creator"]);
+const DIGITS_RE = /^[0-9]+$/;
+/** Mesma régua do CHECK de `instagram_accounts.page_id`. */
+const PAGE_ID_RE = /^[0-9]{1,64}$/;
 
 const MSG = {
   unauthenticated: "Sessão inválida. Entre de novo.",
@@ -78,7 +92,9 @@ const MSG = {
   badState: "Link de conexão inválido ou expirado. Comece a conexão de novo.",
   unavailable: "Serviço indisponível, tente novamente.",
   graph: "Não foi possível concluir a conexão com o Instagram. Tente de novo.",
-  notProfessional: "A conta precisa ser Profissional",
+  noPage: "Nenhuma Página do Facebook com Instagram profissional ligado foi autorizada.",
+  taskInsufficient: "Sua permissão nessa Página não basta para atender o Direct.",
+  manyPages: "Selecione só a Página desta loja ao conectar",
   inUse: "Esta conta do Instagram já está conectada a outra unidade",
   noAccount: "Nenhuma conta do Instagram conectada nesta unidade.",
   reauth: "A conta do Instagram precisa ser reconectada.",
@@ -155,13 +171,14 @@ async function checkAccess(ctx: Ctx, unitId: string): Promise<Access> {
     : { ok: false, status: 403, body: { error: MSG.forbidden } };
 }
 
-type ActiveAccount = { id: string; ig_user_id: string; status: string };
+/** `page_id` nulo (linha antiga) ou fora do formato vira `null`: a conta precisa ser reconectada. */
+type ActiveAccount = { id: string; ig_user_id: string; status: string; page_id: string | null };
 
 /** Conta não desconectada da unidade (no máximo uma, índice único parcial). */
 async function activeAccountOf(unitId: string, action: InstagramConnectAction): Promise<{ ok: true; account: ActiveAccount | null } | { ok: false }> {
   const { data, error } = await supabase
     .from("instagram_accounts")
-    .select("id, ig_user_id, status")
+    .select("id, ig_user_id, status, page_id")
     .eq("unit_id", unitId)
     .neq("status", "disconnected")
     .maybeSingle();
@@ -169,19 +186,20 @@ async function activeAccountOf(unitId: string, action: InstagramConnectAction): 
     jsonLog("error", { evt: "instagram_connect_account_read_failed", action, code: pgCode(error) });
     return { ok: false };
   }
-  const row = data as { id?: unknown; ig_user_id?: unknown; status?: unknown } | null;
+  const row = data as { id?: unknown; ig_user_id?: unknown; status?: unknown; page_id?: unknown } | null;
   if (!row) return { ok: true, account: null };
   if (typeof row.id !== "string" || typeof row.ig_user_id !== "string" || typeof row.status !== "string") {
     return { ok: false };
   }
-  return { ok: true, account: { id: row.id, ig_user_id: row.ig_user_id, status: row.status } };
+  const pageId = typeof row.page_id === "string" && PAGE_ID_RE.test(row.page_id) ? row.page_id : null;
+  return { ok: true, account: { id: row.id, ig_user_id: row.ig_user_id, status: row.status, page_id: pageId } };
 }
 
-/** `subscribe` + `record_…`; `true` só quando os dois deram certo. */
-async function subscribeAndRecord(ctx: Ctx, accountId: string, igUserId: string, token: string): Promise<
+/** `subscribePage` + `record_…`; `true` só quando os dois deram certo. */
+async function subscribeAndRecord(ctx: Ctx, accountId: string, pageId: string, pageToken: string): Promise<
   { ok: true } | { ok: false; stage: "graph" | "record" }
 > {
-  const sub = await graph.subscribe({ igUserId, token });
+  const sub = await graph.subscribePage({ pageId, pageToken });
   if (sub.ok === false) {
     jsonLog("warn", {
       evt: "instagram_connect_subscribe_failed",
@@ -210,6 +228,10 @@ async function handleStart(ctx: Ctx, unitId: string): Promise<Response> {
     jsonLog("error", { evt: "instagram_connect_misconfigured", action: ctx.action, reason: "app_id_missing" });
     return json(ctx.req, 503, { error: MSG.unavailable });
   }
+  if (!DIGITS_RE.test(LOGIN_CONFIG_ID)) {
+    jsonLog("error", { evt: "instagram_connect_misconfigured", action: ctx.action, reason: "config_id_missing" });
+    return json(ctx.req, 503, { error: MSG.unavailable });
+  }
   let state: string;
   try {
     state = await signInstagramState(
@@ -222,7 +244,7 @@ async function handleStart(ctx: Ctx, unitId: string): Promise<Response> {
   }
   jsonLog("info", { evt: "instagram_connect_started", action: ctx.action });
   return json(ctx.req, 200, {
-    authorize_url: buildAuthorizeUrl({ appId: INSTAGRAM_APP_ID, redirectUri: REDIRECT_URI, state }),
+    authorize_url: buildAuthorizeUrl({ appId: INSTAGRAM_APP_ID, redirectUri: REDIRECT_URI, state, configId: LOGIN_CONFIG_ID }),
     state,
   });
 }
@@ -285,7 +307,8 @@ async function handleCallback(ctx: Ctx, body: Record<string, unknown>): Promise<
     return json(ctx.req, 502, { error: MSG.graph });
   };
 
-  // 3. Troca do código (o adapter tira o sufixo `#_`) e token longo.
+  // 3. Troca do código (o adapter tira o sufixo `#_`) e token longo do USUÁRIO.
+  //    Os dois tokens do usuário só vivem nesta função: nunca vão a Vault, RPC, log ou resposta.
   const exchanged = await graph.exchangeCode({
     appId: INSTAGRAM_APP_ID,
     appSecret: appSecret.value,
@@ -293,26 +316,53 @@ async function handleCallback(ctx: Ctx, body: Record<string, unknown>): Promise<
     code,
   });
   if (exchanged.ok === false) return graphFail("exchange_code", exchanged);
-  const long = await graph.toLongLived({ appSecret: appSecret.value, shortToken: exchanged.value.shortToken });
+  const long = await graph.toLongLivedUser({
+    appId: INSTAGRAM_APP_ID,
+    appSecret: appSecret.value,
+    shortToken: exchanged.value.shortToken,
+  });
   if (long.ok === false) return graphFail("long_lived", long);
-  const token = long.value.token;
 
-  // 4. Identidade e tipo de conta.
-  const me = await graph.me({ token });
-  if (me.ok === false) return graphFail("me", me);
-  if (me.value.accountType === null || !PROFESSIONAL_TYPES.has(me.value.accountType)) {
-    jsonLog("warn", { evt: "instagram_connect_not_professional", action: ctx.action });
-    return json(ctx.req, 422, { error: MSG.notProfessional });
+  // 4. Páginas autorizadas e escolha (o token de Página vindo do token longo não expira).
+  const pages = await graph.listPages({ userToken: long.value.token });
+  if (pages.ok === false) return graphFail("list_pages", pages);
+  const choice = choosePage(pages.value);
+  if (choice.kind === "none") {
+    jsonLog("warn", { evt: "instagram_connect_no_page", action: ctx.action, reason: choice.reason });
+    return json(ctx.req, 422, { error: choice.reason === "insufficient_task" ? MSG.taskInsufficient : MSG.noPage });
+  }
+  if (choice.kind === "many") {
+    // Só os @ que o próprio usuário acabou de autorizar; nenhum token.
+    jsonLog("warn", { evt: "instagram_connect_many_pages", action: ctx.action });
+    return json(ctx.req, 409, { error: MSG.manyPages, usernames: choice.usernames });
+  }
+  const page = choice.page;
+
+  // 5. Prazo de acesso a dados do token da Página. Leitura informativa, não gate:
+  //    qualquer falha grava prazo nulo e segue.
+  let expiresAt: string | null = null;
+  const debug = await graph.debugToken({ appId: INSTAGRAM_APP_ID, appSecret: appSecret.value, inputToken: page.pageToken });
+  if (debug.ok === false) {
+    jsonLog("warn", {
+      evt: "instagram_debug_token_failed",
+      action: ctx.action,
+      errorClass: debug.errorClass,
+      httpStatus: debug.httpStatus,
+    });
+  } else {
+    expiresAt = debug.value.dataAccessExpiresAt;
   }
 
-  // 5. Gravação (o SQL reconfere papel + grant e prende o ator).
+  // 6. Gravação (o SQL reconfere papel + grant e prende o ator). A conta é a do
+  //    INSTAGRAM (`ig_user_id` = `entry[].id` do webhook); a Página fica em `page_id`.
   const stored = await supabase.rpc("store_instagram_account_connection", {
     p_unit_id: unitId,
-    p_ig_user_id: me.value.igUserId,
-    p_username: me.value.username,
-    p_account_type: me.value.accountType,
-    p_token: token,
-    p_expires_at: new Date(Date.now() + long.value.expiresInSec * 1000).toISOString(),
+    p_ig_user_id: page.igUserId,
+    p_page_id: page.pageId,
+    p_username: page.igUsername,
+    p_account_type: null,
+    p_token: page.pageToken,
+    p_expires_at: expiresAt,
     p_actor: ctx.userId,
   });
   if (stored.error || typeof stored.data !== "string") {
@@ -328,10 +378,10 @@ async function handleCallback(ctx: Ctx, body: Record<string, unknown>): Promise<
   }
   const accountId = stored.data;
 
-  // 6–7. Assinatura do webhook; falha não desfaz a conexão (a tela oferece "Assinar de novo").
-  const sub = await subscribeAndRecord(ctx, accountId, me.value.igUserId, token);
+  // 7–8. Inscrição da Página; falha não desfaz a conexão (a tela oferece "Assinar de novo").
+  const sub = await subscribeAndRecord(ctx, accountId, page.pageId, page.pageToken);
   jsonLog("info", { evt: "instagram_connect_connected", action: ctx.action, subscribed: sub.ok });
-  return json(ctx.req, 200, { unit_slug: unitSlug, username: me.value.username, subscribed: sub.ok });
+  return json(ctx.req, 200, { unit_slug: unitSlug, username: page.igUsername, subscribed: sub.ok });
 }
 
 async function handleStatus(ctx: Ctx, unitId: string): Promise<Response> {
@@ -389,13 +439,18 @@ async function handleResubscribe(ctx: Ctx, unitId: string): Promise<Response> {
   if (found.ok === false) return json(ctx.req, 503, { error: MSG.unavailable });
   if (found.account === null) return json(ctx.req, 404, { error: MSG.noAccount });
   if (found.account.status !== "connected") return json(ctx.req, 409, { error: MSG.reauth });
+  const pageId = found.account.page_id;
+  if (pageId === null) {
+    jsonLog("warn", { evt: "instagram_account_page_missing", action: ctx.action });
+    return json(ctx.req, 409, { error: MSG.reauth });
+  }
 
   const tokenRes = await supabase.rpc("get_instagram_account_token", { p_account_id: found.account.id });
   if (tokenRes.error || typeof tokenRes.data !== "string" || tokenRes.data === "") {
     jsonLog("error", { evt: "instagram_connect_token_read_failed", action: ctx.action, code: pgCode(tokenRes.error) });
     return json(ctx.req, 503, { error: MSG.unavailable });
   }
-  const sub = await subscribeAndRecord(ctx, found.account.id, found.account.ig_user_id, tokenRes.data);
+  const sub = await subscribeAndRecord(ctx, found.account.id, pageId, tokenRes.data);
   if (sub.ok === false) {
     return sub.stage === "graph"
       ? json(ctx.req, 502, { error: MSG.subscribe, subscribed: false })

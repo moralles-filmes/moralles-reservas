@@ -1,9 +1,14 @@
 /**
- * Adapter fino do Graph do Instagram. Recebe `fetch` por injeção.
+ * Adapter fino do Graph para o Direct do Instagram pela Página do Facebook
+ * (Login do Facebook para Empresas). Recebe `fetch` por injeção. Host
+ * `graph.facebook.com`: troca do código, token longo do usuário, Páginas
+ * (`/me/accounts`), `debug_token`, inscrição da Página, envio e perfil.
+ *
  * Todo caminho de falha devolve só classe, status HTTP e código numérico:
  * nenhum texto vindo da Meta ou do runtime chega ao resultado, então nenhum
  * token pode vazar por ele. (GETs da Meta que exigem credencial na query levam-na na URL, que
- * nunca sai deste módulo.)
+ * nunca sai deste módulo: `exchangeCode`, `toLongLivedUser`, o `input_token` do
+ * `debugToken` e as funções antigas `toLongLived`/`refresh`.)
  *
  * Resultado ambíguo: `ok:false` com `httpStatus` 2xx (corpo ilegível após 2xx) ou
  * `httpStatus: null` (timeout/rede), e `transient` em POST, significam "desfecho
@@ -13,16 +18,25 @@
  * A regra está codificada em `isGraphOutcomeUnknown` (instagram-graph-core.ts): use-a em vez de reimplementar.
  *
  * R2-e é cumprida por omissão: o adapter nunca copia texto remoto ou de runtime
- * para o resultado. Quem acrescentar log deve chamar `redactSecrets` por conta própria.
+ * para o resultado. Quem acrescentar log deve chamar `redactSecrets` por conta
+ * própria, com todas as credenciais da chamada (inclusive o par `appId|appSecret`
+ * que o `debugToken` manda no header).
+ *
+ * `toLongLived`, `refresh`, `me` e `subscribe` são do Login do Instagram (host
+ * `graph.instagram.com`): o `instagram-connect` não os chama mais e só o
+ * `process-instagram-token-refresh` ainda usa `refresh`. Saem com ele na Task 5.
  */
 import {
   INSTAGRAM_GRAPH_VERSION,
   INSTAGRAM_SUBSCRIBED_FIELDS,
   classifyGraphError,
   parseCodeExchange,
+  parseDataAccessExpiry,
   parseGraphErrorBody,
   parseLongLived,
   parseMe,
+  parsePages,
+  parseUserLongLived,
   stripOAuthCodeSuffix,
   type GraphErrorClass,
 } from "./instagram-graph-core.ts";
@@ -31,8 +45,12 @@ export type GraphResult<T> =
   | { ok: true; value: T }
   | { ok: false; errorClass: GraphErrorClass; httpStatus: number | null; code: number | null };
 
-const GRAPH = "https://graph.instagram.com";
+const GRAPH = "https://graph.facebook.com";
 const V = `${GRAPH}/${INSTAGRAM_GRAPH_VERSION}`;
+const PAGES_FIELDS = "id,name,tasks,access_token,instagram_business_account{id,username}";
+/** Host do Login do Instagram, só das funções antigas que saem na Task 5. */
+const IG_GRAPH = "https://graph.instagram.com";
+const IG_V = `${IG_GRAPH}/${INSTAGRAM_GRAPH_VERSION}`;
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 export function createInstagramGraph(fetchImpl: typeof fetch, opts: { timeoutMs?: number } = {}) {
@@ -84,67 +102,100 @@ export function createInstagramGraph(fetchImpl: typeof fetch, opts: { timeoutMs?
 
   const bearer = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
   const get = (token: string): RequestInit => ({ method: "GET", headers: bearer(token) });
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  const successTrue = (j: unknown) => (isObj(j) && j.success === true ? { success: true as const } : null);
 
   return {
+    /** Código → token curto do usuário. A Meta só aceita GET, com as credenciais na query. */
     exchangeCode(i: { appId: string; appSecret: string; redirectUri: string; code: string }) {
-      const body = new URLSearchParams({
+      const q = new URLSearchParams({
         client_id: i.appId,
         client_secret: i.appSecret,
-        grant_type: "authorization_code",
         redirect_uri: i.redirectUri,
         code: stripOAuthCodeSuffix(i.code),
       });
-      return call("https://api.instagram.com/oauth/access_token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      }, parseCodeExchange);
+      return call(`${V}/oauth/access_token?${q}`, { method: "GET" }, parseCodeExchange);
     },
 
+    /** Token curto → token longo do usuário (cerca de 60 dias). Credenciais na query. */
+    toLongLivedUser(i: { appId: string; appSecret: string; shortToken: string }) {
+      const q = new URLSearchParams({
+        grant_type: "fb_exchange_token",
+        client_id: i.appId,
+        client_secret: i.appSecret,
+        fb_exchange_token: i.shortToken,
+      });
+      return call(`${V}/oauth/access_token?${q}`, { method: "GET" }, parseUserLongLived);
+    },
+
+    /** Páginas autorizadas, com o token de cada uma e a conta do Instagram ligada. */
+    listPages(i: { userToken: string }) {
+      return call(`${V}/me/accounts?fields=${PAGES_FIELDS}&limit=100`, get(i.userToken), parsePages);
+    },
+
+    /**
+     * Prazo de acesso a dados do token (`dataAccessExpiresAt`, ISO ou null). O
+     * `input_token` vai na query (a Meta não o aceita em outro lugar); o token
+     * do app `appId|appSecret` vai só no header, nunca na URL.
+     */
+    debugToken(i: { appId: string; appSecret: string; inputToken: string }) {
+      const q = new URLSearchParams({ input_token: i.inputToken });
+      return call(`${V}/debug_token?${q}`, get(`${i.appId}|${i.appSecret}`), (j) =>
+        isObj(j) && isObj(j.data) ? { dataAccessExpiresAt: parseDataAccessExpiry(j) } : null);
+    },
+
+    /** Inscreve a Página no app, com o token da Página. */
+    subscribePage(i: { pageId: string; pageToken: string }) {
+      const url = `${V}/${encodeURIComponent(i.pageId)}/subscribed_apps?subscribed_fields=${INSTAGRAM_SUBSCRIBED_FIELDS.join(",")}`;
+      return call(url, { method: "POST", headers: bearer(i.pageToken) }, successTrue);
+    },
+
+    /** @deprecated Login do Instagram; sai na Task 5. */
     toLongLived(i: { appSecret: string; shortToken: string }) {
       const q = new URLSearchParams({
         grant_type: "ig_exchange_token",
         client_secret: i.appSecret,
         access_token: i.shortToken,
       });
-      return call(`${GRAPH}/access_token?${q}`, { method: "GET" }, parseLongLived);
+      return call(`${IG_GRAPH}/access_token?${q}`, { method: "GET" }, parseLongLived);
     },
 
+    /** @deprecated Login do Instagram; sai com o `process-instagram-token-refresh` na Task 5. */
     refresh(i: { token: string }) {
       const q = new URLSearchParams({ grant_type: "ig_refresh_token", access_token: i.token });
-      return call(`${GRAPH}/refresh_access_token?${q}`, { method: "GET" }, parseLongLived);
+      return call(`${IG_GRAPH}/refresh_access_token?${q}`, { method: "GET" }, parseLongLived);
     },
 
+    /** @deprecated Login do Instagram; sai na Task 5. */
     me(i: { token: string }) {
-      return call(`${V}/me?fields=user_id,username,account_type`, get(i.token), parseMe);
+      return call(`${IG_V}/me?fields=user_id,username,account_type`, get(i.token), parseMe);
     },
 
+    /** @deprecated Login do Instagram; sai na Task 5 (use `subscribePage`). */
     subscribe(i: { igUserId: string; token: string }) {
-      const url = `${V}/${encodeURIComponent(i.igUserId)}/subscribed_apps?subscribed_fields=${INSTAGRAM_SUBSCRIBED_FIELDS.join(",")}`;
-      return call(url, { method: "POST", headers: bearer(i.token) }, (j) =>
-        typeof j === "object" && j !== null && (j as { success?: unknown }).success === true
-          ? { success: true as const }
-          : null);
+      const url = `${IG_V}/${encodeURIComponent(i.igUserId)}/subscribed_apps?subscribed_fields=${INSTAGRAM_SUBSCRIBED_FIELDS.join(",")}`;
+      return call(url, { method: "POST", headers: bearer(i.token) }, successTrue);
     },
 
-    sendText(i: { igUserId: string; token: string; igsid: string; text: string }) {
-      return call(`${V}/${encodeURIComponent(i.igUserId)}/messages`, {
+    /** Envio pela Página, com o token da Página. */
+    sendText(i: { pageId: string; token: string; igsid: string; text: string }) {
+      return call(`${V}/${encodeURIComponent(i.pageId)}/messages`, {
         method: "POST",
         headers: { ...bearer(i.token), "Content-Type": "application/json" },
         body: JSON.stringify({ recipient: { id: i.igsid }, message: { text: i.text } }),
       }, (j) => {
-        const id = typeof j === "object" && j !== null ? (j as { message_id?: unknown }).message_id : null;
+        const id = isObj(j) ? j.message_id : null;
         return typeof id === "string" && id !== "" ? { messageId: id } : null;
       });
     },
 
     profile(i: { igsid: string; token: string }) {
       return call(`${V}/${encodeURIComponent(i.igsid)}?fields=name,username`, get(i.token), (j) => {
-        if (typeof j !== "object" || j === null || Array.isArray(j)) return null;
-        const o = j as { name?: unknown; username?: unknown };
+        if (!isObj(j)) return null;
         return {
-          name: typeof o.name === "string" ? o.name : null,
-          username: typeof o.username === "string" ? o.username : null,
+          name: typeof j.name === "string" ? j.name : null,
+          username: typeof j.username === "string" ? j.username : null,
         };
       });
     },

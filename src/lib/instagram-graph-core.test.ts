@@ -243,51 +243,61 @@ const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
 
 describe("adapter createInstagramGraph", () => {
+  const FB = "https://graph.facebook.com/v26.0";
+
   it("erro 500 cujo corpo ecoa o token não deixa o token em nenhum campo", async () => {
     const { f } = fakeFetch(() => json({ error: { message: `bad token ${TOKEN} secret ${SECRET}`, code: 1 } }, 500));
     const g = createInstagramGraph(f);
-    const r = await g.sendText({ igUserId: "1", token: TOKEN, igsid: "2", text: "oi" });
+    const r = await g.sendText({ pageId: "1", token: TOKEN, igsid: "2", text: "oi" });
     expect(r).toEqual({ ok: false, errorClass: "transient", httpStatus: 500, code: 1 });
     expect(JSON.stringify(r)).not.toContain(TOKEN);
-    const r2 = await g.toLongLived({ appSecret: SECRET, shortToken: SHORT });
+    const r2 = await g.toLongLivedUser({ appId: "42", appSecret: SECRET, shortToken: SHORT });
     expect(JSON.stringify(r2)).not.toContain(SECRET);
     expect(JSON.stringify(r2)).not.toContain(SHORT);
+    const r3 = await g.debugToken({ appId: "42", appSecret: SECRET, inputToken: TOKEN });
+    expect(r3).toEqual({ ok: false, errorClass: "transient", httpStatus: 500, code: 1 });
+    expect(JSON.stringify(r3)).not.toContain(SECRET);
   });
 
-  it("erro de rede com URL contendo access_token= é redigido", async () => {
+  it("erro de rede com URL contendo credenciais é descartado", async () => {
     const { f } = fakeFetch((url) => {
       throw new TypeError(`fetch failed: ${url}`);
     });
     const g = createInstagramGraph(f);
-    const r = await g.refresh({ token: TOKEN });
+    const r = await g.exchangeCode({ appId: "42", appSecret: SECRET, redirectUri: "https://x/cb", code: "c" });
     expect(r).toEqual({ ok: false, errorClass: "transient", httpStatus: null, code: null });
-    expect(JSON.stringify(r)).not.toContain(TOKEN);
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+    const r2 = await g.refresh({ token: TOKEN });
+    expect(r2).toEqual({ ok: false, errorClass: "transient", httpStatus: null, code: null });
+    expect(JSON.stringify(r2)).not.toContain(TOKEN);
   });
 
   it("classifica pelo código do corpo", async () => {
     const { f } = fakeFetch(() => json({ error: { code: 190, message: "x" } }, 400));
-    const r = await createInstagramGraph(f).me({ token: TOKEN });
+    const r = await createInstagramGraph(f).listPages({ userToken: TOKEN });
     expect(r).toEqual({ ok: false, errorClass: "reauth_required", httpStatus: 400, code: 190 });
     const { f: f2 } = fakeFetch(() => json({ error: { code: 100, error_subcode: 2534022 } }, 400));
-    const r2 = await createInstagramGraph(f2).sendText({ igUserId: "1", token: TOKEN, igsid: "2", text: "a" });
+    const r2 = await createInstagramGraph(f2).sendText({ pageId: "1", token: TOKEN, igsid: "2", text: "a" });
     expect(r2).toMatchObject({ ok: false, errorClass: "window_closed", code: 100 });
-    const { f: f3 } = fakeFetch(() => json({ error_type: "OAuthException", code: 400, error_message: "x" }, 400));
+    const { f: f3 } = fakeFetch(() => json({ error: { type: "OAuthException", code: 100, message: "x" } }, 400));
     const r3 = await createInstagramGraph(f3).exchangeCode({
       appId: "1",
       appSecret: SECRET,
       redirectUri: "https://x/cb",
       code: "c",
     });
-    expect(r3).toMatchObject({ ok: false, errorClass: "invalid_request", code: 400 });
+    expect(r3).toMatchObject({ ok: false, errorClass: "invalid_request", code: 100 });
   });
 
   it("corpo não-JSON ou 200 sem forma esperada falha sem vazar", async () => {
     const { f } = fakeFetch(() => new Response(`<html>${TOKEN}</html>`, { status: 502 }));
-    const r = await createInstagramGraph(f).me({ token: TOKEN });
+    const r = await createInstagramGraph(f).listPages({ userToken: TOKEN });
     expect(r).toEqual({ ok: false, errorClass: "transient", httpStatus: 502, code: null });
     const { f: f2 } = fakeFetch(() => json({ nada: 1 }));
-    const r2 = await createInstagramGraph(f2).me({ token: TOKEN });
+    const r2 = await createInstagramGraph(f2).listPages({ userToken: TOKEN });
     expect(r2).toMatchObject({ ok: false, errorClass: "invalid_request", httpStatus: 200 });
+    const r3 = await createInstagramGraph(f2).debugToken({ appId: "1", appSecret: SECRET, inputToken: TOKEN });
+    expect(r3).toMatchObject({ ok: false, errorClass: "invalid_request", httpStatus: 200 });
   });
 
   it("timeout aborta e vira transient", async () => {
@@ -298,12 +308,12 @@ describe("adapter createInstagramGraph", () => {
         }),
     );
     const g = createInstagramGraph(f, { timeoutMs: 20 });
-    const r = await g.me({ token: TOKEN });
+    const r = await g.listPages({ userToken: TOKEN });
     expect(r).toEqual({ ok: false, errorClass: "transient", httpStatus: null, code: null });
   });
 
-  it("exchangeCode: POST form, code sem #_, sem token na query", async () => {
-    const { f, calls } = fakeFetch(() => json({ access_token: SHORT }));
+  it("exchangeCode: GET no graph.facebook.com, credenciais na query, code sem #_", async () => {
+    const { f, calls } = fakeFetch(() => json({ access_token: SHORT, token_type: "bearer", expires_in: 5183944 }));
     const r = await createInstagramGraph(f).exchangeCode({
       appId: "42",
       appSecret: SECRET,
@@ -311,49 +321,75 @@ describe("adapter createInstagramGraph", () => {
       code: "abc#_",
     });
     expect(r).toEqual({ ok: true, value: { shortToken: SHORT } });
-    expect(calls[0].url).toBe("https://api.instagram.com/oauth/access_token");
-    expect(calls[0].init?.method).toBe("POST");
-    const body = new URLSearchParams(String(calls[0].init?.body));
-    expect(body.get("code")).toBe("abc");
-    expect(body.get("grant_type")).toBe("authorization_code");
-    expect(body.get("client_id")).toBe("42");
-    expect(body.get("client_secret")).toBe(SECRET);
-    expect(body.get("redirect_uri")).toBe("https://x/cb");
+    const u = new URL(calls[0].url);
+    expect(u.origin + u.pathname).toBe(`${FB}/oauth/access_token`);
+    expect(calls[0].init?.method).toBe("GET");
+    expect(calls[0].init?.body).toBeUndefined();
+    expect([...u.searchParams.keys()]).toEqual(["client_id", "client_secret", "redirect_uri", "code"]);
+    expect(u.searchParams.get("code")).toBe("abc");
+    expect(u.searchParams.get("client_id")).toBe("42");
+    expect(u.searchParams.get("client_secret")).toBe(SECRET);
+    expect(u.searchParams.get("redirect_uri")).toBe("https://x/cb");
   });
 
-  it("toLongLived e refresh: GET com credenciais na query (R2-e)", async () => {
-    const { f, calls } = fakeFetch(() => json({ access_token: TOKEN, expires_in: 5184000 }));
+  it("toLongLivedUser: fb_exchange_token com client_id e client_secret na query", async () => {
+    const { f, calls } = fakeFetch(() => json({ access_token: TOKEN, token_type: "bearer", expires_in: 5183944 }));
+    expect(await createInstagramGraph(f).toLongLivedUser({ appId: "42", appSecret: SECRET, shortToken: SHORT }))
+      .toEqual({ ok: true, value: { token: TOKEN } });
+    const u = new URL(calls[0].url);
+    expect(u.origin + u.pathname).toBe(`${FB}/oauth/access_token`);
+    expect(calls[0].init?.method).toBe("GET");
+    expect([...u.searchParams.keys()]).toEqual(["grant_type", "client_id", "client_secret", "fb_exchange_token"]);
+    expect(u.searchParams.get("grant_type")).toBe("fb_exchange_token");
+    expect(u.searchParams.get("client_id")).toBe("42");
+    expect(u.searchParams.get("client_secret")).toBe(SECRET);
+    expect(u.searchParams.get("fb_exchange_token")).toBe(SHORT);
+  });
+
+  it("listPages: campos e limite fixos, token do usuário só no header", async () => {
+    const { f, calls } = fakeFetch(() => json({ data: [{
+      id: "104", name: "Loja", tasks: ["MODERATE"], access_token: "PAGE-T", instagram_business_account: { id: "17841", username: "loja" },
+    }] }));
+    const r = await createInstagramGraph(f).listPages({ userToken: TOKEN });
+    expect(r).toEqual({ ok: true, value: [{
+      pageId: "104", pageName: "Loja", pageToken: "PAGE-T", tasks: ["MODERATE"], igUserId: "17841", igUsername: "loja",
+    }] });
+    expect(calls[0].url).toBe(`${FB}/me/accounts?fields=id,name,tasks,access_token,instagram_business_account{id,username}&limit=100`);
+    expect(calls[0].init?.method).toBe("GET");
+    expect(calls[0].url).not.toContain(TOKEN);
+    expect(new Headers(calls[0].init?.headers).get("authorization")).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("debugToken: input_token na query, token do app só no header, prazo em ISO ou null", async () => {
+    let body: unknown = { data: { type: "PAGE", expires_at: 0, data_access_expires_at: 1801579536 } };
+    const { f, calls } = fakeFetch(() => json(body));
     const g = createInstagramGraph(f);
-    expect(await g.toLongLived({ appSecret: SECRET, shortToken: SHORT })).toEqual({
-      ok: true,
-      value: { token: TOKEN, expiresInSec: 5184000 },
-    });
-    const u1 = new URL(calls[0].url);
-    expect(u1.origin + u1.pathname).toBe("https://graph.instagram.com/access_token");
-    expect(u1.searchParams.get("grant_type")).toBe("ig_exchange_token");
-    expect(u1.searchParams.get("client_secret")).toBe(SECRET);
-    expect(u1.searchParams.get("access_token")).toBe(SHORT);
-    await g.refresh({ token: TOKEN });
-    const u2 = new URL(calls[1].url);
-    expect(u2.origin + u2.pathname).toBe("https://graph.instagram.com/refresh_access_token");
-    expect(u2.searchParams.get("grant_type")).toBe("ig_refresh_token");
-    expect(u2.searchParams.get("access_token")).toBe(TOKEN);
+    expect(await g.debugToken({ appId: "42", appSecret: SECRET, inputToken: TOKEN }))
+      .toEqual({ ok: true, value: { dataAccessExpiresAt: "2027-02-02T14:45:36.000Z" } });
+    const u = new URL(calls[0].url);
+    expect(u.origin + u.pathname).toBe(`${FB}/debug_token`);
+    expect([...u.searchParams.keys()]).toEqual(["input_token"]);
+    expect(u.searchParams.get("input_token")).toBe(TOKEN);
+    expect(calls[0].url).not.toContain(SECRET);
+    expect(calls[0].init?.method).toBe("GET");
+    expect(new Headers(calls[0].init?.headers).get("authorization")).toBe(`Bearer 42|${SECRET}`);
+    body = { data: { type: "PAGE", data_access_expires_at: 0 } };
+    expect(await g.debugToken({ appId: "42", appSecret: SECRET, inputToken: TOKEN }))
+      .toEqual({ ok: true, value: { dataAccessExpiresAt: null } });
+    body = [{ data: {} }];
+    expect(await g.debugToken({ appId: "42", appSecret: SECRET, inputToken: TOKEN }))
+      .toMatchObject({ ok: false, httpStatus: 200 });
   });
 
-  it("me, subscribe, sendText, profile: Bearer, token nunca na query", async () => {
+  it("subscribePage, sendText, profile: graph.facebook.com, pela Página, Bearer, token nunca na query", async () => {
     const { f, calls } = fakeFetch((url) => {
-      if (url.includes("/me?")) return json({ user_id: "17841", username: "loja", account_type: "Business" });
       if (url.includes("/messages")) return json({ recipient_id: "2", message_id: "mid.1" });
       if (url.includes("subscribed_apps")) return json({ success: true });
       return json({ name: "Ana", username: "ana" });
     });
     const g = createInstagramGraph(f);
-    expect(await g.me({ token: TOKEN })).toEqual({
-      ok: true,
-      value: { igUserId: "17841", username: "loja", accountType: "Business" },
-    });
-    expect(await g.subscribe({ igUserId: "17841", token: TOKEN })).toEqual({ ok: true, value: { success: true } });
-    expect(await g.sendText({ igUserId: "17841", token: TOKEN, igsid: "2", text: "oi" })).toEqual({
+    expect(await g.subscribePage({ pageId: "104", pageToken: TOKEN })).toEqual({ ok: true, value: { success: true } });
+    expect(await g.sendText({ pageId: "104", token: TOKEN, igsid: "2", text: "oi" })).toEqual({
       ok: true,
       value: { messageId: "mid.1" },
     });
@@ -361,16 +397,49 @@ describe("adapter createInstagramGraph", () => {
       ok: true,
       value: { name: "Ana", username: "ana" },
     });
-    expect(calls[0].url).toBe("https://graph.instagram.com/v26.0/me?fields=user_id,username,account_type");
-    expect(calls[1].url).toBe("https://graph.instagram.com/v26.0/17841/subscribed_apps?subscribed_fields=messages");
+    expect(calls[0].url).toBe(`${FB}/104/subscribed_apps?subscribed_fields=messages`);
+    expect(calls[0].init?.method).toBe("POST");
+    expect(calls[1].url).toBe(`${FB}/104/messages`);
     expect(calls[1].init?.method).toBe("POST");
-    expect(calls[2].url).toBe("https://graph.instagram.com/v26.0/17841/messages");
-    expect(JSON.parse(String(calls[2].init?.body))).toEqual({ recipient: { id: "2" }, message: { text: "oi" } });
-    expect(calls[3].url).toBe("https://graph.instagram.com/v26.0/2?fields=name,username");
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ recipient: { id: "2" }, message: { text: "oi" } });
+    expect(calls[2].url).toBe(`${FB}/2?fields=name,username`);
     for (const c of calls) {
       expect(c.url).not.toContain(TOKEN);
       expect(new Headers(c.init?.headers).get("authorization")).toBe(`Bearer ${TOKEN}`);
     }
+  });
+
+  it("subscribePage sem success:true falha", async () => {
+    const { f } = fakeFetch(() => json({ success: false }));
+    expect(await createInstagramGraph(f).subscribePage({ pageId: "104", pageToken: TOKEN }))
+      .toMatchObject({ ok: false, errorClass: "invalid_request", httpStatus: 200 });
+  });
+
+  it("funções do Login do Instagram (saem na Task 5) seguem no graph.instagram.com", async () => {
+    const { f, calls } = fakeFetch((url) => {
+      if (url.includes("/me?")) return json({ user_id: "17841", username: "loja", account_type: "Business" });
+      if (url.includes("subscribed_apps")) return json({ success: true });
+      return json({ access_token: TOKEN, expires_in: 5184000 });
+    });
+    const g = createInstagramGraph(f);
+    expect(await g.toLongLived({ appSecret: SECRET, shortToken: SHORT })).toEqual({
+      ok: true,
+      value: { token: TOKEN, expiresInSec: 5184000 },
+    });
+    await g.refresh({ token: TOKEN });
+    expect(await g.me({ token: TOKEN })).toEqual({
+      ok: true,
+      value: { igUserId: "17841", username: "loja", accountType: "Business" },
+    });
+    expect(await g.subscribe({ igUserId: "17841", token: TOKEN })).toEqual({ ok: true, value: { success: true } });
+    const u1 = new URL(calls[0].url);
+    expect(u1.origin + u1.pathname).toBe("https://graph.instagram.com/access_token");
+    expect(u1.searchParams.get("grant_type")).toBe("ig_exchange_token");
+    const u2 = new URL(calls[1].url);
+    expect(u2.origin + u2.pathname).toBe("https://graph.instagram.com/refresh_access_token");
+    expect(u2.searchParams.get("grant_type")).toBe("ig_refresh_token");
+    expect(calls[2].url).toBe("https://graph.instagram.com/v26.0/me?fields=user_id,username,account_type");
+    expect(calls[3].url).toBe("https://graph.instagram.com/v26.0/17841/subscribed_apps?subscribed_fields=messages");
   });
 
   it("profile rejeita corpo array", async () => {
@@ -381,7 +450,7 @@ describe("adapter createInstagramGraph", () => {
 
   it("sem retry: uma única chamada em falha", async () => {
     const { f, calls } = fakeFetch(() => json({ error: { code: 1 } }, 500));
-    await createInstagramGraph(f).sendText({ igUserId: "1", token: TOKEN, igsid: "2", text: "a" });
+    await createInstagramGraph(f).sendText({ pageId: "1", token: TOKEN, igsid: "2", text: "a" });
     expect(calls.length).toBe(1);
   });
 });

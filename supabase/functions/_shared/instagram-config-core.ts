@@ -1,8 +1,10 @@
 /**
  * Núcleo puro dos segredos do Instagram em `platform_secrets` (plano S5/S6, R2-c).
  *
- * - `instagram_app_secret`: segredo do app do Instagram Login (troca do código e
- *   primeiro candidato do HMAC do webhook);
+ * - `instagram_app_secret`: chave secreta do app Moralles Reservas (o app do
+ *   Login do Facebook para Empresas): troca do código, token longo, `debug_token`
+ *   e primeiro candidato do HMAC do webhook. O nome da chave ficou o mesmo;
+ *   `meta_app_secret` é de outro app;
  * - `instagram_verify_token`: token do handshake GET do webhook;
  * - `meta_app_secret` (opcional): segundo candidato do HMAC (S6).
  *

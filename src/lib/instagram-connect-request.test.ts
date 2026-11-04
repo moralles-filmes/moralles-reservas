@@ -24,12 +24,19 @@ const env = {
   APP_BASE_URL: "https://app.synthetic.invalid",
   INSTAGRAM_APP_ID: "999000111",
   INSTAGRAM_OAUTH_STATE_SECRET: "synthetic-state-secret-0123456789-abcdef",
+  INSTAGRAM_LOGIN_CONFIG_ID: "555000222",
 };
 const APP_SECRET = "synthetic-ig-app-secret-XYZ";
 const CODE = "AQ-synthetic-code-123";
-const SHORT = "IGAA-test-short-XYZ";
-const LONG = "IGAA-test-token-XYZ";
+const SHORT = "EAA-test-user-short-XYZ";
+const USER_LONG = "EAA-test-user-long-XYZ";
+const PAGE_TOKEN = "EAA-test-page-token-XYZ";
+const PAGE_TOKEN_2 = "EAA-test-page-token-two-XYZ";
 const IG = "17841400000000001";
+const PAGE = "104000000000077";
+const PAGE_2 = "104000000000088";
+const IG_2 = "17841400000000002";
+const FB = "https://graph.facebook.com/v26.0";
 const URL_FN = `${env.SUPABASE_URL}/functions/v1/instagram-connect`;
 const REDIRECT = `${env.APP_BASE_URL}/instagram/callback`;
 const LEAK = "pg-message-with-SECRET-detail";
@@ -49,7 +56,20 @@ type ErrorFlag = "members" | "admins" | "grants" | "units" | "secrets" | "accoun
 const harnesses: ReturnType<typeof createEdgeRequestHarness>[] = [];
 afterEach(() => harnesses.splice(0).forEach((h) => h.dispose()));
 
-function fixture(opts: { env?: Record<string, string | undefined>; me?: Row; subscribeOk?: boolean; exchangeOk?: boolean } = {}) {
+type Page = { id: unknown; name?: string; tasks?: string[]; access_token?: string; instagram_business_account?: Row };
+const pageRow = (over: Partial<Page> = {}): Page => ({
+  id: PAGE, name: "Restaurante A", tasks: ["ANALYZE", "MODERATE", "MESSAGING"], access_token: PAGE_TOKEN,
+  instagram_business_account: { id: IG, username: "restaurante_a" }, ...over,
+});
+
+function fixture(opts: {
+  env?: Record<string, string | undefined>;
+  pages?: unknown;
+  debug?: { status: number; body: unknown } | "network";
+  subscribeOk?: boolean;
+  exchangeOk?: boolean;
+  longOk?: boolean;
+} = {}) {
   const state = {
     members: [
       { user_id: OWNER_A, unit_id: UNIT_A, role: "owner" },
@@ -117,7 +137,7 @@ function fixture(opts: { env?: Record<string, string | undefined>; me?: Row; sub
           expect(f.unit_id).toBeTypeOf("string");
           expect(f["neq:status"]).toBe("disconnected");
           return pick(state.accounts.filter((a) => a.unit_id === f.unit_id && a.status !== "disconnected")
-            .map((a) => ({ id: a.id, ig_user_id: a.ig_user_id, status: a.status })));
+            .map((a) => ({ id: a.id, ig_user_id: a.ig_user_id, status: a.status, page_id: a.page_id ?? null })));
         }
         throw new Error(`unexpected read ${table}`);
       };
@@ -151,12 +171,16 @@ function fixture(opts: { env?: Record<string, string | undefined>; me?: Row; sub
         if (state.errors.has("store_other")) return err("XX000");
         if (state.errors.has("store_mismatch")) return { data: null, error: { code: "42501", message: "instagram_account_secret_mismatch" } };
         if (state.errors.has("store_invalid")) return err("22023");
+        // Mesmo contrato da 20261104130000: 8 argumentos, page_id só dígitos.
+        expect(Object.keys(args).sort()).toEqual(["p_account_type", "p_actor", "p_expires_at", "p_ig_user_id",
+          "p_page_id", "p_token", "p_unit_id", "p_username"]);
+        if (typeof args.p_page_id !== "string" || !/^[0-9]{1,64}$/.test(args.p_page_id)) return err("22023");
         if (state.errors.has("store_forbidden") || !roleOk(args.p_actor, args.p_unit_id) || !grantOk(args.p_unit_id)) return err("42501");
         if (state.errors.has("store_in_use") || state.accounts.some((a) => a.ig_user_id === args.p_ig_user_id
           && a.status !== "disconnected" && a.unit_id !== args.p_unit_id)) return err("P0001");
         const accId = `acc-${++seq}`;
         state.accounts.push({
-          id: accId, unit_id: args.p_unit_id, ig_user_id: args.p_ig_user_id, username: args.p_username,
+          id: accId, unit_id: args.p_unit_id, ig_user_id: args.p_ig_user_id, page_id: args.p_page_id, username: args.p_username,
           account_type: args.p_account_type, status: "connected", token_expires_at: args.p_expires_at,
           connected_at: new Date().toISOString(), subscribed_fields: [], connected_by: args.p_actor,
         });
@@ -199,28 +223,55 @@ function fixture(opts: { env?: Record<string, string | undefined>; me?: Row; sub
     state.graph.push({ method: r.method, url: r.url, body: r.method === "POST" ? await r.clone().text() : "", auth: r.headers.get("authorization") });
   };
   const jsonRes = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const longQ = new URLSearchParams({ grant_type: "ig_exchange_token", client_secret: APP_SECRET, access_token: SHORT });
-  const transport = [
-    { method: "POST", url: "https://api.instagram.com/oauth/access_token", respond: async (r: Request) => {
-      await record(r);
-      return opts.exchangeOk === false
-        ? jsonRes(400, { error_type: "OAuthException", code: 400, error_message: `bad code ${CODE}` })
-        : jsonRes(200, { data: [{ access_token: SHORT, user_id: IG, permissions: "instagram_business_basic" }] });
-    } },
-    { method: "GET", url: `https://graph.instagram.com/access_token?${longQ}`, respond: async (r: Request) => {
-      await record(r);
-      return jsonRes(200, { access_token: LONG, token_type: "bearer", expires_in: 5_184_000 });
-    } },
-    { method: "GET", url: "https://graph.instagram.com/v26.0/me?fields=user_id,username,account_type", respond: async (r: Request) => {
-      await record(r);
-      return jsonRes(200, opts.me ?? { user_id: IG, username: "restaurante_a", account_type: "Business" });
-    } },
-    { method: "POST", url: `https://graph.instagram.com/v26.0/${IG}/subscribed_apps?subscribed_fields=messages`, respond: async (r: Request) => {
+  // A URL de cada rota é exata (o harness casa método + URL): ordem e valores da query são parte do contrato.
+  const exchangeQ = new URLSearchParams({
+    client_id: env.INSTAGRAM_APP_ID, client_secret: APP_SECRET, redirect_uri: REDIRECT, code: CODE,
+  });
+  const longQ = new URLSearchParams({
+    grant_type: "fb_exchange_token", client_id: env.INSTAGRAM_APP_ID, client_secret: APP_SECRET, fb_exchange_token: SHORT,
+  });
+  const subscribeRoute = (pageId: string) => ({
+    method: "POST", url: `${FB}/${pageId}/subscribed_apps?subscribed_fields=messages`, respond: async (r: Request) => {
       await record(r);
       return opts.subscribeOk === false
-        ? jsonRes(400, { error: { code: 100, message: `invalid token ${LONG}` } })
+        ? jsonRes(400, { error: { code: 100, message: `invalid token ${PAGE_TOKEN}` } })
         : jsonRes(200, { success: true });
+    },
+  });
+  const transport = [
+    { method: "GET", url: `${FB}/oauth/access_token?${exchangeQ}`, respond: async (r: Request) => {
+      await record(r);
+      return opts.exchangeOk === false
+        ? jsonRes(400, { error: { type: "OAuthException", code: 100, message: `bad code ${CODE} ${APP_SECRET}` } })
+        : jsonRes(200, { access_token: SHORT, token_type: "bearer", expires_in: 5_183_944 });
     } },
+    { method: "GET", url: `${FB}/oauth/access_token?${longQ}`, respond: async (r: Request) => {
+      await record(r);
+      return opts.longOk === false
+        ? jsonRes(400, { error: { code: 190, message: `expired ${SHORT} ${APP_SECRET}` } })
+        : jsonRes(200, { access_token: USER_LONG, token_type: "bearer", expires_in: 5_183_944 });
+    } },
+    {
+      method: "GET",
+      url: new URL(`${FB}/me/accounts?fields=id,name,tasks,access_token,instagram_business_account{id,username}&limit=100`).href,
+      respond: async (r: Request) => {
+        await record(r);
+        return jsonRes(200, opts.pages ?? { data: [pageRow()], paging: { cursors: { before: "a", after: "b" } } });
+      },
+    },
+    ...[PAGE_TOKEN, PAGE_TOKEN_2].map((t) => ({
+      method: "GET", url: `${FB}/debug_token?${new URLSearchParams({ input_token: t })}`, respond: async (r: Request) => {
+        await record(r);
+        if (opts.debug === "network") throw new TypeError(`fetch failed ${r.url}`);
+        if (opts.debug) return jsonRes(opts.debug.status, opts.debug.body);
+        return jsonRes(200, { data: {
+          app_id: env.INSTAGRAM_APP_ID, type: "PAGE", is_valid: true, expires_at: 0,
+          data_access_expires_at: 1801579536, scopes: ["instagram_basic", "instagram_manage_messages"],
+        } });
+      },
+    })),
+    subscribeRoute(PAGE),
+    subscribeRoute(PAGE_2),
   ];
 
   const harnessEnv: Record<string, string> = {};
@@ -247,17 +298,19 @@ function fixture(opts: { env?: Record<string, string | undefined>; me?: Row; sub
   const signFor = (userId: string, unitId: string, exp = harness.now + INSTAGRAM_STATE_TTL_MS) =>
     signInstagramState({ unitId, userId, exp, nonce: crypto.randomUUID() }, env.INSTAGRAM_OAUTH_STATE_SECRET, harness.now);
   const writes = () => state.rpcs.filter((r) => r.name !== "get_instagram_account_status");
-  const seedAccount = (unitId = UNIT_A, status = "connected") => {
+  const seedAccount = (unitId = UNIT_A, status = "connected", pageId: string | null = PAGE) => {
     state.accounts.push({
-      id: ACC_A, unit_id: unitId, ig_user_id: IG, username: "restaurante_a", account_type: "Business", status,
+      id: ACC_A, unit_id: unitId, ig_user_id: IG, page_id: pageId, username: "restaurante_a", account_type: null, status,
       token_expires_at: "2026-12-01T12:00:00.000Z", connected_at: "2026-10-01T12:00:00.000Z", subscribed_fields: ["messages"],
     });
-    state.tokens.set(ACC_A, LONG);
+    state.tokens.set(ACC_A, PAGE_TOKEN);
   };
+  /** Credenciais que nunca saem: token do usuário (curto e longo), segredo do app, code e o token do app. */
+  const NEVER = [SHORT, USER_LONG, APP_SECRET, CODE, `${env.INSTAGRAM_APP_ID}|${APP_SECRET}`];
   const leakFree = (text: string) => {
-    for (const s of [SHORT, LONG, APP_SECRET, LEAK, CODE]) expect(text).not.toContain(s);
+    for (const s of [...NEVER, PAGE_TOKEN, PAGE_TOKEN_2, LEAK]) expect(text).not.toContain(s);
   };
-  return { state, harness, call, start, signFor, writes, seedAccount, leakFree };
+  return { state, harness, call, start, signFor, writes, seedAccount, leakFree, NEVER };
 }
 
 describe("instagram-connect — transporte e autenticação", () => {
@@ -325,11 +378,13 @@ describe("instagram-connect — start", () => {
     expect(Object.keys(r.json)).toEqual(["authorize_url", "state"]);
     expect(r.json.state).toBe(new URL(r.json.authorize_url as string).searchParams.get("state"));
     const url = new URL(r.json.authorize_url as string);
-    expect(`${url.origin}${url.pathname}`).toBe("https://www.instagram.com/oauth/authorize");
+    expect(`${url.origin}${url.pathname}`).toBe("https://www.facebook.com/v26.0/dialog/oauth");
     expect(url.searchParams.get("client_id")).toBe(env.INSTAGRAM_APP_ID);
     expect(url.searchParams.get("redirect_uri")).toBe(REDIRECT);
     expect(url.searchParams.get("response_type")).toBe("code");
-    expect(url.searchParams.get("scope")).toBe("instagram_business_basic,instagram_business_manage_messages");
+    expect(url.searchParams.get("config_id")).toBe(env.INSTAGRAM_LOGIN_CONFIG_ID);
+    expect(url.searchParams.get("override_default_response_type")).toBe("true");
+    expect(url.searchParams.has("scope")).toBe(false);
     const v = await verifyInstagramState(url.searchParams.get("state") as string, env.INSTAGRAM_OAUTH_STATE_SECRET, f.harness.now);
     expect(v.ok).toBe(true);
     if (v.ok === true) {
@@ -366,16 +421,25 @@ describe("instagram-connect — start", () => {
     ["sem INSTAGRAM_APP_ID", { INSTAGRAM_APP_ID: undefined }],
     ["sem segredo do state", { INSTAGRAM_OAUTH_STATE_SECRET: undefined }],
     ["segredo do state fraco", { INSTAGRAM_OAUTH_STATE_SECRET: "curto" }],
+    ["sem INSTAGRAM_LOGIN_CONFIG_ID", { INSTAGRAM_LOGIN_CONFIG_ID: undefined }],
+    ["INSTAGRAM_LOGIN_CONFIG_ID fora do formato", { INSTAGRAM_LOGIN_CONFIG_ID: "abc" }],
   ])("%s → 503", async (_n, override) => {
     const f = fixture({ env: override });
     const r = await f.call(OWNER_A, { action: "start", unit_id: UNIT_A });
     expect(r.status).toBe(503);
     expect(r.json.authorize_url).toBeUndefined();
+    expect(r.json.state).toBeUndefined();
+  });
+
+  it.each([undefined, "abc", "12 34"])("config_id %s → loga config_id_missing", async (value) => {
+    const f = fixture({ env: { INSTAGRAM_LOGIN_CONFIG_ID: value } });
+    expect((await f.call(OWNER_A, { action: "start", unit_id: UNIT_A })).status).toBe(503);
+    expect(f.harness.logs.join("\n")).toMatch(/instagram_connect_misconfigured[^\n]*config_id_missing/);
   });
 });
 
 describe("instagram-connect — callback", () => {
-  it("caminho feliz: grava pelo RPC, assina, registra e nunca devolve o token", async () => {
+  it("caminho feliz: troca → token longo → Páginas → debug_token → grava a Página → assina, sem devolver token", async () => {
     const f = fixture();
     const state = await f.start(OWNER_A, UNIT_A);
     const r = await f.call(OWNER_A, { action: "callback", code: `${CODE}#_`, state });
@@ -384,33 +448,107 @@ describe("instagram-connect — callback", () => {
     f.leakFree(r.text);
     f.leakFree(f.harness.logs.join("\n"));
 
-    // Sequência do Graph.
+    // Sequência do Graph, toda no graph.facebook.com.
     expect(f.state.graph.map((g) => `${g.method} ${new URL(g.url).host}${new URL(g.url).pathname}`)).toEqual([
-      "POST api.instagram.com/oauth/access_token",
-      "GET graph.instagram.com/access_token",
-      "GET graph.instagram.com/v26.0/me",
-      `POST graph.instagram.com/v26.0/${IG}/subscribed_apps`,
+      "GET graph.facebook.com/v26.0/oauth/access_token",
+      "GET graph.facebook.com/v26.0/oauth/access_token",
+      "GET graph.facebook.com/v26.0/me/accounts",
+      "GET graph.facebook.com/v26.0/debug_token",
+      `POST graph.facebook.com/v26.0/${PAGE}/subscribed_apps`,
     ]);
-    const exchange = new URLSearchParams(f.state.graph[0].body);
-    expect(exchange.get("code")).toBe(CODE);
+    const exchange = new URL(f.state.graph[0].url).searchParams;
+    expect(exchange.get("code")).toBe(CODE); // sem o sufixo #_
     expect(exchange.get("redirect_uri")).toBe(REDIRECT);
     expect(exchange.get("client_id")).toBe(env.INSTAGRAM_APP_ID);
     expect(exchange.get("client_secret")).toBe(APP_SECRET);
-    expect(f.state.graph[2].auth).toBe(`Bearer ${LONG}`);
-    expect(f.state.graph[3].auth).toBe(`Bearer ${LONG}`);
+    expect(f.state.graph[0].auth).toBeNull();
+    const long = new URL(f.state.graph[1].url).searchParams;
+    expect(long.get("grant_type")).toBe("fb_exchange_token");
+    expect(long.get("fb_exchange_token")).toBe(SHORT);
+    expect(f.state.graph[1].auth).toBeNull();
+    // /me/accounts com o token LONGO do usuário, no header.
+    expect(f.state.graph[2].auth).toBe(`Bearer ${USER_LONG}`);
+    expect(f.state.graph[2].url).not.toContain(USER_LONG);
+    // debug_token do token da Página; o token do app só no header, nunca na URL.
+    expect(new URL(f.state.graph[3].url).searchParams.get("input_token")).toBe(PAGE_TOKEN);
+    expect(f.state.graph[3].auth).toBe(`Bearer ${env.INSTAGRAM_APP_ID}|${APP_SECRET}`);
+    expect(f.state.graph[3].url).not.toContain(APP_SECRET);
+    // Inscrição da PÁGINA com o token da Página, nada na query além do campo.
+    expect(f.state.graph[4].auth).toBe(`Bearer ${PAGE_TOKEN}`);
+    expect(f.state.graph[4].url).toBe(`${FB}/${PAGE}/subscribed_apps?subscribed_fields=messages`);
 
-    // Gravação: unidade do state, ator da sessão, token longo e validade.
+    // Gravação: conta pelo id do Instagram, Página à parte, token da Página e prazo do debug_token.
     const store = f.state.rpcs.find((x) => x.name === "store_instagram_account_connection")!;
     expect(store.key).toBe(env.SUPABASE_SERVICE_ROLE_KEY);
+    expect(PAGE).not.toBe(IG);
     expect(store.args).toEqual({
-      p_unit_id: UNIT_A, p_ig_user_id: IG, p_username: "restaurante_a", p_account_type: "Business",
-      p_token: LONG, p_expires_at: new Date(f.harness.now + 5_184_000 * 1000).toISOString(), p_actor: OWNER_A,
+      p_unit_id: UNIT_A, p_ig_user_id: IG, p_page_id: PAGE, p_username: "restaurante_a", p_account_type: null,
+      p_token: PAGE_TOKEN, p_expires_at: "2027-02-02T14:45:36.000Z", p_actor: OWNER_A,
     });
     expect(f.state.rpcs.map((x) => x.name)).toEqual(["store_instagram_account_connection", "record_instagram_account_subscription"]);
     expect(f.state.rpcs[1].args).toEqual({ p_account_id: "acc-1", p_fields: ["messages"] });
     expect(f.state.accounts).toHaveLength(1);
+    expect(f.state.accounts[0]).toMatchObject({ ig_user_id: IG, page_id: PAGE });
     expect(f.state.accounts[0].subscribed_fields).toEqual(["messages"]);
     f.harness.assertNoUnexpectedIo();
+  });
+
+  it("token do usuário, segredo e code nunca chegam a RPC, log ou resposta; o da Página só em p_token", async () => {
+    const f = fixture();
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(200);
+    const logs = f.harness.logs.join("\n");
+    for (const s of f.NEVER) {
+      expect(r.text).not.toContain(s);
+      expect(logs).not.toContain(s);
+      for (const rpc of f.state.rpcs) expect(JSON.stringify(rpc.args)).not.toContain(s);
+    }
+    expect(r.text).not.toContain(PAGE_TOKEN);
+    expect(logs).not.toContain(PAGE_TOKEN);
+    for (const rpc of f.state.rpcs) {
+      const { p_token, ...rest } = rpc.args;
+      expect(JSON.stringify(rest)).not.toContain(PAGE_TOKEN);
+      if (rpc.name === "store_instagram_account_connection") expect(p_token).toBe(PAGE_TOKEN);
+    }
+    expect([...f.state.tokens.values()]).toEqual([PAGE_TOKEN]);
+  });
+
+  it("debug_token com data_access_expires_at 0 grava p_expires_at nulo", async () => {
+    const f = fixture({ debug: { status: 200, body: { data: { type: "PAGE", is_valid: true, expires_at: 0, data_access_expires_at: 0 } } } });
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(200);
+    const store = f.state.rpcs.find((x) => x.name === "store_instagram_account_connection")!;
+    expect(store.args.p_expires_at).toBeNull();
+    expect(f.harness.logs.join("\n")).not.toContain("instagram_debug_token_failed");
+  });
+
+  it.each([
+    ["500 com o segredo ecoado", { status: 500, body: { error: { code: 1, message: `boom ${APP_SECRET} ${PAGE_TOKEN}` } } }],
+    ["erro do Graph", { status: 400, body: { error: { code: 190, message: `invalid ${env.INSTAGRAM_APP_ID}|${APP_SECRET}` } } }],
+    ["200 sem data", { status: 200, body: { nada: true } }],
+    ["rede", "network"],
+  ] as const)("debug_token com %s não bloqueia: grava p_expires_at nulo e loga só classe e status", async (_n, debug) => {
+    const f = fixture({ debug: debug as { status: number; body: unknown } | "network" });
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ unit_slug: "unidade-a", username: "restaurante_a", subscribed: true });
+    const store = f.state.rpcs.find((x) => x.name === "store_instagram_account_connection")!;
+    expect(store.args.p_expires_at).toBeNull();
+    expect(store.args.p_token).toBe(PAGE_TOKEN);
+    const line = f.harness.logs.find((l) => l.includes("instagram_debug_token_failed"));
+    expect(line).toBeDefined();
+    const logged = JSON.parse(line as string) as Row;
+    expect(Object.keys(logged).sort()).toEqual(["action", "errorClass", "evt", "httpStatus", "level", "ts"]);
+    f.leakFree(r.text);
+    f.leakFree(f.harness.logs.join("\n"));
+  });
+
+  it("o username gravado e devolvido é o @ do Instagram da Página escolhida", async () => {
+    const f = fixture({ pages: { data: [pageRow({ name: "Nome da Página", instagram_business_account: { id: IG, username: "outro_arroba" } })] } });
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(200);
+    expect(r.json.username).toBe("outro_arroba");
+    expect(f.state.rpcs.find((x) => x.name === "store_instagram_account_connection")!.args.p_username).toBe("outro_arroba");
   });
 
   it("platform_admin sem membership conecta com p_actor = ADMIN", async () => {
@@ -432,10 +570,11 @@ describe("instagram-connect — callback", () => {
     expect(f.harness.logs.join("\n")).not.toContain("secret_mismatch");
   });
 
-  it("Media_Creator também é Profissional", async () => {
-    const f = fixture({ me: { user_id: IG, username: "criador", account_type: "Media_Creator" } });
+  it("gerente também conecta", async () => {
+    const f = fixture();
     const r = await f.call(GERENTE_A, { action: "callback", code: CODE, state: await f.start(GERENTE_A, UNIT_A) });
     expect(r.status).toBe(200);
+    expect(f.state.rpcs.find((x) => x.name === "store_instagram_account_connection")?.args.p_actor).toBe(GERENTE_A);
   });
 
   it("state de outro usuário → 403, sem troca do código e sem gravação", async () => {
@@ -521,21 +660,90 @@ describe("instagram-connect — callback", () => {
     expect(f.state.graph).toEqual([]);
   });
 
-  it("me sem user_id → 502, nada gravado", async () => {
-    const f = fixture({ me: { username: "sem_id", account_type: "Business" } });
+  it("/me/accounts sem a forma esperada → 502, nada gravado", async () => {
+    const f = fixture({ pages: { nada: [] } });
     const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
     expect(r.status).toBe(502);
     expect(f.writes()).toEqual([]);
     expect(f.state.accounts).toEqual([]);
+    expect(f.state.graph.some((g) => g.url.includes("debug_token") || g.url.includes("subscribed_apps"))).toBe(false);
     f.leakFree(r.text);
   });
 
-  it("conta pessoal → 422 'A conta precisa ser Profissional', nada gravado", async () => {
-    const f = fixture({ me: { user_id: IG, username: "pessoal", account_type: "Personal" } });
+  const noWrites = (f: ReturnType<typeof fixture>) => {
+    expect(f.writes()).toEqual([]);
+    expect(f.state.accounts).toEqual([]);
+    expect(f.state.tokens.size).toBe(0);
+    expect(f.state.graph.some((g) => g.url.includes("subscribed_apps"))).toBe(false);
+    expect(f.state.graph.some((g) => g.url.includes("debug_token"))).toBe(false);
+  };
+
+  it.each([
+    ["lista vazia", { data: [] }],
+    ["Página sem Instagram ligado", { data: [pageRow({ instagram_business_account: undefined })] }],
+    ["Página sem token", { data: [pageRow({ access_token: undefined })] }],
+  ])("zero Páginas válidas (%s) → 422 noPage, nada gravado", async (_n, pages) => {
+    const f = fixture({ pages });
     const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
     expect(r.status).toBe(422);
-    expect(r.json.error).toBe("A conta precisa ser Profissional");
-    expect(f.writes()).toEqual([]);
+    expect(r.json).toEqual({ error: "Nenhuma Página do Facebook com Instagram profissional ligado foi autorizada." });
+    noWrites(f);
+    f.leakFree(r.text);
+    f.leakFree(f.harness.logs.join("\n"));
+  });
+
+  it.each([
+    ["só ANALYZE e MESSAGING", ["ANALYZE", "MESSAGING", "ADVERTISE"]],
+    ["sem tasks", []],
+  ])("Página com Instagram mas sem MODERATE/MANAGE (%s) → 422 taskInsufficient, nada gravado", async (_n, tasks) => {
+    const f = fixture({ pages: { data: [pageRow({ tasks })] } });
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(422);
+    expect(r.json).toEqual({ error: "Sua permissão nessa Página não basta para atender o Direct." });
+    noWrites(f);
+    f.leakFree(r.text);
+  });
+
+  it("MANAGE sozinha basta", async () => {
+    const f = fixture({ pages: { data: [pageRow({ tasks: ["MANAGE"] })] } });
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(200);
+  });
+
+  it("duas Páginas aptas → 409 com os @ e sem token, nada gravado", async () => {
+    const f = fixture({ pages: { data: [
+      pageRow(),
+      pageRow({ id: PAGE_2, name: "Restaurante B", access_token: PAGE_TOKEN_2, instagram_business_account: { id: IG_2, username: "restaurante_b" } }),
+    ] } });
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(409);
+    expect(r.json).toEqual({ error: "Selecione só a Página desta loja ao conectar", usernames: ["restaurante_a", "restaurante_b"] });
+    noWrites(f);
+    f.leakFree(r.text);
+    f.leakFree(f.harness.logs.join("\n"));
+  });
+
+  it("uma Página apta entre outras sem a tarefa conecta a apta", async () => {
+    const f = fixture({ pages: { data: [
+      pageRow({ id: PAGE_2, tasks: ["ANALYZE"], access_token: PAGE_TOKEN_2, instagram_business_account: { id: IG_2, username: "restaurante_b" } }),
+      pageRow(),
+    ] } });
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(200);
+    const store = f.state.rpcs.find((x) => x.name === "store_instagram_account_connection")!;
+    expect(store.args).toMatchObject({ p_ig_user_id: IG, p_page_id: PAGE, p_token: PAGE_TOKEN });
+  });
+
+  it("token longo do usuário recusado → 502, nada gravado, sem /me/accounts", async () => {
+    const f = fixture({ longOk: false });
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(502);
+    expect(r.json).toEqual({ error: "Não foi possível concluir a conexão com o Instagram. Tente de novo." });
+    expect(f.state.graph).toHaveLength(2);
+    noWrites(f);
+    f.leakFree(r.text);
+    f.leakFree(f.harness.logs.join("\n"));
+    expect(f.harness.logs.join("\n")).toMatch(/instagram_connect_graph_failed[^\n]*long_lived/);
   });
 
   it("troca do código recusada → 502 sem texto da Meta, nada gravado", async () => {
@@ -714,10 +922,25 @@ describe("instagram-connect — resubscribe", () => {
     expect(f.state.rpcs.map((x) => x.name)).toEqual(["get_instagram_account_token", "record_instagram_account_subscription"]);
     expect(f.state.rpcs[0].args).toEqual({ p_account_id: ACC_A });
     expect(f.state.graph).toHaveLength(1);
-    expect(f.state.graph[0].auth).toBe(`Bearer ${LONG}`);
+    expect(f.state.graph[0].method).toBe("POST");
+    expect(f.state.graph[0].url).toBe(`${FB}/${PAGE}/subscribed_apps?subscribed_fields=messages`);
+    expect(f.state.graph[0].auth).toBe(`Bearer ${PAGE_TOKEN}`);
     expect(f.state.accounts[0].subscribed_fields).toEqual(["messages"]);
     f.leakFree(r.text);
     f.leakFree(f.harness.logs.join("\n"));
+  });
+
+  it.each([
+    ["nulo", null],
+    ["fora do formato", "abc"],
+  ])("conta com page_id %s → 409 reconectar, sem Graph e sem ler o token", async (_n, pageId) => {
+    const f = fixture();
+    f.seedAccount(UNIT_A, "connected", pageId);
+    const r = await f.call(OWNER_A, { action: "resubscribe", unit_id: UNIT_A });
+    expect(r.status).toBe(409);
+    expect(r.json).toEqual({ error: "A conta do Instagram precisa ser reconectada." });
+    expect(f.state.graph).toEqual([]);
+    expect(f.state.rpcs).toEqual([]);
   });
 
   it("falha do Graph → 502 com subscribed:false", async () => {
@@ -783,5 +1006,9 @@ describe("instagram-connect — guardas estáticas", () => {
     expect(src).not.toMatch(/\.message\b/);
     expect(src).not.toMatch(/String\(\s*(e|err|error)\s*\)/);
     expect(src).not.toMatch(/rpc\(\s*["']is_unit_member/);
+    // Só o fluxo da Página: nada do Login do Instagram.
+    expect(src).not.toMatch(/graph\.(me|subscribe|toLongLived|refresh)\(/);
+    expect(src).not.toContain("graph.instagram.com");
+    expect(src).not.toContain("notProfessional");
   });
 });
