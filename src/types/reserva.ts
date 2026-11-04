@@ -537,7 +537,10 @@ export type ConversationStatus = "ai_active" | "awaiting_human" | "human_active"
 export interface Conversation {
   id: string;
   unit_id: string;
-  customer_id: string;
+  customer_id: string | null;
+  channel: "whatsapp" | "instagram";
+  instagram_contact_id: string | null;
+  instagram_contact?: { username: string | null; name: string | null } | null;
   reservation_id: string | null;
   messages: ConversationMessage[];
   status: ConversationStatus;

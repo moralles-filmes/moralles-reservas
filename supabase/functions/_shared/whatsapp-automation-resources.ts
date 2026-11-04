@@ -166,7 +166,7 @@ function captureExpected(intent: ScheduledIntent, row: Record<string, unknown>, 
   const identity = { id: capturedUuid(row.id), unit_id: capturedUuid(row.unit_id) };
   if (intent.kind === 'confirmation' || intent.kind === 'reminder_d1' || intent.kind === 'survey_d1' || intent.kind === 'cancellation') {
     const source = capturedText(row.source), payment = capturedNullableText(row.payment_status), rawTime = capturedText(row.time);
-    if (!['web','whatsapp'].includes(source) || (payment !== null && !['not_required','pending_payment','paid','failed','refunded','expired'].includes(payment))
+    if (!['web','whatsapp','instagram'].includes(source) || (payment !== null && !['not_required','pending_payment','paid','failed','refunded','expired'].includes(payment))
       || !/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?$/.test(rawTime)) return captureInvalid();
     return { ...common, kind: intent.kind, resource: { ...identity, customer_id: capturedUuid(row.customer_id), date: date(row.date) ?? captureInvalid(),
       time: rawTime, source, status: capturedText(row.status), payment_status: payment, party_size: capturedInteger(row.party_size, 1, 999999),

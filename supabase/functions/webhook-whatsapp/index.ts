@@ -7,6 +7,10 @@ import { sanitizeProviderError } from "../_shared/ai-providers.ts";
 // Este adapter entra com o `ChannelContext` do WhatsApp: envio pelo provider,
 // `sanitizeForWhatsApp`, identidade e formatação do prompt, origem da reserva.
 import { createAgentTurn } from "../_shared/agent/turn.ts";
+import { buildAgentUnit } from "../_shared/agent/unit-context.ts";
+import { isOrgBillingBlocked } from "../_shared/org-billing-gate-core.ts";
+// Mesmo texto do Direct (process-instagram-inbound): uma constante, dois canais.
+import { MEDIA_REPLY_TEXT } from "../_shared/media-reply-text.ts";
 import { checkFlagEnabled } from "../_shared/platform-flags.ts";
 // ─── Ingestão assíncrona (Fase C) ────────────────────────────────────────────
 // Adapter de I/O; NENHUMA decisão desta fase é redigitada aqui. `vitest` não
@@ -472,8 +476,6 @@ const WHATSAPP_FORMATTING_RULES =
   `- Separe blocos lógicos (preços, horários, opções, observação) com UMA linha em branco. Frases e parágrafos curtos — o cliente está lendo no celular.\n` +
   `- Não use tabelas, blocos de código com \`\`\`, nem links no formato [texto](url) — WhatsApp não interpreta. Cole a URL direto.\n` +
   `- Emojis: máximo 1 ou 2 por mensagem, só quando agregam contexto. Sugestões: 📅 data, 🕐 horário, 📍 endereço, 🍽️ cardápio, ✅ confirmação, ❌ cancelamento, 🙏 agradecimento. Não exagere — mensagem cheia de emoji parece spam.`;
-
-const MEDIA_REPLY_TEXT = "Por aqui só consigo ler texto. Pode me escrever a informação que precisa? Se quiser falar com a equipe, é só pedir.";
 
 // Remetente implausível = não é cliente. O eco da Z-API chega com `phone` no
 // formato LID do WhatsApp (14+ dígitos), que `canonicalBrPhone` deixa passar
@@ -1132,11 +1134,14 @@ async function promoteDeadLetterToHandoff(eventId: string): Promise<void> {
           continue;
         }
 
+        // Só a conversa do WhatsApp: a do Instagram pode levar o mesmo
+        // `customer_id` por identidade declarada (link_instagram_contact_customer).
         const { data: conv } = await supabase
           .from("conversations")
           .select("id")
           .eq("unit_id", unitId)
           .eq("customer_id", customer.id)
+          .eq("channel", "whatsapp")
           .order("updated_at", { ascending: false })
           .limit(1)
           .maybeSingle();
@@ -2578,36 +2583,21 @@ async function handleWebhookRequest(
     // recebe "Você é o assistente do Restaurante" e papagueia esse nome.
     // SELECT * garante que colunas novas ficam disponíveis sem mexer na query.
     // O prompt builder (buildRestaurantInfoLines) é o gatekeeper do que entra no prompt.
-    const { data: unitRow } = await supabase
+    const { data: unitRow, error: unitRowError } = await supabase
       .from("units")
       .select("*")
       .eq("id", unitId)
       .maybeSingle();
-    const organizationId: string = unitRow?.organization_id ?? "";
-    const addressJson = unitRow?.address as
-      | {
-          full?: string | null;
-          street?: string | null;
-          number?: string | null;
-          neighborhood?: string | null;
-          city?: string | null;
-          state?: string | null;
-        }
-      | null;
-    const unitAddress: string =
-      (typeof addressJson?.full === "string" && addressJson.full.trim()) ||
-      [
-        addressJson?.street,
-        addressJson?.number,
-        addressJson?.neighborhood,
-        addressJson?.city,
-        addressJson?.state,
-      ]
-        .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-        .join(", ");
-    const unitName: string = (unitRow?.name as string | undefined) ?? "";
-    const unitSlug: string | null = (unitRow?.slug as string | undefined) ?? null;
-    const unitTicketMax: number | null = (unitRow?.price_range_max as number | null | undefined) ?? null;
+    // Falha de leitura é retentável: lançar devolve o claim à fila. Sem isto o
+    // fluxo seguia com organização vazia, consultava billing com
+    // organization_id="" e só falhava adiante em `customer_resolve_failed`
+    // (também retentável): aqui falha mais cedo, sem consultas com tenant vazio.
+    // O núcleo nunca deve receber organização vazia (`invalid_channel_context`
+    // é terminal).
+    if (unitRowError || !unitRow?.organization_id) throw new Error("agent_unit_lookup_failed");
+    const organizationId: string = unitRow.organization_id;
+    // Montagem da unidade do prompt: a mesma do Direct (`_shared/agent/unit-context.ts`).
+    const agentUnit = buildAgentUnit(unitRow);
 
     // Billing check — se org estiver blocked/suspended, não ativar agente IA
     {
@@ -2616,7 +2606,8 @@ async function handleWebhookRequest(
         .select("billing_status")
         .eq("id", organizationId)
         .single();
-      if (orgBilling && (orgBilling.billing_status === "blocked" || orgBilling.billing_status === "suspended")) {
+      // Predicado único com o Direct; leitura que falha (`null`) não bloqueia (polaridade aberta).
+      if (isOrgBillingBlocked(orgBilling)) {
         const persisted = await persistInboundOnly({
           requestId, organizationId, unitId, phone,
           contactName: inbound.contactName, text: incomingText, chatLid: inboundChatLid,
@@ -2861,18 +2852,15 @@ async function handleWebhookRequest(
         channel: "whatsapp",
         unitId,
         organizationId,
-        unit: {
-          row: unitRow ?? null,
-          name: unitName,
-          slug: unitSlug,
-          address: unitAddress,
-          ticketMax: unitTicketMax,
-        },
+        unit: agentUnit,
         conversation: conv,
         customer,
         phone,
         identityLine: `O número de WhatsApp do cliente é ${phone}.`,
         formattingRules: WHATSAPP_FORMATTING_RULES,
+        channelLabel: "WhatsApp",
+        // Sem regra própria: o prompt do WhatsApp não ganha nenhum byte.
+        channelRules: "",
         // Só a saída do LLM passa por aqui — nunca texto determinístico.
         sanitize: sanitizeForWhatsApp,
         // Envio cru do provider; o núcleo o chama atrás da cerca de handoff.

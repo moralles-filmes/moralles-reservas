@@ -3,10 +3,9 @@
  * de leitura/criação. Todas são escopadas pela unidade do turno; o caller nunca
  * escolhe o escopo — ele vem do canal e do cliente já resolvidos.
  *
- * O despacho (`onToolCall`) mora em `turn.ts`, porque é lá que ficam as
- * consequências de cada chamada: `mutatingToolUsed` (desliga o retry
- * silencioso) e `lastMutationOutcome` (copy de §17.7.4). Ferramenta mutante
- * nova DEVE setar as duas no despacho.
+ * O despacho mora em `tool-dispatch.ts`, com as consequências de cada chamada:
+ * `mutatingToolUsed` (desliga o retry silencioso) e `lastMutationOutcome`
+ * (copy de §17.7.4). Ferramenta mutante nova DEVE setar as duas no despacho.
  *
  * Sem client global nem `Deno.env`: o client entra por parâmetro.
  */
@@ -15,9 +14,17 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   checkAvailability as checkAvailabilityCore,
   reserveSlot,
+  type ReserveSlotParams,
 } from "../availability.ts";
 import { resolveOrCreateCustomer } from "../resolve-customer.ts";
 import type { AgentReservationSource } from "./channel-context.ts";
+import {
+  AGENT_RESERVATION_NOTES_MAX_CHARS,
+  reservationNotesForLlm,
+  sanitizeReservationNotes,
+} from "./reservation-notes.ts";
+
+export { AGENT_RESERVATION_NOTES_MAX_CHARS };
 
 // ─── Agent tools ──────────────────────────────────────────────────────────────
 
@@ -62,7 +69,7 @@ export const agentTools: AgentToolDefinition[] = [
         date: { type: "string", description: "Data YYYY-MM-DD" },
         time: { type: "string", description: "Horário HH:MM" },
         party_size: { type: "number", description: "Número de pessoas" },
-        notes: { type: "string", description: "Observações opcionais" },
+        notes: { type: "string", maxLength: AGENT_RESERVATION_NOTES_MAX_CHARS, description: `Observações opcionais (até ${AGENT_RESERVATION_NOTES_MAX_CHARS} caracteres)` },
         hall_name: { type: "string", description: "Opcional: nome do salão preferido." },
       },
       required: ["customer_name", "date", "time", "party_size"],
@@ -89,7 +96,7 @@ export const agentTools: AgentToolDefinition[] = [
         date: { type: "string" },
         time: { type: "string" },
         party_size: { type: "number" },
-        notes: { type: "string" },
+        notes: { type: "string", maxLength: AGENT_RESERVATION_NOTES_MAX_CHARS, description: `Observações (até ${AGENT_RESERVATION_NOTES_MAX_CHARS} caracteres)` },
       },
       required: ["reservation_code"],
     },
@@ -194,6 +201,24 @@ export async function checkAvailability(
   return { available: true, message: result.message };
 }
 
+/**
+ * Código que o hook da porta (`ClaimedIdentityPort.insertReservation`) devolve
+ * quando a RPC recusa pelo teto de reservas ativas do contato. Gêmeo de
+ * `RESERVATION_LIMIT_ERROR_CODE` em `instagram-inbound-core.ts` (teste).
+ */
+export const CLAIMED_RESERVATION_LIMIT_CODE = "instagram_contact_reservation_limit";
+
+/**
+ * Resultado ao LLM quando o teto barra a reserva (R4-h): mensagem fixa e
+ * própria, para ele oferecer alterar ou cancelar em vez de tentar de novo.
+ * Só existe com identidade declarada.
+ */
+export const CLAIMED_RESERVATION_LIMIT_RESULT = {
+  success: false,
+  reason: "reservation_limit",
+  message: "Este contato já tem o número máximo de reservas ativas. Ofereça alterar ou cancelar uma reserva existente.",
+} as const;
+
 export async function createReservation(supabase: SupabaseClient, params: {
   customer_name: string;
   customer_email?: string;
@@ -202,32 +227,82 @@ export async function createReservation(supabase: SupabaseClient, params: {
   party_size: number;
   notes?: string;
   hall_name?: string;
-  phone: string;
+  /**
+   * Cliente do turno, vindo do estado do despacho (canal ou `link_customer_phone`),
+   * nunca do LLM. O telefone dele é o que resolve o cadastro.
+   */
+  customer: { id: string; phone: string };
+  /**
+   * Identidade declarada (Instagram): telefone digitado, não verificado. Com
+   * ela o núcleo não faz I/O de cliente e a reserva só nasce pelo
+   * `insertReservation` da porta.
+   */
+  claimedIdentity: boolean;
+  /**
+   * INSERT da porta (`ClaimedIdentityPort.insertReservation`): grava reserva e
+   * ledger numa transação. Repassado ao `reserveSlot` só com identidade
+   * declarada; sem ele, a identidade declarada falha fechado.
+   */
+  insertReservation?: ReserveSlotParams["insertReservation"];
   unit_id: string;
   organization_id: string;
   source: AgentReservationSource;
 // deno-lint-ignore no-explicit-any
 }): Promise<any> {
-  // Resolve customer com merge preservando dados:
-  //   - lookup por (organization_id, phone)
-  //   - se existe: PRESERVA nome cadastrado, append em emails[]
-  //   - se não existe: cria
-  let customer;
-  try {
-    customer = await resolveOrCreateCustomer(supabase, {
-      organizationId: params.organization_id,
-      phone: params.phone,
-      name: params.customer_name,
-      email: params.customer_email ?? null,
-    });
-  } catch (err) {
-    // O erro do PostgREST/rede não vai ao LLM (e dali ao cliente): só o code ao log.
-    console.error(JSON.stringify({
-      evt: "agent_resolve_customer_failed",
-      code: (err as { code?: string } | null)?.code ?? null,
-    }));
-    return { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
+  const GENERIC_FAIL = { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
+  let customerId: string;
+  if (params.claimedIdentity) {
+    // Identidade declarada: nenhum I/O de cliente aqui (nem resolveOrCreateCustomer,
+    // nem leitura de `customers`). O id vem do estado do despacho, nunca do LLM.
+    // A ÚNICA barreira é a RPC `create_instagram_contact_reservation`, atrás do
+    // `insertReservation` da porta: confere sob lock que o cliente está vivo, é
+    // da organização e é o ligado ao contato. Sem o hook, nada de INSERT direto.
+    if (!params.insertReservation) {
+      console.error(JSON.stringify({ evt: "agent_claimed_identity_without_insert_hook" }));
+      return { ...GENERIC_FAIL };
+    }
+    customerId = params.customer.id;
+  } else {
+    // Resolve customer com merge preservando dados:
+    //   - lookup por (organization_id, phone)
+    //   - se existe: PRESERVA nome cadastrado, append em emails[]
+    //   - se não existe: cria
+    let resolved;
+    try {
+      resolved = await resolveOrCreateCustomer(supabase, {
+        organizationId: params.organization_id,
+        phone: params.customer.phone,
+        name: params.customer_name,
+        email: params.customer_email ?? null,
+      });
+    } catch (err) {
+      // O erro do PostgREST/rede não vai ao LLM (e dali ao cliente): só o code ao log.
+      console.error(JSON.stringify({
+        evt: "agent_resolve_customer_failed",
+        code: (err as { code?: string } | null)?.code ?? null,
+      }));
+      return { ...GENERIC_FAIL };
+    }
+    // WhatsApp (telefone verificado pelo canal): se o telefone resolve para
+    // outro cadastro (editado/fundido no meio do turno), reserva para o que hoje
+    // o detém e só loga o evento.
+    if (resolved.id !== params.customer.id) {
+      console.error(JSON.stringify({ evt: "agent_customer_identity_mismatch", claimedIdentity: false }));
+    }
+    customerId = resolved.id;
   }
+
+  // Com porta, o hook é embrulhado só para saber se a ÚLTIMA recusa foi o teto
+  // do contato; a linha e o retorno passam intactos (o 23505 segue no retry).
+  let reservationLimitHit = false;
+  const portInsert = params.insertReservation;
+  const insertReservation: ReserveSlotParams["insertReservation"] = portInsert
+    ? async (row) => {
+      const r = await portInsert(row);
+      reservationLimitHit = r.error?.code === CLAIMED_RESERVATION_LIMIT_CODE;
+      return r;
+    }
+    : undefined;
 
   const hallId = await resolveHallId(supabase, params.unit_id, params.hall_name, params.party_size);
   const result = await reserveSlot(supabase, {
@@ -236,16 +311,19 @@ export async function createReservation(supabase: SupabaseClient, params: {
     date: params.date,
     time: params.time,
     partySize: params.party_size,
-    customerId: customer.id,
-    notes: params.notes ?? null,
+    customerId,
+    notes: sanitizeReservationNotes(params.notes) ?? null,
     status: "confirmed",
     // Load-bearing: o trigger `enqueue_confirmation_notification` pula a
     // origem do agente; sem isso o cliente recebe a confirmação duplicada.
     source: params.source,
+    // Só com identidade declarada; sem porta, a chamada de sempre (paridade).
+    ...(params.claimedIdentity ? { insertReservation } : {}),
   });
 
   // `=== false`, não `!`: com `strict: false` o `!` não estreita a união.
   if (result.success === false) {
+    if (params.claimedIdentity && reservationLimitHit) return { ...CLAIMED_RESERVATION_LIMIT_RESULT };
     return { success: false, reason: result.reason, message: result.message };
   }
 
@@ -254,21 +332,38 @@ export async function createReservation(supabase: SupabaseClient, params: {
     success: true,
     reservation_code: result.reservationCode,
     message: `Reserva criada! Código: #${result.reservationCode}. Data: ${d}/${m}/${y} às ${params.time} para ${params.party_size} pessoas.`,
+    // Só para o despacho (ledger da identidade declarada); ele o remove antes
+    // de devolver ao LLM.
+    reservationId: result.reservationId,
   };
 }
 
-// deno-lint-ignore no-explicit-any
-export async function listCustomerReservations(supabase: SupabaseClient, customerId: string, unitId: string): Promise<any> {
+/**
+ * Com `reservationIds` (identidade declarada), só as reservas do ledger: a
+ * consulta ganha `.in("id", ids)` e a lista vazia responde sem consultar.
+ */
+export async function listCustomerReservations(
+  supabase: SupabaseClient,
+  customerId: string,
+  unitId: string,
+  reservationIds?: readonly string[],
+  // deno-lint-ignore no-explicit-any
+): Promise<any> {
+  if (reservationIds && reservationIds.length === 0) {
+    return { found: false, message: "Você não tem reservas ativas no momento." };
+  }
   // "Hoje" em BRT: Deno roda em UTC e, das 21h à meia-noite, o dia UTC já virou
   // — o filtro esconderia as reservas de hoje justamente na hora do jantar.
   const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
   const todayBrt = new Date(Date.now() - BRT_OFFSET_MS).toISOString().slice(0, 10);
-  const { data, error } = await supabase
+  let query = supabase
     .from("reservations")
     .select("reservation_code, date, time, party_size, status, notes")
     .eq("customer_id", customerId)
     .eq("unit_id", unitId)
-    .in("status", ["pending", "confirmed"])
+    .in("status", ["pending", "confirmed"]);
+  if (reservationIds) query = query.in("id", [...reservationIds]);
+  const { data, error } = await query
     .gte("date", todayBrt)
     .order("date", { ascending: true })
     .limit(10);
@@ -283,7 +378,7 @@ export async function listCustomerReservations(supabase: SupabaseClient, custome
   return {
     found: true,
     count: data.length,
-    reservations: data.map((r) => { const [y, m, d] = r.date.split("-"); return { reservation_code: r.reservation_code, date: `${d}/${m}/${y}`, time: r.time, party_size: r.party_size, status: r.status, notes: r.notes }; }),
+    reservations: data.map((r) => { const [y, m, d] = r.date.split("-"); return { reservation_code: r.reservation_code, date: `${d}/${m}/${y}`, time: r.time, party_size: r.party_size, status: r.status, notes: reservationNotesForLlm(r.notes) }; }),
   };
 }
 

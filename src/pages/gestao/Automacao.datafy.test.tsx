@@ -8,6 +8,7 @@ import Automacao from "./Automacao";
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/lib/supabase", () => ({ supabase: { functions: { invoke: mocks.invoke } } }));
 vi.mock("@/hooks/useAllUnits", () => ({ useUnitBySlug: () => ({ isLoading: false, data: { id: "unit-a", name: "Unit", organization_name: "Org", default_whatsapp_provider: "datafy" } }) }));
+vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ isPlatformAdmin: false }) }));
 vi.mock("@/components/billing/WhatsappServiceBanner", () => ({ WhatsappServiceBanner: () => null }));
 const capabilities = { manualCredentials: true, automaticProvisioning: false, automaticWebhook: false };
 beforeEach(() => {

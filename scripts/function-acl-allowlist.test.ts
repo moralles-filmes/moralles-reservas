@@ -1514,6 +1514,287 @@ describe("função nova em app_private revoga de PUBLIC (Ruling 17)", () => {
 });
 
 /**
+ * Função nova em `public` revoga de PUBLIC, anon e authenticated na MESMA
+ * migration (Task 4.0d, I-1 da review da 4.0b).
+ *
+ * Por quê: `CREATE FUNCTION` concede EXECUTE a PUBLIC e `public` é exposto pela
+ * anon key (`/rpc`). Uma função de `public` só para `service_role` e sem
+ * `revoke` não tem grant textual a anon/authenticated nem entrada na allowlist,
+ * então nenhum predicado acima a enxerga — e fica chamável por quem tem a anon
+ * key. A regra existia só para `app_private`; esta a estende a `public`
+ * (trigger functions inclusive: o grant a PUBLIC vale para elas também).
+ *
+ * CORTE POR VERSÃO (`PUBLIC_CREATE_REVOKE_FROM`): medido contra as migrations
+ * reais, 91 criações anteriores acusam (todas legadas: o grant de PUBLIC delas
+ * foi fechado pelo hotfix 085/`audit_function_acl` em banco, não por revoke na
+ * mesma migration). A última acusada é 20261017203000
+ * (`guard_whatsapp_template_scope`, `release_whatsapp_template_channel`); toda
+ * migration de 20261018000000 em diante já revoga. O corte é a primeira versão
+ * após essa última legada, então zero achados hoje e toda função nova é
+ * cobrada. Não rebaixe o corte para "limpar" legado: o legado está coberto em
+ * banco, e mexer em migration aplicada é drift de `schema_migrations`.
+ *
+ * Reaproveita `FN_ARGS`, `splitArgs`, `key` e `stripComments`. O `revoke` pode
+ * vir em mais de um statement (união dos papéis) e tem de citar `public`,
+ * `anon` e `authenticated` explicitamente. Uma migration que dá `drop` e
+ * `create` na mesma função exige o revoke NA migration do create (o drop
+ * reabre o grant), e o teste já olha cada migration isolada.
+ */
+const PUBLIC_CREATE_REVOKE_FROM = "20261018000000";
+const PUBLIC_REVOKE_ROLES = ["public", "anon", "authenticated"] as const;
+
+/**
+ * O create é detectado SÓ pelo nome (regex frouxo, até o "("); a lista de
+ * argumentos é extraída por contador de parênteses balanceados que respeita
+ * string entre aspas simples. Não dá para usar o FN_ARGS aqui: ele aceita um
+ * nível de parênteses, e um default como
+ * "(now() at time zone 'America/Sao_Paulo')::date" ou "coalesce(now(), now())"
+ * faz o create sumir do gate, e este regex alimenta uma EXIGÊNCIA (não casar é
+ * falha ABERTA). Se a assinatura não for analisável (parêntese sem fechar), o
+ * gate REPROVA ("assinatura não analisável"), nunca ignora.
+ */
+const PUBLIC_CREATE_RE =
+  /create\s+(?:or\s+replace\s+)?function\s+(?:"?public"?\s*\.\s*)?"?([a-z0-9_]+)"?\s*\(/gi;
+
+/** Lista de argumentos a partir do "(" já consumido (pos = índice seguinte); null se não fechar. */
+function balancedArgs(sql: string, pos: number): string | null {
+  let depth = 1;
+  let inStr = false;
+  for (let i = pos; i < sql.length; i++) {
+    const ch = sql[i];
+    if (inStr) {
+      if (ch === "'") {
+        if (sql[i + 1] === "'") i++;
+        else inStr = false;
+      }
+      continue;
+    }
+    if (ch === "'") inStr = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")" && --depth === 0) return sql.slice(pos, i);
+  }
+  return null;
+}
+
+/** Vírgulas de nível zero, fora de string e de parênteses. */
+function splitArgsQuoted(raw: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let inStr = false;
+  let cur = "";
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inStr) {
+      cur += ch;
+      if (ch === "'") {
+        if (raw[i + 1] === "'") cur += raw[++i];
+        else inStr = false;
+      }
+      continue;
+    }
+    if (ch === "'") inStr = true;
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (ch === "," && depth === 0) {
+      parts.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  parts.push(cur);
+  return parts.map((x) => x.trim()).filter((x) => x !== "");
+}
+
+interface PublicCreate {
+  file: string;
+  name: string;
+  /** null = assinatura não analisável. */
+  argCount: number | null;
+  offset: number;
+}
+
+/** "sql" já sem comentário de linha. Nome + aridade, como o resto do arquivo. */
+function publicFunctionsCreatedIn(sql: string, file: string): PublicCreate[] {
+  const out: PublicCreate[] = [];
+  for (const m of sql.matchAll(PUBLIC_CREATE_RE)) {
+    const offset = m.index ?? 0;
+    const args = balancedArgs(sql, offset + m[0].length);
+    out.push({ file, name: m[1], argCount: args === null ? null : splitArgsQuoted(args).length, offset });
+  }
+  return out;
+}
+
+interface PublicRevoke {
+  offset: number;
+  roles: Set<string>;
+}
+
+/** key -> revokes, cada um com a posição no arquivo (a ordem importa). */
+function publicRevokesIn(sql: string): Map<string, PublicRevoke[]> {
+  const out = new Map<string, PublicRevoke[]>();
+  for (const m of sql.matchAll(REVOKE_PUBLIC_RE)) {
+    const k = key(m[1], splitArgs(m[2]).length);
+    const roles = new Set<string>();
+    for (const r of m[3].split(",")) roles.add(r.trim().toLowerCase());
+    out.set(k, [...(out.get(k) ?? []), { offset: m.index ?? 0, roles }]);
+  }
+  return out;
+}
+
+/**
+ * O revoke só vale se vier DEPOIS do último create da mesma função: um revoke
+ * anterior a um drop+create (ou a um create or replace posterior) agiu no
+ * objeto antigo, e o novo nasce com PUBLIC.
+ */
+function publicFunctionsWithoutFullRevoke(
+  created: PublicCreate[],
+  revokes: Map<string, PublicRevoke[]>,
+): string[] {
+  const missing: string[] = [];
+  const lastCreate = new Map<string, number>();
+  for (const fn of created) {
+    if (fn.argCount === null) continue;
+    const k = key(fn.name, fn.argCount);
+    lastCreate.set(k, Math.max(lastCreate.get(k) ?? -1, fn.offset));
+  }
+  const reported = new Set<string>();
+  for (const fn of created) {
+    if (fn.argCount === null) {
+      missing.push(`${fn.file}: public.${fn.name} assinatura não analisável`);
+      continue;
+    }
+    const k = key(fn.name, fn.argCount);
+    if (reported.has(k)) continue;
+    reported.add(k);
+    const depois = (revokes.get(k) ?? []).filter((r) => r.offset > (lastCreate.get(k) ?? -1));
+    const roles = new Set(depois.flatMap((r) => [...r.roles]));
+    const faltam = PUBLIC_REVOKE_ROLES.filter((r) => !roles.has(r));
+    if (faltam.length > 0) {
+      missing.push(`${fn.file}: public.${fn.name}/${fn.argCount} sem revoke de ${faltam.join(", ")}`);
+    }
+  }
+  return missing;
+}
+
+function publicCreateFindings(sqlRaw: string, file: string): string[] {
+  const sql = stripComments(sqlRaw);
+  return publicFunctionsWithoutFullRevoke(
+    publicFunctionsCreatedIn(sql, file),
+    publicRevokesIn(sql),
+  );
+}
+
+describe("função nova em public revoga de public, anon e authenticated (Task 4.0d)", () => {
+  const CREATE = "create or replace function public.oraculo(p_x uuid) returns void language sql as $ select 1 $;\n";
+
+  it("controle positivo: função sintética SEM revoke reprova, nomeando-a", () => {
+    expect(publicCreateFindings(CREATE, "fake.sql")).toEqual([
+      "fake.sql: public.oraculo/1 sem revoke de public, anon, authenticated",
+    ]);
+  });
+
+  it("controle positivo: só grant a service_role (sem revoke) reprova", () => {
+    const sql = CREATE + "grant execute on function public.oraculo(uuid) to service_role;";
+    expect(publicCreateFindings(sql, "fake.sql")).toHaveLength(1);
+  });
+
+  it("COM revoke de public, anon e authenticated passa (um ou vários statements)", () => {
+    const um = CREATE + "revoke all on function public.oraculo(uuid) from public, anon, authenticated;";
+    const dois =
+      CREATE +
+      "revoke execute on function public.oraculo(uuid) from public;\n" +
+      "revoke execute on function public.oraculo(uuid) from anon, authenticated;";
+    expect(publicCreateFindings(um, "fake.sql")).toEqual([]);
+    expect(publicCreateFindings(dois, "fake.sql")).toEqual([]);
+  });
+
+  it("revoke parcial (sem anon explícito) reprova nomeando o papel que falta", () => {
+    const sql = CREATE + "revoke all on function public.oraculo(uuid) from public, authenticated;";
+    expect(publicCreateFindings(sql, "fake.sql")).toEqual([
+      "fake.sql: public.oraculo/1 sem revoke de anon",
+    ]);
+  });
+
+  it("trigger function entra, com e sem o qualificador public.", () => {
+    const sql = "create function guard_x() returns trigger language plpgsql as $ begin return new; end $;";
+    expect(publicCreateFindings(sql, "fake.sql")).toEqual([
+      "fake.sql: public.guard_x/0 sem revoke de public, anon, authenticated",
+    ]);
+    const ok = sql + "\nrevoke all on function public.guard_x() from public, anon, authenticated;";
+    expect(publicCreateFindings(ok, "fake.sql")).toEqual([]);
+  });
+
+  it("drop + create sem novo revoke reprova: o revoke ANTERIOR ao drop não vale", () => {
+    // O revoke agiu no objeto antigo; o create seguinte nasce com PUBLIC.
+    const revoke = "revoke all on function public.oraculo(uuid) from public, anon, authenticated;\n";
+    const antes = revoke + "drop function if exists public.oraculo(uuid);\n" + CREATE;
+    expect(publicCreateFindings(antes, "fake.sql")).toEqual([
+      "fake.sql: public.oraculo/1 sem revoke de public, anon, authenticated",
+    ]);
+    // Controle positivo da ordem: o mesmo revoke DEPOIS do create passa.
+    const depois = "drop function if exists public.oraculo(uuid);\n" + CREATE + revoke;
+    expect(publicCreateFindings(depois, "fake.sql")).toEqual([]);
+    // create or replace posterior ao revoke também exige novo revoke.
+    expect(publicCreateFindings(CREATE + revoke + CREATE, "fake.sql")).toHaveLength(1);
+  });
+
+  it("default com parênteses aninhados não esconde a função do gate (I-1)", () => {
+    const brt =
+      "create function public.f_brt(p_d date default (now() at time zone 'America/Sao_Paulo')::date) returns void language sql as $$ select 1 $$;\n";
+    const coal =
+      "create function public.f_coal(p_t timestamptz default coalesce(now(), now()), p_n int default 3) returns void language sql as $$ select 1 $$;\n";
+    expect(publicCreateFindings(brt, "fake.sql")).toEqual([
+      "fake.sql: public.f_brt/1 sem revoke de public, anon, authenticated",
+    ]);
+    expect(publicCreateFindings(coal, "fake.sql")).toEqual([
+      "fake.sql: public.f_coal/2 sem revoke de public, anon, authenticated",
+    ]);
+    const ok =
+      brt + "revoke all on function public.f_brt(date) from public, anon, authenticated;\n" +
+      coal + "revoke all on function public.f_coal(timestamptz, int) from public, anon, authenticated;\n";
+    expect(publicCreateFindings(ok, "fake.sql")).toEqual([]);
+  });
+
+  it("vírgula e parêntese dentro de string do default não contam", () => {
+    const sql =
+      "create function public.f_str(p_a text default 'a,(b', p_b int default 1) returns void language sql as $$ select 1 $$;\n" +
+      "revoke all on function public.f_str(text, int) from public, anon, authenticated;";
+    expect(publicCreateFindings(sql, "fake.sql")).toEqual([]);
+  });
+
+  it("assinatura não analisável REPROVA (falha fechada)", () => {
+    expect(publicCreateFindings("create function public.f_quebrada(p_d date default (now()", "fake.sql")).toEqual([
+      "fake.sql: public.f_quebrada assinatura não analisável",
+    ]);
+  });
+
+  it("revoke de outra aridade ou de outra função não cobre a criada", () => {
+    const sql = CREATE + "revoke all on function public.oraculo(uuid, uuid) from public, anon, authenticated;";
+    expect(publicCreateFindings(sql, "fake.sql")).toHaveLength(1);
+  });
+
+  it("create em app_private e create dentro de comentário não entram aqui", () => {
+    expect(
+      publicCreateFindings("create function app_private.oraculo(p_x uuid) returns void language sql as $ select 1 $;", "fake.sql"),
+    ).toEqual([]);
+    expect(publicCreateFindings("-- " + CREATE, "fake.sql")).toEqual([]);
+  });
+
+  it("toda função criada em public desde o corte é revogada de public, anon e authenticated", () => {
+    const missing: string[] = [];
+    for (const f of migrationFiles().filter((x) => versionOf(x) >= PUBLIC_CREATE_REVOKE_FROM)) {
+      missing.push(...publicCreateFindings(readFileSync(join(MIGRATIONS_DIR, f), "utf8").replace(/\r/g, ""), f));
+    }
+    expect(
+      missing,
+      "Função nova em public sem revoke de PUBLIC/anon/authenticated na mesma migration — " +
+        "CREATE FUNCTION concede a PUBLIC e a anon key alcança public via /rpc:\n" + missing.join("\n"),
+    ).toEqual([]);
+  });
+});
+
+/**
  * Versão da 106 — a migration que tirou os três helpers de RLS de `public`.
  *
  * O corte dos dois describes abaixo é INCLUSIVO (`>=`), um grau mais estrito do

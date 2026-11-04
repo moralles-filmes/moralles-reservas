@@ -118,7 +118,7 @@ describe("composeAgentSystemPrompt: camadas 8 a 11 (spec §4.1 e §6.3)", () => 
   const parts = (over: Partial<AgentPromptParts> = {}): AgentPromptParts => ({
     includeFaq: true, agentName: "Yumi", restaurantName: "Exemplo", globalPromptBody: GLOBAL_PERSONA_BASELINE,
     identityLine: "ID.", todayBR: "segunda-feira, 05/10/2026", weekdayName: "segunda-feira", upcomingDaysLines: [],
-    customerFirstName: "", formattingRules: "FORMATACAO", unitAddress: "", restaurantInfoLines: [],
+    customerFirstName: "", formattingRules: "FORMATACAO", channelLabel: "WhatsApp", channelRules: "", unitAddress: "", restaurantInfoLines: [],
     hallScheduleBlock: null, hoursLines: [], specialLines: [], blockedLines: [], giftbackLines: [],
     prefsLines: ["- Alergias: camarão"], customPrompt: "INSTRUCAO_DA_PLATAFORMA",
     settingsMap: {

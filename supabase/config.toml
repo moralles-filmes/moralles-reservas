@@ -9,6 +9,21 @@ policy = "per_worker"
 [functions.webhook-whatsapp]
 verify_jwt = false
 
+# Webhook do Direct do Instagram: chamado pela Meta, sem JWT. Autentica pelo
+# HMAC `X-Hub-Signature-256` sobre o corpo cru (GET: `hub.verify_token`).
+[functions.webhook-instagram]
+verify_jwt = false
+
+# Conexão da conta do Instagram (start/callback/status/disconnect/resubscribe):
+# invocada pelo painel autenticado. JWT no gateway + getUser e papel no código.
+[functions.instagram-connect]
+verify_jwt = true
+
+# Worker da fila do Direct: kick do webhook-instagram e varredura do pg_cron,
+# ambos só com x-internal-key (requireInternalAuth é a primeira instrução).
+[functions.process-instagram-inbound]
+verify_jwt = false
+
 [functions.create-reservation]
 verify_jwt = false
 

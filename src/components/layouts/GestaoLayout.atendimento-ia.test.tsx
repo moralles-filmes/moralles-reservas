@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ signOut: vi.fn(), isPlatformAdmin: false }) }));
 vi.mock("@/hooks/useCurrentUnit", () => ({ useCurrentUnit: () => mocks.unit.current }));
 vi.mock("@/hooks/useAwaitingHumanCount", () => ({ useAwaitingHumanCount: () => 0 }));
+vi.mock("@/hooks/useInstagram", () => ({ useInstagramModule: () => ({ data: undefined }) }));
 vi.mock("@/components/layouts/SidebarUnitProfile", () => ({ SidebarUnitProfile: () => null }));
 vi.mock("@/components/layouts/AdminShell", () => ({
   AdminShell: ({ sidebar, children }: { sidebar: React.ReactNode; children: React.ReactNode }) => (

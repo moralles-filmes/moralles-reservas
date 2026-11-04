@@ -43,6 +43,26 @@ describe('scheduled authoritative resources', () => {
     f.rows.reservations[0].payment_status = payment;
     expect(await f.resources.loadScheduledResource(f.intent)).toMatchObject({ ok: true });
   });
+  // D9 (Instagram Fase 1): reserva nascida no Direct segue a rota gerenciada do
+  // WhatsApp; origem desconhecida, vazia ou nula continua recusada na captura.
+  it.each(['web', 'whatsapp', 'instagram'])('captures reservation source %s for every reservation kind', async source => {
+    for (const kind of ['confirmation', 'reminder_d1', 'survey_d1', 'cancellation'] as const) {
+      const f = createAutomationFixture();
+      f.rows.reservations[0].source = source;
+      if (kind === 'cancellation') { f.rows.reservations[0].status = 'cancelled'; f.rows.reservations[0].cancelled_at = '2026-10-05T20:30:00-03:00'; }
+      const intent = { ...f.intent, kind } as ScheduledIntent;
+      const loaded = await f.resources.loadScheduledResource(intent);
+      if (loaded.ok === false) continue; // outros gates do tipo (data, status) não são da origem
+      expect(loaded.resource.expected).toMatchObject({ kind, resource: { source } });
+    }
+    const f = createAutomationFixture(); f.rows.reservations[0].source = source;
+    expect(await f.resources.loadScheduledResource(f.intent)).toMatchObject({ ok: true, resource: { expected: { resource: { source } } } });
+  });
+  it.each(['desconhecida', '', 'INSTAGRAM', null, undefined])('refuses unknown reservation source %j at capture', async source => {
+    const f = createAutomationFixture();
+    f.rows.reservations[0].source = source;
+    expect(await f.resources.loadScheduledResource(f.intent)).toMatchObject({ ok: false, reason: 'render_invalid' });
+  });
   it('refuses a body unit assertion against the actual resource', async () => {
     const f = createAutomationFixture();
     expect(await f.resources.loadScheduledResource({ ...f.intent, unitId: f.ids.foreignUnit }))

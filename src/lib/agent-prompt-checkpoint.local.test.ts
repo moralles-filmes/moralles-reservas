@@ -126,13 +126,18 @@ describe.skipIf(!INPUT)("checkpoint C-B3: prompt das unidades antes (passo A) e 
     const current = await import("../../supabase/functions/_shared/agent/system-prompt") as unknown as { loadAgentSystemPrompt: LoadFn };
 
     for (const u of units) {
+      const checkpointCustomer = { id: "checkpoint-customer", name: "Cliente", phone: "11999999999" };
       const args = {
         unitId: `checkpoint-${u.slug}`,
         unit: { row: u.unit, address: "", name: u.unit.name ?? "", slug: null, ticketMax: null },
-        customer: { id: "checkpoint-customer", name: "Cliente", phone: "11999999999" },
+        // `customer` para o loader do commit base; `privateCustomer` para o atual.
+        customer: checkpointCustomer,
+        privateCustomer: checkpointCustomer,
         phone: "11999999999",
         identityLine: "O número de WhatsApp do cliente é 11999999999.",
         formattingRules: "FORMATAÇÃO DO CANAL (fixa no checkpoint)",
+        channelLabel: "WhatsApp",
+        channelRules: "",
         appBaseUrl: () => "https://exemplo.invalid",
         requestId: "checkpoint",
         log: () => {},

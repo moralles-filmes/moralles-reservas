@@ -231,11 +231,29 @@
       "DELTA MARKETING: quatro RPCs DEFINER authenticated com JWT real, acesso da unidade por papel e nenhuma autoridade de envio: projeção 9/39/48. As escritas exigem owner e CAS.",
       "DELTA serviço v2 self-service: três RPCs DEFINER authenticated (leitura com membership, preferência CAS owner/gerente/admin e rollout global admin): projeção 9/42/51.",
       "DELTA camada global do prompt do agente (20261029120100): duas RPCs DEFINER authenticated com guarda platform_admin (publicar e restaurar versão): projeção 9/44/53.",
+      "O módulo Instagram acrescenta duas RPCs DEFINER authenticated:",
+      "set_unit_module_grant (guarda platform_admin) e get_unit_modules",
+      "(guarda membro ou platform_admin): projeção 9/46/55.",
+      "A conta do Instagram acrescenta get_instagram_account_status (DEFINER",
+      "authenticated, guarda membro ou platform_admin); as outras oito RPCs da",
+      "conta, do contato e do ledger são só service_role: projeção 9/47/56.",
+      "A fila do Instagram acrescenta get_instagram_diagnostics (DEFINER",
+      "authenticated, guarda platform_admin); as oito RPCs da fila e do ledger",
+      "são só service_role e os dois wrappers de cron não têm EXECUTE de API:",
+      "projeção 9/48/57.",
+      "A reserva atômica do contato do Instagram (20261103120600) acrescenta",
+      "create_instagram_contact_reservation e recria record_ e link_ do contato,",
+      "as três só service_role: projeção 9/48/57 inalterada.",
+      "A Task 4.5 recria app_private.whatsapp_automation_post_inner (sem EXECUTE",
+      "de API), troca set_instagram_account_status e record_instagram_token_refresh",
+      "pelas versões com CAS de connected_at e acrescenta",
+      "release_instagram_message_claim, as três só service_role: projeção",
+      "9/48/57 inalterada.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,
-    "0029": 44,
-    "total": 53
+    "0029": 48,
+    "total": 57
   },
 
   "public_anon": [
@@ -698,6 +716,38 @@
       "why": "Planta do salão: libera a mesa de um passante sentado. Não muda status nem cria linha; carimbo de presença (released_at), nunca status left, para não tirar o passante das métricas de sentados. INVOKER sobre a RLS, com o paralelo platform_admin_all_walk_ins criado na mesma migration. Medido no pré-voo 81 (P-9, P-11, P-12, P-14) com controle P-CP2.",
       "security_definer": false,
       "advisor_lints": []
+    },
+    {
+      "name": "set_unit_module_grant",
+      "args": "p_unit_id uuid, p_module text, p_active boolean",
+      "roles": ["authenticated"],
+      "why": "Concessão e revogação de módulo pago por unidade (Instagram), migration 20261103120000. Guarda interna app_private.is_platform_admin(auth.uid()), senão 42501, ANTES de qualquer leitura da unidade; ator de auth.uid(), nunca parâmetro; organização tirada de units. Idempotente nos dois sentidos (índice único parcial de um grant ativo por unidade e módulo); ao conceder cria instagram_settings com on conflict do nothing. unit_module_grants é FORCE RLS sem policy e sem privilégio para anon/authenticated: esta RPC é o único caminho de escrita do painel. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-1.1, IG-1.2, controles C-IG-1.1 e C-IG-1.2).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_unit_modules",
+      "args": "p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "Leitura dos módulos da unidade para o painel (uma linha por módulo do catálogo, ativo ou não), migration 20261103120000. Guarda interna app_private.is_unit_member(auth.uid(), p_unit_id) OR app_private.is_platform_admin(auth.uid()), senão 42501; unidade alheia e inexistente caem na mesma recusa (sem oráculo de existência). DEFINER porque unit_module_grants não concede nada a authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-1.3, controle C-IG-1.3).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_instagram_account_status",
+      "args": "p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "Projeção client-safe da conta do Instagram da unidade para o painel (username, status, vencimento do token, conexão, assinatura de messages, último erro), migration 20261103120100. Guarda interna app_private.is_unit_member(auth.uid(), p_unit_id) OR app_private.is_platform_admin(auth.uid()), senão 42501; unidade alheia, inexistente e sessão sem sub caem na mesma recusa (sem oráculo de existência). Zero linhas sem conta ativa. Nunca devolve token, ponteiro do Vault nem ig_user_id. DEFINER porque instagram_accounts é FORCE RLS sem policy e sem privilégio para authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-2.1, controle C-IG-2.1).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_instagram_diagnostics",
+      "args": "p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "Diagnóstico da ingestão do Instagram para a plataforma (último evento, contagem da fila por estado, pendente mais antigo e desfechos de 24h), migration 20261103120200. Guarda interna app_private.is_platform_admin(auth.uid()), senão 42501; owner, gerente, operador e sessão sem sub caem na mesma recusa. Só contagens e instantes: nunca corpo, erro, mid nem meta. DEFINER porque instagram_inbound_events e instagram_processed_messages são FORCE RLS sem policy e sem privilégio para authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-3.4, controle C-IG-3.4).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
     }
   ]
 }

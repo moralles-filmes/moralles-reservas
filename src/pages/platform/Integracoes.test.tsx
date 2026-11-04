@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => ({
       { key: "datafy_account_token", configured: true, last4: "test", updated_at: null },
       { key: "stripe_secret_key", configured: true, last4: "68HP", updated_at: null },
       { key: "asaas_api_key", configured: false, last4: null, updated_at: null },
+      { key: "instagram_app_secret", configured: false, last4: null, updated_at: null },
+      { key: "instagram_verify_token", configured: false, last4: null, updated_at: null },
+      { key: "meta_app_secret", configured: false, last4: null, updated_at: null },
     ] as unknown[],
   },
 }));
@@ -68,6 +71,20 @@ describe("Integrações e chaves", () => {
     expect(screen.getByLabelText("Chave secreta (Secret Key)")).toBeTruthy();
     expect(screen.getByLabelText("Chave da API (Access Token)")).toBeTruthy();
     expect(screen.getByText(/Unidades › Configurar › Pagamentos/)).toBeTruthy();
+  });
+
+  it("agrupa os segredos do Instagram num cartão próprio, sem cair em Outras chaves", () => {
+    renderPage();
+    const title = screen.getByText("Instagram");
+    const card = title.closest('[class*="rounded"]');
+    expect(card?.textContent).toContain("Segredo do app do Instagram");
+    expect(card?.textContent).toContain("Token de verificação do webhook");
+    expect(card?.textContent).toContain("Segredo do app da Meta (opcional)");
+    expect(card?.textContent).not.toContain("Stripe");
+    expect(screen.queryByText("Outras chaves")).toBeNull();
+    expect(screen.queryByText("instagram_app_secret")).toBeNull();
+    const input = screen.getByLabelText("Segredo do app do Instagram");
+    expect(input.getAttribute("type")).toBe("password");
   });
 
   it("falha ao carregar não vira tela vazia", () => {

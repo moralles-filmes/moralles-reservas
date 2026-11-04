@@ -1365,8 +1365,10 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
 // chega ao cliente do restaurante.
 //
 // Cada recorte lê o arquivo onde o código MORA: o turno em `turnCode`, o catch
-// externo em `webhookCode`. Varreduras sem ordem (portas de handoff, textos
-// redigitados) leem os dois juntos em `agentCode`.
+// externo em `webhookCode`, o `switch` das ferramentas em `dispatchCode`
+// (`_shared/agent/tool-dispatch.ts`, desde a Task 3.4 do Instagram).
+// Varreduras sem ordem (portas de handoff, textos redigitados) leem os três
+// juntos em `agentCode`.
 //
 // MESMA REGRA DE PROJETO do resto do arquivo: nada fatia por janela de N
 // caracteres. Os recortes usam as mesmas quatro fronteiras sintáticas.
@@ -1376,6 +1378,7 @@ const webhook = readFileSync(
   "utf8",
 ).replace(/\r\n/g, "\n");
 const turn = readFileSync(join(SHARED, "agent", "turn.ts"), "utf8").replace(/\r\n/g, "\n");
+const dispatch = readFileSync(join(SHARED, "agent", "tool-dispatch.ts"), "utf8").replace(/\r\n/g, "\n");
 
 /**
  * Os fontes SEM o conteúdo dos comentários, para os recortes estruturais: uma
@@ -1386,8 +1389,9 @@ const turn = readFileSync(join(SHARED, "agent", "turn.ts"), "utf8").replace(/\r\
  */
 const webhookCode = blankComments(webhook);
 const turnCode = blankComments(turn);
+const dispatchCode = blankComments(dispatch);
 /** Só para varreduras sem ordem entre arquivos — nunca para recorte por índice. */
-const agentCode = `${webhookCode}\n${turnCode}`;
+const agentCode = `${webhookCode}\n${turnCode}\n${dispatchCode}`;
 
 /** Saída do turno: `run` devolve com `return;` e o adapter responde ao HTTP. */
 const SAIDA_DO_TURNO = /\breturn;/;
@@ -2120,13 +2124,25 @@ describe("turno do agente — ligação da franquia", () => {
     // Sem a classificação, `lastMutationOutcome` fica em UNKNOWN — direção
     // segura, mas a distinção das três situações de §17.7.4 morre em silêncio.
     // E `mutatingToolUsed` é o que desliga o retry: sem ele, reserva duplicada.
+    // O `switch` mora em `tool-dispatch.ts` desde a Task 3.4; o turno espelha o
+    // estado do despacho depois de cada chamada (caso logo abaixo).
     for (const tool of ["create_reservation", "update_reservation", "cancel_reservation"]) {
-      const i = turnCode.indexOf(`case "${tool}":`);
+      const i = dispatchCode.indexOf(`case "${tool}":`);
       expect(i, `a ferramenta ${tool} sumiu`).toBeGreaterThan(-1);
-      const caso = turnCode.slice(i, turnCode.indexOf("break;", i));
+      const caso = dispatchCode.slice(i, dispatchCode.indexOf("break;", i));
       expect(caso, `${tool} não desliga o retry silencioso`).toContain("mutatingToolUsed = true");
       expect(caso, `${tool} não classifica o desfecho`).toContain("lastMutationOutcome =");
     }
+    // E o turno LÊ o que o despacho gravou: o estado é o mesmo objeto entregue
+    // ao despachante, e o espelho roda num `finally`, inclusive quando a
+    // ferramenta lança. Sem isso o retry silencioso não veria a mutação.
+    const despachante = turnCode.slice(turnCode.indexOf("createToolDispatcher("));
+    expect(despachante.slice(0, despachante.indexOf(");")), "o turno não entrega o próprio estado ao despacho")
+      .toContain("state: toolState");
+    const onToolCall = turnCode.slice(turnCode.indexOf("onToolCall:"));
+    const espelho = onToolCall.slice(onToolCall.indexOf("finally {"), onToolCall.indexOf("},"));
+    expect(espelho, "o turno não espelha mutatingToolUsed do despacho").toContain("mutatingToolUsed = toolState.mutatingToolUsed;");
+    expect(espelho, "o turno não espelha o desfecho do despacho").toContain('lastMutationOutcome = toolState.lastMutationOutcome ?? "UNKNOWN";');
   });
 
   it("a reserva é finalizada em TODOS os desfechos do turno", () => {

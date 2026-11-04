@@ -8,6 +8,9 @@ import { hasUnitAccess } from "../_shared/authz.ts";
 import { resolveUnitChannelBinding } from "../_shared/whatsapp-org-provider-core.ts";
 import { isMetaShapedProvider } from "../_shared/whatsapp-provider-core.ts";
 import { evaluateManualServiceWindow } from "../_shared/whatsapp-manual-service-window-core.ts";
+import { createInstagramGraph, type GraphResult } from "../_shared/instagram-graph.ts";
+import { isGraphOutcomeUnknown, redactSecrets } from "../_shared/instagram-graph-core.ts";
+import { splitInstagramText } from "../_shared/instagram-format.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -18,6 +21,278 @@ const corsHeaders = {
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
 };
+
+const graph = createInstagramGraph((input, init) => fetch(input, init));
+
+function json(status: number, body: Record<string, unknown>): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+/** Mesma decisão do `beforeOutbound` do WhatsApp: janela aberta no relógio de AGORA. */
+function serviceWindowOpenNow(window: { lastInboundAt: string | null; closesAt: string | null }): boolean {
+  const currentTime = Date.now();
+  const start = Date.parse(window.lastInboundAt ?? "");
+  const deadline = Date.parse(window.closesAt ?? "");
+  return Number.isFinite(start) && Number.isFinite(deadline) && currentTime >= start && currentTime < deadline;
+}
+
+interface ManualConversation {
+  id: string;
+  unit_id: string;
+  status: string;
+  channel: string;
+  instagram_contact_id: string | null;
+  instagram_contact: { igsid?: unknown; instagram_account_id?: unknown } | null;
+}
+
+type Stop =
+  | { kind: "window" }
+  | { kind: "unknown" }
+  | { kind: "failed"; errorClass: string; status: number | null; code: number | null };
+
+/**
+ * Envio manual pelo Direct (Task 4.2). Chamado só DEPOIS do `hasUnitAccess`.
+ * NUNCA chama o provider WhatsApp, mesmo com cliente ligado que tenha telefone.
+ * Sem retry: a parte com desfecho desconhecido pode ter saído e não se reenvia.
+ * O histórico recebe só as partes confirmadas, com `provider_message_ids`, para
+ * que o eco delas conte como `echo_own` no worker (D5).
+ */
+async function sendInstagramManual(
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  conv: ManualConversation,
+  userId: string,
+  message: string,
+  secrets: string[],
+): Promise<Response> {
+  if (conv.status !== "human_active" && conv.status !== "awaiting_human") {
+    return json(409, { error: "conversa não está em atendimento humano" });
+  }
+  const contact = conv.instagram_contact;
+  const igsid = typeof contact?.igsid === "string" ? contact.igsid : "";
+  const accountId = typeof contact?.instagram_account_id === "string" ? contact.instagram_account_id : "";
+  if (!conv.instagram_contact_id || !igsid || !accountId) {
+    return json(422, { error: "contato do Instagram não encontrado" });
+  }
+
+  // Grant ativo do módulo (R4-m), mesma leitura do gate do worker 4.1. Erro de
+  // leitura fecha (503). `dm_enabled` NÃO entra aqui: controla só a IA.
+  const { data: grants, error: grantErr } = await supabase
+    .from("unit_module_grants")
+    .select("unit_id")
+    .eq("unit_id", conv.unit_id)
+    .eq("module", "instagram")
+    .is("revoked_at", null)
+    .limit(1);
+  if (grantErr) {
+    jsonLog("error", { evt: "manual_instagram_grant_read_failed", convId: conv.id, code: grantErr.code ?? null });
+    return json(503, { error: "Não foi possível validar o módulo Instagram." });
+  }
+  if (!Array.isArray(grants) || grants.length === 0) {
+    return json(409, { error: "INSTAGRAM_MODULE_DISABLED" });
+  }
+
+  // Conta da MESMA unidade da conversa (o tenant vem da conversa autorizada,
+  // nunca do caller), e só `connected` envia.
+  const { data: account, error: accountErr } = await supabase
+    .from("instagram_accounts")
+    .select("id, unit_id, ig_user_id, page_id, status, connected_at")
+    .eq("id", accountId)
+    .eq("unit_id", conv.unit_id)
+    .maybeSingle();
+  if (accountErr) {
+    jsonLog("error", { evt: "manual_instagram_account_read_failed", convId: conv.id, code: accountErr.code ?? null });
+    return json(503, { error: "Não foi possível validar a conta do Instagram." });
+  }
+  if (
+    !account || account.id !== accountId || account.unit_id !== conv.unit_id || account.status !== "connected" ||
+    typeof account.ig_user_id !== "string" || account.ig_user_id === "" || typeof account.connected_at !== "string"
+  ) {
+    return json(409, { error: "INSTAGRAM_NOT_CONNECTED" });
+  }
+  if (typeof account.page_id !== "string" || !/^[0-9]{1,64}$/.test(account.page_id)) {
+    // Sem Página (ou id inválido) não há endpoint de envio: pede nova conexão, sem Graph.
+    const { data: marked, error: markErr } = await supabase.rpc("set_instagram_account_status", {
+      p_account_id: account.id,
+      p_status: "reauth_required",
+      p_error_code: "page_missing",
+      p_expected_connected_at: account.connected_at,
+    });
+    jsonLog(markErr || marked !== true ? "error" : "warn", {
+      evt: "instagram_account_page_missing", accountId: account.id,
+      code: markErr?.code ?? (marked === true ? null : "stale_or_unexpected"),
+    });
+    return json(409, { error: marked === false && !markErr ? "INSTAGRAM_ACCOUNT_RECONNECTED" : "INSTAGRAM_REAUTH_REQUIRED" });
+  }
+
+  const { data: history, error: historyErr } = await supabase
+    .from("conversations")
+    .select("messages")
+    .eq("id", conv.id)
+    .eq("unit_id", conv.unit_id)
+    .maybeSingle();
+  if (historyErr || !history) {
+    return json(503, { error: "Não foi possível validar a janela de atendimento." });
+  }
+  const serviceWindow = evaluateManualServiceWindow(history.messages, Date.now());
+  if (!serviceWindow.open) return json(409, { error: "OUTSIDE_SERVICE_WINDOW" });
+
+  const parts = splitInstagramText(message);
+  if (parts.length === 0) return json(400, { error: "conversation_id e message são obrigatórios" });
+
+  const { data: token, error: tokenErr } = await supabase.rpc("get_instagram_account_token", { p_account_id: account.id });
+  if (tokenErr || typeof token !== "string" || token === "") {
+    jsonLog("error", { evt: "manual_instagram_token_unavailable", convId: conv.id, accountId: account.id, code: tokenErr?.code ?? null });
+    return json(503, { error: "Não foi possível acessar a conta do Instagram." });
+  }
+  secrets.push(token);
+
+  const sentIds: string[] = [];
+  const sentParts: string[] = [];
+  let stop: Stop | null = null;
+  for (const part of parts) {
+    // Reavaliada imediatamente antes de CADA POST: a janela pode fechar
+    // durante a leitura do token ou enquanto a parte anterior estava no ar.
+    if (!serviceWindowOpenNow(serviceWindow)) {
+      stop = { kind: "window" };
+      break;
+    }
+    let r: GraphResult<{ messageId: string }>;
+    try {
+      r = await graph.sendText({ pageId: account.page_id, token, igsid, text: part });
+    } catch {
+      // O adapter não lança; se lançar, a parte pode ter saído.
+      r = { ok: false, errorClass: "transient", httpStatus: null, code: null };
+    }
+    if (r.ok === true) {
+      sentIds.push(r.value.messageId);
+      sentParts.push(part);
+      continue;
+    }
+    stop = isGraphOutcomeUnknown(r, "POST")
+      ? { kind: "unknown" }
+      : { kind: "failed", errorClass: r.errorClass, status: r.httpStatus, code: r.code };
+    break;
+  }
+
+  // `true` quando o CAS recusou o 190: a conta foi reconectada durante o envio.
+  let accountReconnected = false;
+  if (stop?.kind === "failed" && stop.errorClass === "reauth_required") {
+    // CAS por `connected_at` (20261103120800): se o dono reconectou depois da
+    // leitura da conta, a RPC devolve `false` e a conexão nova fica intacta.
+    const { data: marked, error: markErr } = await supabase.rpc("set_instagram_account_status", {
+      p_account_id: account.id,
+      p_status: "reauth_required",
+      p_error_code: "190",
+      p_expected_connected_at: account.connected_at,
+    });
+    if (!markErr && marked === false) {
+      accountReconnected = true;
+      jsonLog("info", { evt: "instagram_account_reauth_stale", accountId: account.id });
+    } else {
+      jsonLog(markErr || marked !== true ? "error" : "warn", {
+        evt: "instagram_account_reauth_required", accountId: account.id,
+        code: markErr?.code ?? (marked === true ? null : "unexpected_result"),
+      });
+    }
+  }
+  if (stop) {
+    jsonLog("warn", {
+      evt: "manual_instagram_send_stopped",
+      convId: conv.id,
+      accountId: account.id,
+      stop: stop.kind,
+      errorClass: stop.kind === "failed" ? stop.errorClass : null,
+      status: stop.kind === "failed" ? stop.status : null,
+      graphCode: stop.kind === "failed" ? stop.code : null,
+      sent: sentIds.length,
+      total: parts.length,
+    });
+  }
+
+  // Grava só o que saiu (com os ids), mesmo em falha parcial.
+  let recorded = true;
+  if (sentIds.length > 0) {
+    const humanMsg = {
+      event_id: crypto.randomUUID(),
+      role: "human",
+      author: "human",
+      content: sentIds.length === parts.length ? message : sentParts.join("\n\n"),
+      timestamp: new Date().toISOString(),
+      human_user_id: userId,
+      provider_message_ids: [...sentIds],
+    };
+    let appendErr: { message?: string; code?: string } | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await supabase.rpc("record_whatsapp_human_message", {
+        p_conversation_id: conv.id,
+        p_unit_id: conv.unit_id,
+        p_message: humanMsg,
+        p_handoff_reason: "atendente respondeu pelo painel",
+      });
+      appendErr = result.error;
+      if (!appendErr) break;
+    }
+    if (appendErr) {
+      recorded = false;
+      jsonLog("error", {
+        evt: "manual_append_failed",
+        convId: conv.id,
+        channel: "instagram",
+        err: redactSecrets(String(appendErr.message ?? ""), secrets),
+      });
+    }
+  }
+
+  if (!stop) {
+    if (!recorded) {
+      return json(202, {
+        success: true,
+        external_success: true,
+        local_success: false,
+        warning: "CONVERSATION_RECONCILIATION_REQUIRED",
+      });
+    }
+    jsonLog("info", { evt: "human_replied", convId: conv.id, userId, channel: "instagram" });
+    return json(200, { success: true });
+  }
+
+  const reason = stop.kind === "window"
+    ? "OUTSIDE_SERVICE_WINDOW"
+    : stop.kind === "unknown"
+    ? "SEND_OUTCOME_UNKNOWN"
+    : stop.errorClass === "reauth_required"
+    // Reconectada no meio: a conta está ok com o token novo; o operador tenta de novo.
+    ? (accountReconnected ? "INSTAGRAM_ACCOUNT_RECONNECTED" : "INSTAGRAM_REAUTH_REQUIRED")
+    : stop.errorClass === "window_closed"
+    ? "OUTSIDE_SERVICE_WINDOW"
+    : stop.errorClass;
+
+  if (sentIds.length === 0 && stop.kind !== "unknown") {
+    if (reason === "INSTAGRAM_ACCOUNT_RECONNECTED") {
+      return json(409, { error: reason, message: "A conta do Instagram foi reconectada; tente enviar de novo." });
+    }
+    if (reason === "OUTSIDE_SERVICE_WINDOW" || reason === "INSTAGRAM_REAUTH_REQUIRED") {
+      return json(409, { error: reason });
+    }
+    return json(502, { error: "falha ao enviar mensagem Instagram", reason });
+  }
+
+  // Falha parcial ou desfecho desconhecido: `sent` conta só as partes
+  // confirmadas; `outcome_unknown` avisa que a parte seguinte pode ter saído.
+  return json(502, {
+    error: "PARTIAL_SEND",
+    code: "PARTIAL_SEND",
+    sent: sentIds.length,
+    total: parts.length,
+    reason,
+    outcome_unknown: stop.kind === "unknown",
+    local_success: recorded,
+  });
+}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -51,6 +326,8 @@ serve(async (req) => {
 
   // Service role client for privileged operations
   const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+  // Credenciais vistas nesta invocação: todo texto de erro logado passa por `redactSecrets`.
+  const secrets: string[] = [];
 
   try {
     const { conversation_id, message } = await req.json();
@@ -71,7 +348,7 @@ serve(async (req) => {
     // Load conversation + customer phone + unit
     const { data: conv, error: convErr } = await supabase
       .from("conversations")
-      .select("id, unit_id, status, customer:customers(phone)")
+      .select("id, unit_id, status, channel, instagram_contact_id, customer:customers(phone), instagram_contact:instagram_contacts(igsid, instagram_account_id)")
       .eq("id", conversation_id)
       .maybeSingle();
 
@@ -92,7 +369,16 @@ serve(async (req) => {
       });
     }
 
-    // Service role bypasses RLS. Resolve the operational binding after the
+    // Canal da conversa decide o envio. Instagram nunca cai no provider
+    // WhatsApp, mesmo com cliente ligado que tenha telefone.
+    if (conv.channel === "instagram") {
+      return await sendInstagramManual(supabase, conv as ManualConversation, user.id, trimmedMessage, secrets);
+    }
+    if (conv.channel !== "whatsapp") {
+      return json(422, { error: "canal da conversa não suportado" });
+    }
+
+    // Canal WhatsApp. Service role bypasses RLS. Resolve the operational binding after the
     // conversation authorization, and pin it for the eventual send so a
     // concurrent provider switch cannot bypass the window decision.
     const { data: channels, error: channelErr } = await supabase
@@ -243,7 +529,7 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
-    jsonLog("error", { evt: "send_manual_message_error", err: String(err) });
+    jsonLog("error", { evt: "send_manual_message_error", err: redactSecrets(String(err), secrets) });
     return new Response(JSON.stringify({ error: "internal_error" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },

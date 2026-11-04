@@ -50,6 +50,7 @@ import {
   FileText,
   Inbox,
   Info,
+  Instagram,
   KeyRound,
   MessageSquare,
   Pencil,
@@ -89,6 +90,8 @@ import {
 } from "@/hooks/useStripeAccount";
 import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import { ResponsiveDialog, ResponsiveDialogContent, ResponsiveDialogHeader, ResponsiveDialogTitle, ResponsiveDialogBody } from "@/components/ui/responsive-dialog";
+import { InstagramAdminCard } from "@/components/instagram/InstagramAdminCard";
+import { useAuth } from "@/hooks/useAuth";
 import { DatafyAdminCard } from "@/components/whatsapp/DatafyAdminCard";
 import { TemplateCatalogAdminCard } from "@/components/whatsapp/TemplateCatalogAdminCard";
 import { TemplateDispatchAdminCard } from "@/components/whatsapp/TemplateDispatchAdminCard";
@@ -197,6 +200,7 @@ export default function Automacao() {
   const { unitSlug } = useParams<{ unitSlug: string }>();
   const { data: unit, isLoading } = useUnitBySlug(unitSlug);
   const unitId = unit?.id ?? "";
+  const { isPlatformAdmin } = useAuth();
 
   if (isLoading) {
     return (
@@ -276,6 +280,12 @@ export default function Automacao() {
               <Activity className="h-4 w-4" />
               Diagnóstico
             </TabsTrigger>
+            {isPlatformAdmin && (
+              <TabsTrigger value="instagram" className="gap-2">
+                <Instagram className="h-4 w-4" />
+                Instagram
+              </TabsTrigger>
+            )}
             <TabsTrigger value="payments" className="gap-2">
               <CreditCard className="h-4 w-4" />
               Pagamentos
@@ -302,6 +312,12 @@ export default function Automacao() {
         <TabsContent value="diagnostics">
           <DiagnosticsTab unitId={unitId} />
         </TabsContent>
+
+        {isPlatformAdmin && (
+          <TabsContent value="instagram">
+            <InstagramAdminCard unitId={unitId} />
+          </TabsContent>
+        )}
 
         <TabsContent value="payments">
           <PaymentsTab unitId={unitId} unitSlug={unitSlug ?? ""} />
@@ -1905,6 +1921,8 @@ const OUTCOME_LABEL: Record<string, string> = {
   human_active_silent: "Em atendimento humano",
   human_active_reminded: "Lembrete enviado",
   handoff_auto_resolved: "Handoff resolvido",
+  handoff_state_changed: "Handoff mudou no turno",
+  invalid_channel_context: "Contexto de canal inválido",
   ai_key_unavailable: "Sem chave de IA",
   webhook_unauthorized: "Secret inválido",
   channel_not_found: "Canal não encontrado",
@@ -1922,6 +1940,7 @@ const OUTCOME_TONE: Record<string, "good" | "warn" | "bad" | "neutral"> = {
   duplicate: "neutral",
   human_active_silent: "neutral",
   human_active_reminded: "neutral",
+  handoff_state_changed: "neutral",
   ignored_non_text: "neutral",
   rate_limited: "warn",
   empty_response: "warn",
@@ -1931,6 +1950,7 @@ const OUTCOME_TONE: Record<string, "good" | "warn" | "bad" | "neutral"> = {
   webhook_unauthorized: "bad",
   channel_not_found: "bad",
   customer_upsert_failed: "bad",
+  invalid_channel_context: "bad",
   webhook_error: "bad",
   missing_channel_param: "bad",
 };

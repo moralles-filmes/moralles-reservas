@@ -22,6 +22,7 @@ O Claude Code carrega a regra sozinho ao tocar um arquivo do assunto. **Codex e 
 | WhatsApp: providers, webhook, fila de inbound, envio/entrega, conversas | `.claude/rules/whatsapp.md` |
 | Agente de IA, modelos, BYOK, franquia de IA | `.claude/rules/agente-ia.md` |
 | Datafy (parceiro oficial): onboarding, claims, assinatura, migração | `.claude/rules/datafy.md` |
+| Instagram (Direct): conta, OAuth, webhook, fila, token, Graph | `.claude/rules/instagram.md` |
 | Templates oficiais, automações, consentimento, preferências | `.claude/rules/whatsapp-templates.md` |
 | Billing (Asaas/Stripe), caução, entitlements, custo de instância WhatsApp | `.claude/rules/billing.md` |
 | Qualquer provedor externo: webhook, idempotência, retry, fallback, credenciais | `.claude/rules/integracoes.md` |
