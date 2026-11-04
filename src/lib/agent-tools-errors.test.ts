@@ -40,7 +40,7 @@ describe("create_reservation: falha ao resolver o cliente", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await createReservation(db as any, {
       date: "2030-03-15", time: "20:00", party_size: 2, customer_name: "Ana",
-      phone: "11988887777", unit_id: "unit-a", organization_id: "org-a", source: "whatsapp",
+      customer: { id: "cust-1", phone: "11988887777" }, claimedIdentity: false, unit_id: "unit-a", organization_id: "org-a", source: "whatsapp",
     });
     expect(out).toEqual({ success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." });
     expect(JSON.stringify(out)).not.toContain("password");
@@ -81,15 +81,52 @@ describe("list_customer_reservations", () => {
   });
 });
 
-describe("despacho de ferramentas no turno", () => {
-  const turn = readFileSync(resolve(__dirname, "../..", "supabase/functions/_shared/agent/turn.ts"), "utf8").replace(/\r\n/g, "\n");
+describe("despacho de ferramentas", () => {
+  // O `switch` e o seu catch saíram do `onToolCall` do `turn.ts` para
+  // `tool-dispatch.ts` (Task 3.4); o turno só delega.
+  const dispatch = readFileSync(resolve(__dirname, "../..", "supabase/functions/_shared/agent/tool-dispatch.ts"), "utf8").replace(/\r\n/g, "\n");
 
-  it("o catch do onToolCall loga o erro e devolve ao LLM só uma frase fixa", () => {
-    const at = turn.indexOf('evt: "tool_error"');
+  it("o catch do despacho loga o erro e devolve ao LLM só uma frase fixa", () => {
+    const at = dispatch.indexOf('evt: "tool_error"');
     expect(at).toBeGreaterThan(0);
-    const tail = turn.slice(at, turn.indexOf("\n          }", at));
+    const tail = dispatch.slice(at, dispatch.indexOf("\n    }", at));
     const returned = tail.slice(tail.indexOf("return JSON.stringify("));
     expect(returned).toContain('return JSON.stringify({ error: "Não foi possível concluir esta ação agora. Tente novamente em instantes." });');
     expect(returned).not.toMatch(/\berr\b/);
+  });
+});
+
+describe("núcleo do agente: logs de claim/CAS e ferramenta sem porta (Task 4.0a)", () => {
+  const read = (p: string) => readFileSync(resolve(__dirname, "../..", p), "utf8").replace(/\r\n/g, "\n");
+  const turn = read("supabase/functions/_shared/agent/turn.ts");
+  const dispatch = read("supabase/functions/_shared/agent/tool-dispatch.ts");
+
+  it("logs do CAS do handoff e do claim da conversa gravam só a classe e o code, nunca a mensagem do erro", () => {
+    for (const evt of [
+      "handoff_auto_resolve_failed",
+      "handoff_reminder_claim_failed",
+      "handoff_reminder_revert_failed",
+      "ai_lock_claim_failed",
+    ]) {
+      const lines = turn.split("\n").filter((l) => l.includes(`evt: "${evt}"`));
+      expect(lines.length, evt).toBeGreaterThan(0);
+      for (const l of lines) {
+        expect(l, evt).toContain("...errorLogFields(");
+        expect(l, evt).not.toMatch(/err: |\.message/);
+      }
+    }
+    const helper = turn.slice(turn.indexOf("function errorLogFields"), turn.indexOf("function errorLogFields") + 400);
+    expect(helper).toContain("errorClass");
+    expect(helper).toContain("code");
+    expect(helper).not.toContain("message");
+  });
+
+  it("link_customer_phone sem porta não tem ramo próprio: cai no default do despacho", () => {
+    const at = dispatch.indexOf('case "link_customer_phone":');
+    const body = dispatch.slice(at, dispatch.indexOf("default:", at));
+    expect(body).toContain("if (port) {");
+    expect(body).not.toContain("Tool desconhecida");
+    // O último `break` do ramo fica dentro do `if (port)`: sem porta o fluxo cai no default.
+    expect(body.trimEnd().endsWith("break;\n            }")).toBe(true);
   });
 });

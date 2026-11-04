@@ -1,5 +1,7 @@
 # Módulo Instagram — IA no Direct, Stories e Comentários
 
+> **Aviso (2026-11-04):** o login desta spec (Login do Instagram, `graph.instagram.com`) foi substituído pelo Login do Facebook para Empresas com a Página ligada ao Instagram, porque o app novo da Meta não oferece o Login do Instagram. Login, token, assinatura do webhook e chamadas ao Graph passam a valer pela spec `2026-11-04-instagram-fase-1-login-pela-pagina-design.md`; o resto desta spec continua.
+
 **Estado:** abordagem aprovada pelo responsável em 2026-10-19 (plano de produto/arquitetura, com as quatro decisões abaixo). O aceite autoriza o plano e a implementação **local** da Fase 0. Cada fase seguinte tem plano próprio. `supabase db push`, deploy de Edge Function, secrets, criação do app Meta e liberação para lojas exigem autorização própria.
 
 ## Objetivo
@@ -126,7 +128,7 @@ Todas as tabelas novas têm RLS (ou FORCE RLS sem policy quando guardam credenci
   - O impacto do `customer_id` nulo é mapeado em todo leitor de `conversations.customer` antes da migration (`getConversationDisplayName`, Conversas, `send-manual-message`, dead-letter, `conversation-log.ts`).
 - `reservations.source`:
   - entra `'instagram'`;
-  - `enqueue_confirmation_notification` passa a pular `whatsapp` **e** `instagram`, porque a IA já confirma na conversa;
+  - `enqueue_confirmation_notification` continua pulando só `whatsapp`: a reserva `instagram` confirma pelo WhatsApp do telefone ligado (decisão D6 do plano da Fase 1, que substitui a ideia de pular `instagram`);
   - os lembretes seguem pelo WhatsApp quando o cliente tem telefone e consentimento.
 - **Contato → cliente:**
   - o contato do Instagram existe sem `customers`;

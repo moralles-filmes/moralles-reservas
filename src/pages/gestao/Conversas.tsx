@@ -4,7 +4,17 @@ import { useSearchParams } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useConversations, useConversationActions } from "@/hooks/useConversations";
-import { useSendManualMessage } from "@/hooks/useSendManualMessage";
+import { INSTAGRAM_ERROR_MESSAGES, useSendManualMessage } from "@/hooks/useSendManualMessage";
+import { useInstagramConnection, useInstagramModule } from "@/hooks/useInstagram";
+import {
+  INSTAGRAM_WINDOW_MESSAGE,
+  channelOf,
+  countByChannel,
+  filterByChannel,
+  readChannelFilter,
+  writeChannelFilter,
+  type ChannelFilter,
+} from "@/lib/conversation-channel";
 import { useWhatsappTemplates } from "@/hooks/useWhatsappTemplates";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useResizableWidth } from "@/hooks/useResizableWidth";
@@ -32,7 +42,7 @@ import {
   sanitizeSearchTerm,
 } from "@/lib/utils";
 import { toast } from "sonner";
-import { ArrowLeft, MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2, Search } from "lucide-react";
+import { ArrowLeft, Instagram, MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2, Search } from "lucide-react";
 import type { Conversation, ConversationMessage, ConversationStatus } from "@/types/reserva";
 import { evaluateManualServiceWindow } from "../../../supabase/functions/_shared/whatsapp-manual-service-window-core";
 
@@ -60,6 +70,25 @@ const FILTER_CHIPS: { value: FilterValue; label: string; activeClasses: string; 
   { value: "human_active", label: "Em atendimento", activeClasses: "bg-info/10 text-info border-info/20", countStatus: "human_active" },
   { value: "ai_active", label: "IA ativa", activeClasses: "bg-success/10 text-success border-success/20", countStatus: "ai_active" },
 ];
+
+const CHANNEL_CHIPS: { value: ChannelFilter; label: string }[] = [
+  { value: "all", label: "Ambos" },
+  { value: "whatsapp", label: "WhatsApp" },
+  { value: "instagram", label: "Instagram" },
+];
+
+function ChannelIcon({ channel }: { channel: "whatsapp" | "instagram" }) {
+  return channel === "instagram"
+    ? <Instagram aria-label="Instagram" role="img" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+    : <MessageCircle aria-label="WhatsApp" role="img" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
+}
+
+/** Telefone do cliente ligado: no Instagram é identidade declarada pelo contato, não verificada. */
+function phoneLabel(conv: Conversation): string {
+  const phone = formatPhone(conv.customer?.phone || "");
+  if (!phone) return "";
+  return channelOf(conv) === "instagram" ? `${phone} (declarado)` : phone;
+}
 
 // ── Message bubble ─────────────────────────────────────────────────────────────
 
@@ -148,7 +177,7 @@ function ConversationDetail({
     queryFn: async () => {
       const { data, error } = await supabase
         .from("conversations")
-        .select("*, customer:customers(*)")
+        .select("*, customer:customers(*), instagram_contact:instagram_contacts(username,name)")
         .eq("id", conv.id)
         .single();
       if (error) throw error;
@@ -195,14 +224,28 @@ function ConversationDetail({
   );
   const detailReady = !isPlaceholderData && !isError && !isFetching && Array.isArray(liveConv?.messages);
   const channelReady = channelQuery.isSuccess && !channelQuery.isFetching && !!channelQuery.data?.channelId;
+  const isInstagram = channelOf(current) === "instagram";
   const officialWindow = evaluateManualServiceWindow(liveConv?.messages, Date.now());
-  const outsideOfficialWindow = channelReady && channelQuery.data?.mode === "official" && !officialWindow.open;
-  const canSend = detailReady && channelReady && !outsideOfficialWindow;
+  const connectionQuery = useInstagramConnection(unitId, isInstagram);
+  // Polarity: conexão só bloqueia com leitura bem-sucedida que NÃO esteja `connected`;
+  // erro ou carregando não bloqueia (o servidor é o portão: responde 409/503 com a copy mapeada).
+  const igConnectionStatus: string | null | undefined = connectionQuery.isSuccess
+    ? (connectionQuery.data?.status ?? null)
+    : undefined;
+  const igBlockedByConnection = isInstagram && igConnectionStatus !== undefined && igConnectionStatus !== "connected";
+  const outsideInstagramWindow = isInstagram && detailReady && !officialWindow.open;
+  const outsideOfficialWindow = !isInstagram && channelReady && channelQuery.data?.mode === "official" && !officialWindow.open;
+  const canSend = isInstagram
+    ? detailReady && !outsideInstagramWindow && !igBlockedByConnection
+    : detailReady && channelReady && !outsideOfficialWindow;
+  const windowTimerActive = isInstagram
+    ? detailReady
+    : detailReady && channelReady && channelQuery.data?.mode === "official";
 
   // One timer at the exact Meta deadline. A new inbound or focus re-arms it;
   // unofficial channels do not spend a render every second on all bubbles.
   useEffect(() => {
-    if (!detailReady || !channelReady || channelQuery.data?.mode !== "official") return;
+    if (!windowTimerActive) return;
     const tick = () => setClockRevision(value => value + 1);
     window.addEventListener("focus", tick);
     document.addEventListener("visibilitychange", tick);
@@ -214,7 +257,7 @@ function ConversationDetail({
       window.removeEventListener("focus", tick);
       document.removeEventListener("visibilitychange", tick);
     };
-  }, [detailReady, channelReady, channelQuery.data?.mode, officialWindow.closesAt, officialWindow.open, clockRevision]);
+  }, [windowTimerActive, officialWindow.closesAt, officialWindow.open, clockRevision]);
 
   function handleAssume() {
     assumeConversation.mutate(current.id, {
@@ -242,23 +285,27 @@ function ConversationDetail({
     const msg = replyText.trim();
     if (!msg) return;
     if (msg.length > 4096) {
-      toast.error("Mensagem excede 4096 caracteres (limite do WhatsApp).");
+      toast.error(`Mensagem excede 4096 caracteres (limite do ${isInstagram ? "Instagram" : "WhatsApp"}).`);
       return;
     }
     sendMessage.mutate(
-      { conversationId: current.id, message: msg },
+      { conversationId: current.id, message: msg, channel: isInstagram ? "instagram" : "whatsapp" },
       {
         onSuccess: (result) => {
           setReplyText("");
           if (result.local_success === false) {
             toast.warning(
-              "Mensagem enviada no WhatsApp, mas o histórico não foi confirmado. Recarregue a conversa ou avise o suporte.",
+              `Mensagem enviada no ${isInstagram ? "Instagram" : "WhatsApp"}, mas o histórico não foi confirmado. Recarregue a conversa ou avise o suporte.`,
             );
           } else {
             toast.success("Mensagem enviada.");
           }
         },
-        onError: (e) => toast.error(`Erro: ${(e as Error).message}`),
+        onError: (e) => {
+          // PARTIAL_SEND: parte já saiu e está no histórico; manter o texto reenviaria tudo.
+          if ((e as { code?: string }).code === "PARTIAL_SEND") setReplyText("");
+          toast.error(`Erro: ${(e as Error).message}`);
+        },
       }
     );
   }
@@ -286,9 +333,12 @@ function ConversationDetail({
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <div>
-              <CardTitle className="text-base">{getConversationDisplayName(current)}</CardTitle>
+              <CardTitle className="text-base flex items-center gap-1.5">
+                <ChannelIcon channel={channelOf(current)} />
+                {getConversationDisplayName(current)}
+              </CardTitle>
               <p className="text-xs text-muted-foreground">
-                {formatPhone(current.customer?.phone || "")}
+                {phoneLabel(current)}
               </p>
             </div>
           </div>
@@ -369,9 +419,17 @@ function ConversationDetail({
         <div className="border-t p-3 space-y-2">
           {!canSend && (
             <p role="status" className="text-xs text-warning">
-              {outsideOfficialWindow
-                ? "A janela de 24 horas da Meta terminou. Aguarde uma nova mensagem do cliente para responder."
-                : "Aguarde a validação da conversa e do canal WhatsApp para responder."}
+              {isInstagram
+                ? outsideInstagramWindow
+                  ? INSTAGRAM_WINDOW_MESSAGE
+                  : igBlockedByConnection
+                    ? igConnectionStatus === "reauth_required"
+                      ? INSTAGRAM_ERROR_MESSAGES.INSTAGRAM_REAUTH_REQUIRED
+                      : INSTAGRAM_ERROR_MESSAGES.INSTAGRAM_NOT_CONNECTED
+                    : "Aguarde a validação da conversa para responder."
+                : outsideOfficialWindow
+                  ? "A janela de 24 horas da Meta terminou. Aguarde uma nova mensagem do cliente para responder."
+                  : "Aguarde a validação da conversa e do canal WhatsApp para responder."}
             </p>
           )}
           <Textarea
@@ -427,6 +485,8 @@ export default function Conversas() {
   const unitId = unit?.unit_id ?? "";
 
   const [activeFilter, setActiveFilter] = useState<FilterValue>("all");
+  const [channelFilter, setChannelFilterState] = useState<ChannelFilter>(() => readChannelFilter());
+  const moduleQuery = useInstagramModule(unitId || undefined);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [searchParams, setSearchParams] = useSearchParams();
@@ -441,21 +501,39 @@ export default function Conversas() {
 
   const { data: allConversations, isLoading, isError, refetch } = useConversations(unitId, "all");
 
+  const channelCounts = useMemo(() => countByChannel(allConversations ?? []), [allConversations]);
+  const hasInstagramConversation = channelCounts.instagram > 0;
+  const showChannelChips =
+    (moduleQuery.isSuccess && moduleQuery.data?.instagram.active === true) || hasInstagramConversation;
+  // Sem chips visíveis o filtro salvo não pode esconder conversas às cegas.
+  const effectiveChannel: ChannelFilter = showChannelChips ? channelFilter : "all";
+
+  const channelScoped = useMemo(
+    () => filterByChannel(allConversations ?? [], effectiveChannel),
+    [allConversations, effectiveChannel],
+  );
+
+  function changeChannelFilter(next: ChannelFilter) {
+    setChannelFilterState(next);
+    writeChannelFilter(next);
+    setSelectedId(null);
+  }
+
   const statusCounts = useMemo(() => {
     if (!allConversations) return {} as Record<ConversationStatus, number>;
     const counts: Record<string, number> = {};
-    for (const c of allConversations) {
+    for (const c of channelScoped) {
       const s = c.status ?? "ai_active";
       counts[s] = (counts[s] ?? 0) + 1;
     }
     return counts as Record<ConversationStatus, number>;
-  }, [allConversations]);
+  }, [allConversations, channelScoped]);
 
   const conversations = useMemo(() => {
     if (!allConversations) return [] as Conversation[];
-    if (activeFilter === "all") return allConversations;
-    return allConversations.filter((c) => c.status === activeFilter);
-  }, [allConversations, activeFilter]);
+    if (activeFilter === "all") return channelScoped;
+    return channelScoped.filter((c) => c.status === activeFilter);
+  }, [allConversations, channelScoped, activeFilter]);
 
   const selected = conversations?.find((c) => c.id === selectedId) ?? null;
 
@@ -469,6 +547,10 @@ export default function Conversas() {
       if (name.includes(term)) return true;
       const contactName = c.contact_name?.toLowerCase() ?? "";
       if (contactName.includes(term)) return true;
+      // "@maria_ig" acha o @username do Instagram, mesmo com outro nome no perfil;
+      // o handle passa pelo mesmo saneamento do termo (que remove o "_").
+      const username = c.instagram_contact?.username?.trim() ?? "";
+      if (username && sanitizeSearchTerm(`@${username.replace(/^@/, "")}`).toLowerCase().includes(term)) return true;
       if (digits.length >= 3) {
         const phone = c.customer?.phone ?? "";
         if (phone.includes(digits)) return true;
@@ -513,7 +595,7 @@ export default function Conversas() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Conversas WhatsApp" />
+      <PageHeader title="Conversas" />
 
       {/* Suspensão da automação — reservas/agenda continuam normais, só o
           agente de WhatsApp para de responder. */}
@@ -528,6 +610,36 @@ export default function Conversas() {
           className="pl-9"
         />
       </div>
+
+      {showChannelChips && (
+        <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1" role="group" aria-label="Canal">
+          {CHANNEL_CHIPS.map((chip) => {
+            const isActive = effectiveChannel === chip.value;
+            return (
+              <button
+                key={chip.value}
+                data-testid={`channel-chip-${chip.value}`}
+                aria-pressed={isActive}
+                onClick={() => changeChannelFilter(chip.value)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 shrink-0 rounded-full px-3 py-1.5 text-xs font-medium border transition-colors",
+                  isActive
+                    ? "bg-foreground text-background border-foreground"
+                    : "bg-background text-muted-foreground border-border hover:bg-muted"
+                )}
+              >
+                {chip.label}
+                <span className={cn(
+                  "inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full px-1 text-[10px] font-semibold",
+                  isActive ? "bg-background/30" : "bg-muted"
+                )}>
+                  {channelCounts[chip.value] > 99 ? "99+" : channelCounts[chip.value]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
         {FILTER_CHIPS.map((chip) => {
@@ -604,8 +716,9 @@ export default function Conversas() {
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <p className="font-medium text-sm truncate">
-                      {getConversationDisplayName(c)}
+                    <p className="font-medium text-sm truncate flex items-center gap-1.5">
+                      <ChannelIcon channel={channelOf(c)} />
+                      <span className="truncate">{getConversationDisplayName(c)}</span>
                     </p>
                     <Badge
                       variant="outline"
@@ -615,7 +728,7 @@ export default function Conversas() {
                     </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {formatPhone(c.customer?.phone || "")}
+                    {phoneLabel(c)}
                   </p>
                   {c.status === "awaiting_human" && c.handoff_reason && (
                     <p className="text-xs text-warning truncate mt-0.5">{c.handoff_reason}</p>

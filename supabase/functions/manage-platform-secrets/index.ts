@@ -14,6 +14,7 @@ import {
   DATAFY_ACCOUNT_TOKEN_KEY,
   decideAccountTokenRead,
 } from "../_shared/datafy-account-config-core.ts";
+import { INSTAGRAM_SECRET_KEYS } from "../_shared/instagram-config-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -26,7 +27,12 @@ const VALID_KEYS = new Set([
   "asaas_api_key",
   "asaas_webhook_token",
   DATAFY_ACCOUNT_TOKEN_KEY,
+  INSTAGRAM_SECRET_KEYS.appSecret,
+  INSTAGRAM_SECRET_KEYS.verifyToken,
+  INSTAGRAM_SECRET_KEYS.metaAppSecret,
 ]);
+
+const INSTAGRAM_KEY_SET: ReadonlySet<string> = new Set(Object.values(INSTAGRAM_SECRET_KEYS));
 
 const KEY_DESCRIPTIONS: Record<string, string> = {
   stripe_secret_key: "Chave secreta Stripe (sk_test_... ou sk_live_...)",
@@ -34,6 +40,9 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
   asaas_api_key: "Chave da API Asaas (sandbox $aact_hmlg_... ou produção $aact_prod_...)",
   asaas_webhook_token: "Token do header asaas-access-token nos webhooks (32-255 caracteres)",
   [DATAFY_ACCOUNT_TOKEN_KEY]: "Token de conta da Datafy (sk_acct_...), acesso a todos os canais da conta",
+  [INSTAGRAM_SECRET_KEYS.appSecret]: "Segredo do app do Instagram (Instagram Login): troca do código OAuth e assinatura do webhook",
+  [INSTAGRAM_SECRET_KEYS.verifyToken]: "Token de verificação do webhook do Instagram (handshake hub.verify_token)",
+  [INSTAGRAM_SECRET_KEYS.metaAppSecret]: "Opcional: segredo do app da Meta, usado só como segundo candidato na assinatura do webhook do Instagram",
 };
 
 // Centraliza a limpeza de cache de config de TODOS os providers — upsert/delete
@@ -43,7 +52,10 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
 // do módulo (CLAUDE.md: "Edge Functions não compartilham bundle em runtime").
 // As chamadas abaixo só limpam o cache DESTE isolate — que aqui nem chega
 // a ser populado, pois manage-platform-secrets nunca lê getStripeSecretKey()/
-// getAsaasApiKey()/getDatafyAccountToken(). Isolates que de fato leem a chave
+// getAsaasApiKey()/getDatafyAccountToken(). Os segredos do Instagram nem têm
+// instância aqui: cada EF consumidora cria seu leitor com
+// `createInstagramSecretReader` no `index.ts`, e a troca vale nela ao fim do
+// TTL de 5 min. Isolates que de fato leem a chave
 // (stripe-webhook, create-checkout-session, o futuro asaas-webhook, etc.) mantêm
 // o valor antigo em cache até o próprio TTL de 5min expirar — uma chave
 // rotacionada pode levar até 5min pra valer em todo lugar. Não existe
@@ -145,6 +157,14 @@ serve(async (req) => {
           );
         }
         value = decision.token;
+      }
+      // Segredos do Instagram: valor CRU do corpo por `typeof` (nunca `String(...)`)
+      // e aparado, igual à leitura (instagram-config-core.ts). Nunca ecoa nem loga.
+      if (INSTAGRAM_KEY_SET.has(key)) {
+        if (typeof body.value !== "string") {
+          return jsonResponse(req, { error: "Valor inválido." }, 400);
+        }
+        value = body.value.trim();
       }
       if (value.length < 10) {
         return jsonResponse(req, { error: "Valor muito curto." }, 400);

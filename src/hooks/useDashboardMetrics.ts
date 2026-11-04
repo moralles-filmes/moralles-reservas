@@ -11,7 +11,7 @@ interface MetricsRow {
   time: string | null;
   party_size: number;
   status: ReservaStatus;
-  source: "web" | "whatsapp" | null;
+  source: "web" | "whatsapp" | "instagram" | null;
   satisfaction_rating: number | null;
   satisfaction_at: string | null;
   customer: { name: string; phone: string } | null;

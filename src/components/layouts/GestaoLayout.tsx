@@ -27,6 +27,7 @@ import {
   Gift,
   HelpCircle,
   Image as ImageIcon,
+  Instagram as InstagramIcon,
   LayoutDashboard,
   List,
   Lock,
@@ -46,6 +47,7 @@ import {
   UtensilsCrossed,
   Users,
 } from "lucide-react";
+import { useInstagramModule } from "@/hooks/useInstagram";
 import { toast } from "sonner";
 
 type LeafItem = {
@@ -76,6 +78,9 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
 
   const base = `/g/${unitSlug}`;
   const awaitingCount = useAwaitingHumanCount(unit?.unit_id ?? "");
+  // Grant lendo/erro => item oculto (erro de leitura nunca vira "liberado").
+  const instagramModule = useInstagramModule(unit?.isGerente ? unit.unit_id : undefined);
+  const showInstagram = !!unit?.isGerente && !instagramModule.isError && instagramModule.data?.instagram.active === true;
 
   const navItems: NavItem[] = [
     { to: base, label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -153,6 +158,7 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
     ...(unit?.isGerente
       ? [{ to: `${base}/whatsapp`, label: "WhatsApp", icon: MessageSquare }]
       : []),
+    ...(showInstagram ? [{ to: `${base}/instagram`, label: "Instagram", icon: InstagramIcon }] : []),
     { to: `${base}/conta`,          label: "Conta",          icon: Store },
     { to: `${base}/cobranca`,       label: "Cobrança",       icon: CreditCard },
     { to: `${base}/auditoria`,      label: "Auditoria",      icon: ScrollText },

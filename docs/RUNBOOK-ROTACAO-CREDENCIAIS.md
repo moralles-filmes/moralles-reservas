@@ -138,6 +138,22 @@ O que não se recupera no mesmo dia é um **cron diário** perdido. Evite ±10 m
 
 ---
 
+## 5. Instagram — segredos do app e do `state` do OAuth
+
+**Onde vivem:**
+- `instagram_app_secret`, `instagram_verify_token` e `meta_app_secret` (opcional, segundo candidato do HMAC do webhook): só em `platform_secrets`, cadastrados pela tela **Plataforma → Integrações → Instagram**. **Não existe** env com esses nomes e nenhuma leitura cai para `Deno.env` ([instagram-config-core.ts](../supabase/functions/_shared/instagram-config-core.ts)); não crie uma.
+- `INSTAGRAM_APP_ID` e `INSTAGRAM_OAUTH_STATE_SECRET` (mínimo 32 caracteres): Edge secrets, lidos só por `instagram-connect`.
+
+**Consumidores:** `webhook-instagram` (app secret, meta app secret, verify token) e `instagram-connect` (app secret, app id, state secret).
+
+**Como rotacionar:**
+- Segredos do painel: troque no painel da Meta e, no mesmo ato, na tela de Integrações. Cada isolate guarda o valor lido por até 5 min, então durante essa janela o webhook pode responder 401 a eventos assinados com o segredo novo; a Meta reentrega por até 36h. Para o `verify_token`, troque no painel e refaça a verificação do webhook no app da Meta.
+- `INSTAGRAM_OAUTH_STATE_SECRET`: `supabase secrets set INSTAGRAM_OAUTH_STATE_SECRET=$env:K` (valor aleatório com ≥32 caracteres) e redeploy de `instagram-connect`. Conexões em andamento (state de até 10 min) falham com "link inválido" e o usuário recomeça.
+
+**Como confirmar:** webhook sem 401 (`evt:"instagram_webhook_unauthorized"`) depois de 5 min; `start` de conexão devolve `authorize_url` (503 indica state secret ausente ou curto).
+
+---
+
 ## Depois de rotacionar
 
 Toda credencial cadastrada por comando de terminal vira parte do comando — e, no Claude Code, o comando pode acabar na allowlist de permissões (`.claude/settings*.json`), que é onde as cinco credenciais expostas foram parar. Prefira cadastrar pelo painel quando houver painel, e quando for terminal, use variável de ambiente em vez do valor literal:

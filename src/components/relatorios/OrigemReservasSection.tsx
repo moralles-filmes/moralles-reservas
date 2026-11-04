@@ -32,6 +32,7 @@ import type {
 // Cores por canal — tokens existentes em index.css (sem hex hardcoded).
 const CANAL_COLOR: Record<ReservaCanal, string> = {
   whatsapp: "hsl(var(--chart-whatsapp))",
+  instagram: "hsl(var(--chart-trigger-birthday))",
   web: "hsl(var(--chart-geral))",
   outros: "hsl(var(--muted-foreground))",
 };

@@ -6,23 +6,58 @@
  * O WhatsApp é o único consumidor hoje; o Instagram (Fase 1) entra com o próprio
  * contexto. Spec: docs/superpowers/specs/2026-10-19-instagram-modulo-design.md.
  *
- * Fase 0 mantém `customer` OBRIGATÓRIO. O contato do Instagram sem telefone
- * (`customer: null`), a ferramenta `link_customer_phone` e o `need_phone` de
- * `create_reservation` chegam juntos na Fase 1, que é quem os consome: aceitar
- * `null` aqui antes disso seria um ramo sem consumidor e sem teste.
+ * `customer` é anulável só para canal de identidade DECLARADA (com
+ * `claimedIdentity`): o contato do Instagram começa sem telefone e o liga pela
+ * ferramenta `link_customer_phone`. Sem porta, `customer` nulo é contexto
+ * inválido e o turno para na guarda do início de `run`.
  *
  * Só tipos: nada aqui entra no bundle.
  */
+
+import type { ReservationInsertRow } from "../availability.ts";
 
 export type AgentChannel = "whatsapp" | "instagram";
 
 /**
  * Valor de `reservations.source` que o agente grava. Load-bearing: o trigger
  * `enqueue_confirmation_notification` pula `whatsapp` para não duplicar a
- * confirmação. `instagram` só entra aqui junto com a migration que o libera no
- * CHECK e no trigger (Fase 1).
+ * confirmação. `instagram` (CHECK liberado na migration 20261103120400) NÃO é
+ * pulado: a reserva feita pelo Direct é confirmada pelo WhatsApp (D6).
  */
-export type AgentReservationSource = "whatsapp";
+export type AgentReservationSource = "whatsapp" | "instagram";
+
+export type LinkPhoneResult =
+  | { ok: true; customer: Pick<AgentCustomer, "id" | "phone"> }
+  | { ok: false; reason: "invalid_phone" | "unavailable" };
+
+/**
+ * Canal cuja identidade do cliente NÃO é provada pelo canal (telefone digitado).
+ *
+ * É a única entrada de id no núcleo para esse canal: nenhum id de cliente ou de
+ * reserva vem do LLM. O adapter resolve o cliente no servidor, dentro da
+ * organização do contato, e guarda o ledger das reservas feitas pelo contato.
+ */
+export interface ClaimedIdentityPort {
+  /** Reservas criadas por este contato (ledger). Lido uma vez por turno. */
+  reservationIds(): Promise<string[]>;
+  /**
+   * Substitui o INSERT do `reserveSlot` (mesmo retorno do hook). O adapter grava
+   * a reserva E a linha do ledger numa transação (RPC
+   * `create_instagram_contact_reservation`), que confere sob lock o cliente
+   * (vivo, da organização, igual ao ligado ao contato), a unidade e a origem, e
+   * aplica o teto de reservas ativas do contato. É a ÚNICA barreira de
+   * identidade do núcleo com porta. Recusa e falha voltam em `error.code`
+   * (o 23505 da mesa dispara o retry do `reserveSlot`); o teto de reservas
+   * ativas do contato volta como `CLAIMED_RESERVATION_LIMIT_CODE` (`tools.ts`),
+   * que o núcleo devolve ao LLM com mensagem própria.
+   */
+  insertReservation(row: ReservationInsertRow): Promise<{
+    data: { id: string; status: string; payment_status: string | null } | null;
+    error: { code?: string } | null;
+  }>;
+  /** Liga o telefone declarado ao contato; nenhum id atravessa a porta. */
+  linkPhone(input: { phone: string; name: string }): Promise<LinkPhoneResult>;
+}
 
 /** Formato mínimo que o núcleo lê do envio do canal. */
 export interface ChannelSendResult {
@@ -72,20 +107,46 @@ export interface ChannelContext {
   organizationId: string;
   unit: AgentUnit;
   conversation: AgentConversation;
-  customer: AgentCustomer;
+  /**
+   * Cliente resolvido pelo canal. `null` só com `claimedIdentity` (contato que
+   * ainda não ligou um telefone); sem porta, nulo é contexto inválido.
+   */
+  customer: AgentCustomer | null;
   /**
    * Telefone do contato como chegou pelo canal (WhatsApp: `inbound.fromPhone`).
-   * `create_reservation` o usa para resolver o cliente, e o prompt o usa para
-   * reconhecer nome-placeholder (cliente gravado com o telefone no nome).
+   * O prompt o usa para reconhecer nome-placeholder (cliente gravado com o
+   * telefone no nome). `null` quando o canal não traz telefone.
    */
-  phone: string;
+  phone: string | null;
+  /**
+   * Presente só em canal de identidade declarada (Instagram). Com ela: o prompt
+   * nunca recebe o cadastro privado (R3-a), `link_customer_phone` passa a
+   * existir e as ferramentas de reserva só alcançam o ledger do contato.
+   */
+  claimedIdentity?: ClaimedIdentityPort;
   /** Frase de identidade do cliente no prompt, sem ponto final duplicado. */
   identityLine: string;
   /** Bloco de regras de formatação do canal, sem as quebras de linha iniciais. */
   formattingRules: string;
+  /**
+   * Nome do canal como o cliente o conhece (WhatsApp: `"WhatsApp"`); entra na
+   * regra 12 ("NÃO trabalhamos com fila de espera pelo …"). Obrigatório: canal
+   * novo não herda o nome de outro por esquecimento.
+   */
+  channelLabel: string;
+  /**
+   * Regras próprias do canal, logo depois de `formattingRules`. Vazio = nenhum
+   * byte no prompt (o WhatsApp passa `""` e o prompt dele fica idêntico).
+   */
+  channelRules: string;
   /** Aplica-se SÓ à saída do LLM, nunca a texto determinístico. */
   sanitize(text: string): string;
-  /** Envio cru do canal. O núcleo o chama atrás da cerca de handoff. */
+  /**
+   * Envio cru do canal. O núcleo o chama atrás da cerca de handoff.
+   * Contrato: NUNCA lança (falha volta em `ok:false`), e `error:
+   * "provider_timeout"` significa desfecho desconhecido (a mensagem pode ter
+   * saído): o núcleo não devolve a janela do lembrete de handoff nesse caso.
+   */
   send(text: string): Promise<ChannelSendResult>;
   reservationSource: AgentReservationSource;
   /** Lido de forma preguiçosa, só quando há cardápio digital ativo. */

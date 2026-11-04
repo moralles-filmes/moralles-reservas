@@ -29,6 +29,17 @@ describe('actual reservation producers through Request and internal hops', () =>
     expect(p.row.initial_catalog_key).toBe('res_confirmacao_desconto_v1');
     expect(f.calls.post).toBe(1); expect(JSON.stringify(p.requests)).toContain('22:15'); expect(JSON.stringify(p.requests)).toContain('15%');
   });
+  it('D9: confirmation of an Instagram reservation posts through the managed route', async () => {
+    const f = fixture(), p = f.producer();
+    await f.runReservationProducer('confirmation', { source: 'instagram' });
+    expect(f.calls.post).toBe(1); expect(f.calls.legacyText).toBe(0); expect(f.calls.email).toBe(1);
+    expect(p.unexpected).toEqual([]); p.harness.assertNoUnexpectedIo();
+  });
+  it('D9: an unknown reservation source still never posts', async () => {
+    const f = fixture();
+    await f.runReservationProducer('confirmation', { source: 'desconhecida' });
+    expect(f.calls.post + f.calls.legacyText).toBe(0);
+  });
   it.each(['cancelled','no_show'])('current %s never posts despite a current producer selection', async status => {
     const f = fixture(); await f.runReservationProducer('confirmation', { status });
     expect(f.calls.post + f.calls.legacyText).toBe(0); expect(f.calls.email).toBe(1);

@@ -67,26 +67,25 @@ import {
   type IngestionSource,
 } from "../whatsapp-inbound-queue-core.ts";
 import { jsonLog } from "../security.ts";
-import { checkAvailability as checkAvailabilityCore } from "../availability.ts";
+
+/**
+ * Campos de log de um erro de claim/CAS: só a classe e o `code`, como o
+ * `tool_error` do despacho. A mensagem do PostgREST pode trazer dado do cliente.
+ */
+function errorLogFields(err: unknown): { errorClass: string; code?: string } {
+  const code = (err as { code?: unknown } | null)?.code;
+  return {
+    errorClass: err instanceof Error ? err.name : typeof err,
+    ...(typeof code === "string" ? { code } : {}),
+  };
+}
 import { resolveHandoffClock } from "../handoff-clock-core.ts";
 import {
   decideSameProviderFallback,
   parseFallbackConfig,
   shouldUseFallbackProvider,
 } from "../agent-provider-fallback-core.ts";
-import {
-  cancelReservationScoped,
-  getReservationScoped,
-  updateReservationScoped,
-} from "../agent-reservation-tools.ts";
-import {
-  agentTools,
-  checkAvailability,
-  createReservation,
-  listCustomerReservations,
-  summarizeToolInput,
-  summarizeToolResult,
-} from "./tools.ts";
+import { agentToolsFor, createToolDispatcher, type ToolDispatchState } from "./tool-dispatch.ts";
 import { loadAgentSystemPrompt } from "./system-prompt.ts";
 import type { ChannelContext, ChannelSendResult, TurnInbound } from "./channel-context.ts";
 
@@ -338,8 +337,30 @@ export function createAgentTurn(io: AgentTurnIO) {
    * do adapter, que liquida, solta o lock e registra.
    */
   const run = async (ctx: ChannelContext, inbound: TurnInbound): Promise<void> => {
+    // Guarda do contexto: sem unidade ou organização (vazias ou só espaço) o
+    // turno não tem tenant para filtrar leitura, franquia nem ferramenta; e só
+    // um canal de identidade declarada (com porta) pode chegar sem cliente.
+    // Roda ANTES de tudo — antes do append, do debounce, do lock e da reserva
+    // de orçamento, então não há o que soltar nem liquidar — e antes da carga
+    // do prompt global, por isso o `finish` não leva `global_prompt_version`.
+    const hasUnitId = typeof ctx.unitId === "string" && ctx.unitId.trim() !== "";
+    const hasOrganizationId = typeof ctx.organizationId === "string" && ctx.organizationId.trim() !== "";
+    const hasCustomerOrPort = !!ctx.customer || !!ctx.claimedIdentity;
+    if (!hasUnitId || !hasOrganizationId || !hasCustomerOrPort) {
+      jsonLog("error", {
+        requestId,
+        evt: "agent_context_invalid",
+        channel: ctx.channel,
+        hasUnitId,
+        hasOrganizationId,
+        hasCustomer: !!ctx.customer,
+        hasClaimedIdentity: !!ctx.claimedIdentity,
+      });
+      await finish("invalid_channel_context");
+      return;
+    }
     const conv = ctx.conversation;
-    const { unitId, organizationId, customer, phone } = ctx;
+    const { unitId, organizationId } = ctx;
     const channelId = ctx.channelId;
     const incomingText = inbound.text;
 
@@ -445,7 +466,11 @@ export function createAgentTurn(io: AgentTurnIO) {
         });
 
       if (shouldAutoResolve) {
-        await supabase
+        // Compare-and-set ANTES do envio: duas invocações leem o mesmo
+        // `human_active` e, com UPDATE incondicional, as duas mandavam a
+        // retomada. Só quem tira a conversa do status lido envia; zero linhas
+        // casadas volta com `error: null`, por isso o `.select("id")`.
+        const { data: resolvedRows, error: resolveErr } = await supabase
           .from("conversations")
           .update({
             status: "ai_active",
@@ -453,21 +478,54 @@ export function createAgentTurn(io: AgentTurnIO) {
             handoff_at: null,
             last_silenced_reply_at: null,
           })
-          .eq("id", conv.id);
-
-        const resumedText = "Oi! Voltei a te atender por aqui. Em que posso ajudar?";
-        markExternalSideEffect();
-        const resumedSend = await ctx.send(resumedText);
-        if (resumedSend.ok) {
-          await appendToConversation(conv.id, conv.messages || [], "assistant", resumedText, { author: "automation" });
+          .eq("id", conv.id)
+          .eq("unit_id", unitId)
+          .eq("status", conv.status)
+          .select("id");
+        if (resolveErr) {
+          jsonLog("warn", { requestId, evt: "handoff_auto_resolve_failed", convId: conv.id, ...errorLogFields(resolveErr) });
+          await finish("handoff_state_changed");
+          return;
         }
 
-        jsonLog("info", {
-          requestId,
-          evt: "handoff_auto_resolved",
-          convId: conv.id,
-          ageHours: Math.round(handoffAge / 3600000),
-        });
+        if (Array.isArray(resolvedRows) && resolvedRows.length > 0) {
+          const resumedText = "Oi! Voltei a te atender por aqui. Em que posso ajudar?";
+          markExternalSideEffect();
+          const resumedSend = await ctx.send(resumedText);
+          if (resumedSend.ok) {
+            await appendToConversation(conv.id, conv.messages || [], "assistant", resumedText, { author: "automation" });
+          }
+
+          jsonLog("info", {
+            requestId,
+            evt: "handoff_auto_resolved",
+            convId: conv.id,
+            ageHours: Math.round(handoffAge / 3600000),
+          });
+        } else {
+          // Outra invocação mudou o status depois da nossa leitura. Se foi ela
+          // que devolveu a conversa à IA, a retomada já saiu por ela e este
+          // turno segue sem repeti-la; qualquer outro estado (novo handoff,
+          // conversa sumida, leitura que falha) encerra sem envio.
+          const { data: current, error: rereadErr } = await supabase
+            .from("conversations")
+            .select("status")
+            .eq("id", conv.id)
+            .eq("unit_id", unitId)
+            .maybeSingle();
+          if (rereadErr || current?.status !== "ai_active") {
+            jsonLog("info", {
+              requestId,
+              evt: "handoff_state_changed",
+              convId: conv.id,
+              status: current?.status ?? null,
+              rereadFailed: !!rereadErr,
+            });
+            await finish("handoff_state_changed");
+            return;
+          }
+          jsonLog("info", { requestId, evt: "handoff_auto_resolve_lost", convId: conv.id });
+        }
         // Atualiza estado local para o agente processar a mensagem normalmente.
         conv.status = "ai_active";
         conv.handoff_reason = null;
@@ -480,34 +538,79 @@ export function createAgentTurn(io: AgentTurnIO) {
           : 0;
         const shouldRemind = !lastSilenced || (Date.now() - lastSilenced) > HANDOFF_REMINDER_THROTTLE_MS;
 
+        // Só avisa quem reivindicar a janela: o compare-and-set grava a marca
+        // ANTES do envio, sobre o valor lido. Antes a marca vinha depois do
+        // envio, e duas invocações concorrentes mandavam o aviso duas vezes.
+        const previousSilenced = conv.last_silenced_reply_at ?? null;
+        const claimedAt = new Date().toISOString();
+        let reminded = false;
         if (shouldRemind) {
+          const claimWindow = supabase
+            .from("conversations")
+            .update({ last_silenced_reply_at: claimedAt })
+            .eq("id", conv.id)
+            .eq("unit_id", unitId)
+            // Conversa devolvida à IA entre a leitura e aqui (`releaseToAI`
+            // zera a marca) não recebe "já avisei a equipe".
+            .eq("status", conv.status);
+          const { data: claimedRows, error: claimErr } = await (previousSilenced === null
+            ? claimWindow.is("last_silenced_reply_at", null)
+            : claimWindow.eq("last_silenced_reply_at", previousSilenced)
+          ).select("id");
+          if (claimErr) {
+            // Falha fechada: sem a janela reivindicada, não há aviso.
+            jsonLog("warn", { requestId, evt: "handoff_reminder_claim_failed", convId: conv.id, ...errorLogFields(claimErr) });
+          }
+          reminded = !claimErr && Array.isArray(claimedRows) && claimedRows.length > 0;
+        }
+
+        if (reminded) {
           const reminderText = "Recebi sua mensagem! Já avisei alguém da equipe — vou te responder por aqui assim que possível. 🙏";
           markExternalSideEffect();
           const sendRes = await ctx.send(reminderText);
           if (sendRes.ok) {
             await appendToConversation(conv.id, conv.messages || [], "assistant", reminderText, { author: "automation" });
-            await supabase
-              .from("conversations")
-              .update({
-                last_silenced_reply_at: new Date().toISOString(),
-              })
-              .eq("id", conv.id);
+          } else if (sendRes.error === "provider_timeout") {
+            // Desfecho DESCONHECIDO (contrato do `send`: o canal devolve
+            // `provider_timeout` quando o aviso pode ter saído). A janela fica
+            // gasta: devolvê-la faria a próxima inbound repetir o aviso.
+            jsonLog("warn", { requestId, evt: "handoff_reminder_outcome_unknown", convId: conv.id });
+          } else {
+            // O aviso não saiu: devolve a janela para a próxima inbound tentar.
+            // Best-effort e com CAS sobre a marca deste turno — se outra
+            // invocação já gravou outra marca, ela fica.
+            try {
+              const { error: revertErr } = await supabase
+                .from("conversations")
+                .update({ last_silenced_reply_at: previousSilenced })
+                .eq("id", conv.id)
+                .eq("unit_id", unitId)
+                .eq("last_silenced_reply_at", claimedAt)
+                .select("id");
+              if (revertErr) {
+                jsonLog("warn", { requestId, evt: "handoff_reminder_revert_failed", convId: conv.id, ...errorLogFields(revertErr) });
+              }
+            } catch (e) {
+              jsonLog("warn", { requestId, evt: "handoff_reminder_revert_failed", convId: conv.id, ...errorLogFields(e) });
+            }
           }
-        } else {
+        } else if (!shouldRemind) {
           await supabase
             .from("conversations")
             .update({ last_message_at: new Date().toISOString() })
             .eq("id", conv.id);
         }
+        // `shouldRemind` sem `reminded`: outra invocação reivindicou a janela
+        // (ou a reivindicação falhou) — o aviso é dela, este turno fica quieto.
 
         jsonLog("info", {
           requestId,
           evt: "skipped_ai_human_active",
           convId: conv.id,
           status: conv.status,
-          reminded: shouldRemind,
+          reminded,
         });
-        await finish(shouldRemind ? "human_active_reminded" : "human_active_silent");
+        await finish(reminded ? "human_active_reminded" : "human_active_silent");
         return;
       }
     }
@@ -586,7 +689,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       p_ttl_seconds: AI_LOCK_TTL_SECONDS,
     });
     if (claimErr) {
-      jsonLog("warn", { requestId, evt: "ai_lock_claim_failed", convId: conv.id, err: claimErr.message });
+      jsonLog("warn", { requestId, evt: "ai_lock_claim_failed", convId: conv.id, ...errorLogFields(claimErr) });
       throw new Error("ai_lock_claim_failed");
     } else if (claimed !== true) {
       // Outro irmão da rajada detém o lock. Desiste — mas via finish() pra que
@@ -906,13 +1009,18 @@ export function createAgentTurn(io: AgentTurnIO) {
 
     // System prompt: carga (mesma ordem de leituras) e montagem em
     // `system-prompt.ts`. O canal entra com a identidade e a formatação.
+    // R3-a: identidade declarada nunca leva o cadastro privado ao prompt —
+    // nem depois de `link_customer_phone` (o prompt é montado uma vez, antes
+    // das ferramentas, e nos turnos seguintes a porta continua presente).
     const agentPrompt = await loadAgentSystemPrompt(supabase, {
       unitId,
       unit: ctx.unit,
-      customer,
-      phone,
+      privateCustomer: ctx.claimedIdentity ? null : ctx.customer,
+      phone: ctx.phone,
       identityLine: ctx.identityLine,
       formattingRules: ctx.formattingRules,
+      channelLabel: ctx.channelLabel,
+      channelRules: ctx.channelRules,
       appBaseUrl: ctx.appBaseUrl,
       requestId,
       log: jsonLog,
@@ -1061,6 +1169,17 @@ export function createAgentTurn(io: AgentTurnIO) {
     // conclusão de uma ação que ainda exige validação é o erro que produz
     // cliente aparecendo no restaurante sem mesa (§17.7.4).
     let lastMutationOutcome: MutationOutcome = "UNKNOWN";
+    // Despacho das ferramentas (`tool-dispatch.ts`), um por turno: o estado é
+    // dele, e as duas variáveis acima o espelham depois de cada chamada (o
+    // retry e os desfechos abaixo leem as variáveis). O cliente do estado pode
+    // mudar no turno por `link_customer_phone`; o prompt não (R3-a).
+    const toolState: ToolDispatchState = {
+      mutatingToolUsed: false,
+      lastMutationOutcome: null,
+      customer: ctx.customer,
+    };
+    const dispatchTool = createToolDispatcher({ supabase, requestId, ctx, conv, state: toolState });
+    const turnTools = agentToolsFor(ctx);
     // Alvo da PRÓXIMA tentativa. Nasce no principal e só muda por
     // `switchToFallback`, entre a tentativa 0 e a 1 do retry silencioso. O
     // turno recomeça limpo no reserva (histórico em texto é neutro entre
@@ -1121,7 +1240,7 @@ export function createAgentTurn(io: AgentTurnIO) {
         systemPrompt,
         history,
         userMessage: combinedUserMessage,
-        tools: agentTools,
+        tools: turnTools,
         // AUSENTE fora da franquia: nenhuma autorização, nenhuma apropriação,
         // nenhum custo persistido — o caminho legado inteiro depende disso.
         budget: budgetHooks,
@@ -1163,73 +1282,12 @@ export function createAgentTurn(io: AgentTurnIO) {
           totalUsage.cache_read_tokens += u.cache_read_tokens;
           totalUsage.reasoning_tokens += u.reasoning_tokens ?? 0;
         },
-        // deno-lint-ignore no-explicit-any
-        onToolCall: async (name, input: any) => {
-          jsonLog("info", { requestId, evt: "tool_call", channelId, unitId, name, input: summarizeToolInput(input) });
+        onToolCall: async (name, input) => {
           try {
-            // deno-lint-ignore no-explicit-any
-            let result: any;
-            switch (name) {
-              case "check_availability":
-                result = await checkAvailability(supabase, input.date, input.time, input.party_size, unitId, input.hall_name);
-                break;
-              case "create_reservation":
-                mutatingToolUsed = true; // desliga o retry silencioso (evita reserva duplicada)
-                result = await createReservation(supabase, {
-                  ...input,
-                  phone,
-                  unit_id: unitId,
-                  organization_id: organizationId,
-                  source: ctx.reservationSource,
-                });
-                // Classificação do desfecho para a copy de §17.7.4. A reserva
-                // do agente nasce `confirmed` e é ISENTA de caução — não existe
-                // desfecho PENDING neste caminho, e inventar um seria afirmar
-                // ao cliente uma espera que não vai acontecer. `success: false`
-                // é ignorância sobre o que ficou de pé: UNKNOWN.
-                lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
-                break;
-              case "get_reservation":
-                result = await getReservationScoped(supabase, input, { unitId, customerId: customer.id });
-                break;
-              case "update_reservation":
-                mutatingToolUsed = true; // desliga o retry silencioso (evita alteração duplicada)
-                result = await updateReservationScoped(
-                  supabase,
-                  input,
-                  { unitId, customerId: customer.id },
-                  { checkAvailability: (p) => checkAvailabilityCore(supabase, p) },
-                );
-                lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
-                break;
-              case "cancel_reservation":
-                mutatingToolUsed = true; // desliga o retry silencioso (evita cancelamento duplicado)
-                result = await cancelReservationScoped(supabase, input.reservation_code, { unitId, customerId: customer.id });
-                lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
-                break;
-              case "list_customer_reservations":
-                result = await listCustomerReservations(supabase, customer.id, unitId);
-                break;
-              case "request_human_handoff":
-                await supabase.from("conversations").update({
-                  status: "awaiting_human",
-                  handoff_reason: input.reason,
-                  handoff_at: new Date().toISOString(),
-                  last_silenced_reply_at: null,
-                }).eq("id", conv.id);
-                jsonLog("info", { requestId, evt: "handoff_requested", convId: conv.id, reason: input.reason });
-                result = { ok: true, message: "Transferência registrada. AGORA envie ao cliente uma mensagem cordial dizendo que um atendente humano vai responder em breve, antes de encerrar." };
-                break;
-              default:
-                result = { error: `Tool desconhecida: ${name}` };
-            }
-            jsonLog("info", { requestId, evt: "tool_result", channelId, unitId, name, result: summarizeToolResult(result) });
-            return JSON.stringify(result);
-          } catch (err) {
-            jsonLog("error", { requestId, evt: "tool_error", channelId, unitId, name, err: String(err) });
-            // O texto do erro (PostgREST, rede, host do projeto) fica no log:
-            // o que volta ao LLM chega ao cliente parafraseado.
-            return JSON.stringify({ error: "Não foi possível concluir esta ação agora. Tente novamente em instantes." });
+            return await dispatchTool(name, input);
+          } finally {
+            mutatingToolUsed = toolState.mutatingToolUsed;
+            lastMutationOutcome = toolState.lastMutationOutcome ?? "UNKNOWN";
           }
         },
       });

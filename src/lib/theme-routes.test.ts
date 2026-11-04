@@ -11,6 +11,8 @@ describe("isLightOnlyRoute", () => {
     "/m/casa",
     "/acompanhar/abc",
     "/preferencias/mensagens/tok",
+    "/privacidade",
+    "/privacidade/exclusao-de-dados",
     "/admin/login",
     "/reset-password",
   ])("retorna true para %s", (pathname) => {
@@ -37,6 +39,7 @@ describe("isLightOnlyRoute", () => {
     "/rx",
     "/report",
     "/g/casa/reservas",
+    "/privacidadex",
   ])("retorna false para %s", (pathname) => {
     expect(isLightOnlyRoute(pathname)).toBe(false);
   });
@@ -64,6 +67,7 @@ describe("script anti-flash do index.html", () => {
   const paths = [
     "/", "/r/casa", "/w/casa", "/m/casa", "/acompanhar/abc", "/preferencias/mensagens/tok",
     "/admin/login", "/reset-password", "/R/casa", "/admin/login/", "/g/casa", "/o/casa",
+    "/privacidade", "/Privacidade/", "/privacidade/exclusao-de-dados", "/privacidadex",
     "/platform/empresas", "/admin", "/rx", "/report", "/g/casa/reservas",
   ];
 

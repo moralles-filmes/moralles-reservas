@@ -148,3 +148,84 @@ describe("reserveSlot quando o INSERT falha", () => {
     }
   });
 });
+
+describe("reserveSlot com o hook insertReservation (Task 4.0b)", () => {
+  // Banco que registra os INSERTs diretos; o hook, quando existe, substitui só eles.
+  function dbWithInsertSpy(tables: Record<string, Row[]>) {
+    const base = memoryDb(tables);
+    const inserts: Row[] = [];
+    const db = {
+      from(table: string) {
+        const builder = base.from(table) as Record<string, unknown>;
+        builder.insert = (row: Row) => {
+          inserts.push(row);
+          return { select: () => ({ single: () => Promise.resolve({ data: { id: "res-direto", status: row.status, payment_status: null }, error: null }) }) };
+        };
+        return builder;
+      },
+    };
+    return { db, inserts };
+  }
+  const params = { unitId: UNIT, date: DATE, time: "20:00", partySize: 2, customerId: "c1", notes: "obs", status: "confirmed", source: "instagram" };
+
+  it("com hook, a linha vai ao hook (mesma forma do INSERT direto) e o INSERT direto não acontece", async () => {
+    const { db, inserts } = dbWithInsertSpy(baseTables([]));
+    const rows: Row[] = [];
+    const hook = vi.fn(async (row: Row) => { rows.push(row); return { data: { id: "res-hook", status: "confirmed", payment_status: null }, error: null }; });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await reserveSlot(db as any, { ...params, insertReservation: hook } as any);
+    expect(inserts, "INSERT direto com o hook presente").toEqual([]);
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ success: true, reservationId: "res-hook", reservationStatus: "confirmed", paymentStatus: null, tableId: "t-2a" });
+    const { reservation_code, ...resto } = rows[0];
+    expect(reservation_code).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
+    expect((out as { reservationCode: string }).reservationCode).toBe(reservation_code);
+    expect(resto).toEqual({
+      customer_id: "c1", unit_id: UNIT, table_id: "t-2a", date: DATE, time: "20:00", party_size: 2,
+      notes: "obs", status: "confirmed", applied_discount_percent: null, source: "instagram",
+    });
+  });
+
+  it("sem hook, o INSERT direto de sempre, com a mesma linha", async () => {
+    const { db, inserts } = dbWithInsertSpy(baseTables([]));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await reserveSlot(db as any, params as any);
+    expect(inserts).toHaveLength(1);
+    expect(out).toMatchObject({ success: true, reservationId: "res-direto" });
+    const { reservation_code: _code, ...resto } = inserts[0];
+    expect(resto).toEqual({
+      customer_id: "c1", unit_id: UNIT, table_id: "t-2a", date: DATE, time: "20:00", party_size: 2,
+      notes: "obs", status: "confirmed", applied_discount_percent: null, source: "instagram",
+    });
+  });
+
+  it("23505 vindo do hook dispara o retry: re-checa e tenta de novo", async () => {
+    const { db, inserts } = dbWithInsertSpy(baseTables([]));
+    const hook = vi.fn()
+      .mockResolvedValueOnce({ data: null, error: { code: "23505" } })
+      .mockResolvedValueOnce({ data: { id: "res-2a-tentativa", status: "confirmed", payment_status: null }, error: null });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await reserveSlot(db as any, { ...params, insertReservation: hook } as any);
+    expect(hook).toHaveBeenCalledTimes(2);
+    expect(hook.mock.calls[0][0].reservation_code).not.toBe(hook.mock.calls[1][0].reservation_code);
+    expect(inserts).toEqual([]);
+    expect(out).toMatchObject({ success: true, reservationId: "res-2a-tentativa" });
+  });
+
+  it("erro do hook que não é 23505 encerra com a mensagem fixa e só o code no log", async () => {
+    const { db, inserts } = dbWithInsertSpy(baseTables([]));
+    const hook = vi.fn().mockResolvedValue({ data: null, error: { code: "42501" } });
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => { logged.push(String(line)); });
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const out = await reserveSlot(db as any, { ...params, insertReservation: hook } as any);
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(inserts).toEqual([]);
+      expect(out).toEqual({ success: false, reason: "insert_failed", message: "Não foi possível concluir a reserva agora. Tente novamente em instantes." });
+      expect(logged).toEqual([JSON.stringify({ evt: "reserve_slot_insert_failed", code: "42501" })]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

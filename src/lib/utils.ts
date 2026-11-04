@@ -142,17 +142,32 @@ export function generateReservationCode(): string {
 
 export function getConversationDisplayName(
   conv: {
+    channel?: "whatsapp" | "instagram" | null;
     contact_name?: string | null;
+    instagram_contact?: { username?: string | null; name?: string | null } | null;
     customer?: { name?: string | null; phone?: string | null } | null;
   }
 ): string {
+  if (conv.channel === "instagram") {
+    // O cliente ligado à conversa do IG vem de um telefone DECLARADO no Direct
+    // (D4, ligação não verificada): o nome do cadastro seria o do dono do
+    // número, não necessariamente o de quem escreve. Só a identidade do IG.
+    const igName = conv.instagram_contact?.name?.trim();
+    if (igName) return igName;
+    const igContactName = conv.contact_name?.trim();
+    if (igContactName) return igContactName;
+    const igUsername = conv.instagram_contact?.username?.trim();
+    if (igUsername) return `@${igUsername.replace(/^@/, "")}`;
+    return "Contato do Instagram";
+  }
   const phone = conv.customer?.phone ?? "";
   const customerName = conv.customer?.name?.trim();
   if (customerName && customerName !== phone) return customerName;
   const contactName = conv.contact_name?.trim();
   if (contactName) return contactName;
   const formatted = formatPhone(phone);
-  return formatted || "Cliente sem nome";
+  if (formatted) return formatted;
+  return "Cliente sem nome";
 }
 
 /**

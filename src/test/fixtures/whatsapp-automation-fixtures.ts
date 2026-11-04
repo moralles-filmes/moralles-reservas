@@ -101,7 +101,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     customers: 'id,organization_id,name,phone,email,emails,birthday,do_not_contact,deleted_at',
     reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating,satisfaction_at,satisfaction_comment,notes,table_id,updated_at,created_at',
     notifications_sent: 'id,unit_id,kind,status,sent_at,reservation_id,error,whatsapp_provider,whatsapp_channel_id,provider_message_id,delivered_at,read_at',
-    conversations: 'id,unit_id,customer_id,messages,status,ai_lock_token,contact_name,wa_chat_lid,handoff_reason,handoff_at,last_silenced_reply_at,last_message_at',
+    conversations: 'id,unit_id,customer_id,channel,instagram_contact_id,messages,status,ai_lock_token,contact_name,wa_chat_lid,handoff_reason,handoff_at,last_silenced_reply_at,last_message_at',
     settings: 'unit_id,key,value', platform_flags: 'key,value',
     organization_entitlement_overrides: 'organization_id,feature,enabled,grant_type,starts_at,ends_at,revoked_at',
     billing_subscriptions: 'id,organization_id,status,current_period_end,canceled_at,suspended_at,billing_plans',
@@ -135,7 +135,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     organizations: [{ id: ids.organization, billing_status: 'active', trial_ends_at: null, whatsapp_legacy_grandfathered: true, whatsapp_grandfather_revoked_at: null }],
     customers: [{ ...base.rows.customers[0], email: null, emails: [], birthday: null }],
     reservations: [{ ...base.rows.reservations[0], satisfaction_at: null, satisfaction_comment: null, notes: null, table_id: null, updated_at: base.nowISO, created_at: base.nowISO }],
-    conversations: [{ id: ids.conversation, unit_id: ids.unit, customer_id: ids.customer, messages: [], status: 'ai_active', ai_lock_token: null,
+    conversations: [{ id: ids.conversation, unit_id: ids.unit, customer_id: ids.customer, channel: 'whatsapp', instagram_contact_id: null, messages: [], status: 'ai_active', ai_lock_token: null,
       contact_name: 'Marina', wa_chat_lid: null, handoff_reason: null, handoff_at: null, last_silenced_reply_at: null, last_message_at: base.nowISO }],
     settings: [{ unit_id: ids.unit, key: 'ai_config', value: { provider: 'claude' } }],
     platform_flags: [{ key: 'whatsapp_service_enforcement', value: false }, { key: 'whatsapp_async_ingestion', value: false }],
@@ -151,7 +151,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
   const trace: { operation: string; value?: unknown }[] = [], queries: ChatQuery[] = [], unexpected: string[] = [];
   const calls = { sendText: 0, sendTemplate: 0, enqueueAutomation: 0, llm: 0 };
   const sdk: { constructors: unknown[]; requests: { input: unknown; options: unknown }[] } = { constructors: [], requests: [] };
-  const controls = { sendStatus: 200, sdkResponses: [chatSdkMessage()] as unknown[], voucherInsertError: null as string | null,
+  const controls = { sendStatus: 200, sdkResponses: [chatSdkMessage()] as unknown[], voucherInsertError: null as string | null, unitSelectError: null as string | null,
     beforeQuery: async (_query: ChatQuery) => {}, beforeSdk: async (_input: unknown, _options: unknown) => {} };
   const processed = new Map<string, string>();
   const fail = (reason: string): never => { unexpected.push(reason); throw new Error(`unexpected_chat_io:${reason}`); };
@@ -191,6 +191,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
       async function execute(single: boolean, required = false): Promise<{ data: unknown; error: { code: string } | null; count?: number }> {
         await controls.beforeQuery(query);
         trace.push({ operation: `${query.operation}:${table}`, value: structuredClone(query) }); queries.push(query);
+        if (table === 'units' && query.operation === 'select' && query.columns === '*' && controls.unitSelectError) return { data: null, error: { code: controls.unitSelectError } };
         if (query.operation === 'insert') {
           if (!['vouchers','notifications_sent','webhook_executions','ai_usage_logs','whatsapp_inbound_events'].includes(table)) return fail(`insert:${table}`);
           for (const key of Object.keys(query.patch!)) assertColumn(table, key);
