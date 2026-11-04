@@ -48,11 +48,12 @@
 - Sem arquivo do repo.
 - Script do responsável: `C:\Users\nicol\AppData\Local\Temp\claude\f4a664b9a07f90c9\089e8263-b09a-4ab6-9d1f-2aece552999b\scratchpad\meta-page-login-test.mjs`. Só leitura; nunca imprime token, secret nem code.
 
-- [ ] **Passo 1:** descrever ao responsável a mudança no painel do app 1435590504737997 e esperar autorização. Ele faz a mudança ou autoriza o agente a fazê-la.
+- [x] **Passo 1:** descrever ao responsável a mudança no painel do app 1435590504737997 e esperar autorização. Ele faz a mudança ou autoriza o agente a fazê-la.
   - Login do Facebook para Empresas › Configurações › criar a configuração "Moralles Reservas — Página":
     - tipo de token: Token de acesso do usuário;
-    - ativos: Páginas e contas do Instagram;
-    - permissões: `instagram_basic`, `instagram_manage_messages`, `pages_manage_metadata`, `pages_show_list` e `pages_read_engagement`.
+    - ativos: com token de usuário o painel não permite escolher; a Página é escolhida no diálogo de login;
+    - permissões: `instagram_basic`, `instagram_manage_messages`, `pages_read_engagement`, `pages_show_list` e `business_management`.
+    - Essa é a lista obrigatória para mensagens que a própria Meta mostra nesse caso de uso. `pages_manage_metadata` não está disponível nele, então a inscrição da Página no webhook é medida no piloto; a contingência é o "Instagram setup tool".
   - Em "URIs de redirecionamento do OAuth válidos", conferir `https://reservas.moralles.com.br/instagram/callback`.
 - [ ] **Passo 2:** o responsável roda `node meta-page-login-test.mjs`, escolhe só a Página "Moralles Films" no diálogo e cola a saída aqui.
 - [ ] **Passo 3:** conferir o critério:
@@ -269,4 +270,13 @@
 
 ## Evidências
 
-(preencher ao fim de cada task)
+**Task 0, painel (2026-11-04).** O responsável autorizou e o agente executou.
+- **Configuração** "Moralles Reservas — Página": variação Geral, token de acesso do usuário, config_id `950774527855623`.
+- **Permissões da configuração:** `business_management`, `instagram_basic`, `instagram_manage_messages`, `pages_read_engagement` e `pages_show_list`.
+  - Antes, `pages_read_engagement`, `pages_show_list` e `business_management` foram adicionadas ao caso de uso "Gerenciar mensagens e conteúdo no Instagram" › Permissões e recursos ("Pronto para teste").
+  - `pages_manage_metadata` não existe nesse caso de uso.
+- **Painel:** a "Configuração da API com login do Facebook" aparece como legado, mas funcional.
+- **URI de redirecionamento:** já estava cadastrado, com modo estrito ligado; nada foi mudado ali.
+- **App:** continua "Não publicado".
+- **Migration nova** renomeada para `20261104130000`: a planta aplicou `20261104120000` em produção.
+- **Pendente:** script do responsável (passos 2 e 3).
