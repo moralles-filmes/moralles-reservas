@@ -1,3 +1,4 @@
+import { brtInstantDateKey } from "@/lib/brt";
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
@@ -293,7 +294,7 @@ export default function WhatsappImplementations() {
                       <td className="p-3">
                         {row.amount_cents == null ? "—" : formatCentsBRL(row.amount_cents)}
                       </td>
-                      <td className="p-3">{formatDateBR(row.created_at.slice(0, 10))}</td>
+                      <td className="p-3">{formatDateBR(brtInstantDateKey(row.created_at))}</td>
                       <td className="p-3">
                         {(() => {
                           const badge = grandfatherCellBadge(org);
@@ -475,12 +476,12 @@ function ImplementationDetail({
             }
           />
           <InfoField label="Responsável" value={row.owner_admin_id ?? "—"} />
-          <InfoField label="Criada em" value={formatDateBR(row.created_at.slice(0, 10))} />
-          {row.paid_at && <InfoField label="Pago em" value={formatDateBR(row.paid_at.slice(0, 10))} />}
+          <InfoField label="Criada em" value={formatDateBR(brtInstantDateKey(row.created_at))} />
+          {row.paid_at && <InfoField label="Pago em" value={formatDateBR(brtInstantDateKey(row.paid_at))} />}
           {row.scheduled_for && <InfoField label="Agendada para" value={formatDateBR(row.scheduled_for)} />}
-          {row.started_at && <InfoField label="Iniciada em" value={formatDateBR(row.started_at.slice(0, 10))} />}
-          {row.completed_at && <InfoField label="Concluída em" value={formatDateBR(row.completed_at.slice(0, 10))} />}
-          {row.canceled_at && <InfoField label="Cancelada em" value={formatDateBR(row.canceled_at.slice(0, 10))} />}
+          {row.started_at && <InfoField label="Iniciada em" value={formatDateBR(brtInstantDateKey(row.started_at))} />}
+          {row.completed_at && <InfoField label="Concluída em" value={formatDateBR(brtInstantDateKey(row.completed_at))} />}
+          {row.canceled_at && <InfoField label="Cancelada em" value={formatDateBR(brtInstantDateKey(row.canceled_at))} />}
         </div>
         {row.reason && <p className="text-sm text-muted-foreground">Motivo: {row.reason}</p>}
         {row.notes && <p className="text-sm text-muted-foreground">Observação: {row.notes}</p>}
@@ -502,7 +503,7 @@ function ImplementationDetail({
                   <>
                     Legado ativo
                     {org.whatsapp_grandfathered_at
-                      ? ` desde ${formatDateBR(org.whatsapp_grandfathered_at.slice(0, 10))}`
+                      ? ` desde ${formatDateBR(brtInstantDateKey(org.whatsapp_grandfathered_at))}`
                       : ""}
                     {org.whatsapp_grandfathered_source === "MIGRATION_5B"
                       ? " (migração automática da Fase 5b)."
@@ -512,7 +513,7 @@ function ImplementationDetail({
                   </>
                 ) : org.whatsapp_grandfather_revoked_at ? (
                   <>
-                    Revogado em {formatDateBR(org.whatsapp_grandfather_revoked_at.slice(0, 10))}
+                    Revogado em {formatDateBR(brtInstantDateKey(org.whatsapp_grandfather_revoked_at))}
                     {org.whatsapp_grandfather_revoked_reason
                       ? ` — ${WHATSAPP_GRANDFATHER_REVOKED_REASON_LABEL[org.whatsapp_grandfather_revoked_reason]}`
                       : ""}

@@ -1,3 +1,4 @@
+import { brtInstantDateKey } from "@/lib/brt";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -314,7 +315,7 @@ export default function Cobranca() {
                   : trialDaysLeft === 1
                     ? "1 dia"
                     : `${trialDaysLeft} dias`}
-                {" "}({formatDateBR(trialEndsAt!.slice(0, 10))})
+                {" "}({formatDateBR(brtInstantDateKey(trialEndsAt!))})
               </span>
             </div>
           </CardContent>
@@ -355,14 +356,14 @@ export default function Cobranca() {
                   <span className="text-muted-foreground">
                     {sub.cancel_at_period_end ? "Acesso ativo até" : "Próximo vencimento"}:
                   </span>
-                  <span className="font-medium">{formatDateBR(sub.current_period_end.slice(0, 10))}</span>
+                  <span className="font-medium">{formatDateBR(brtInstantDateKey(sub.current_period_end))}</span>
                 </div>
               )}
               {sub.trial_end && sub.status === "trialing" && (
                 <div className="flex items-center gap-2">
                   <CalendarClock className="h-4 w-4 text-info" />
                   <span className="text-muted-foreground">Trial até:</span>
-                  <span className="font-medium">{formatDateBR(sub.trial_end.slice(0, 10))}</span>
+                  <span className="font-medium">{formatDateBR(brtInstantDateKey(sub.trial_end))}</span>
                 </div>
               )}
             </div>
@@ -534,7 +535,7 @@ export default function Cobranca() {
               ) : (
                 <>
                   Você manterá acesso ao sistema até o fim do período já pago
-                  {sub?.current_period_end && ` (${formatDateBR(sub.current_period_end.slice(0, 10))})`}.
+                  {sub?.current_period_end && ` (${formatDateBR(brtInstantDateKey(sub.current_period_end))})`}.
                   Depois disso, o acesso será suspenso até você escolher um novo plano.
                 </>
               )}

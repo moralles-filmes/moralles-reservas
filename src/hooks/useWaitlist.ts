@@ -1,3 +1,4 @@
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
@@ -60,19 +61,21 @@ export function useWaitlist(unitId: string, onlyActive = true) {
   return useQuery({
     queryKey: ["waitlist", unitId, onlyActive],
     queryFn: async () => {
-      let query = supabase
-        .from("waitlist")
-        .select("*")
-        .eq("unit_id", unitId)
-        .order("priority", { ascending: true })
-        .order("created_at", { ascending: true });
+      const data = await fetchAllPages((from, to) => {
+        let query = supabase
+          .from("waitlist")
+          .select("*")
+          .eq("unit_id", unitId)
+          .order("priority", { ascending: true })
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true });
 
-      if (onlyActive) {
-        query = query.in("status", ["waiting", "notified"]);
-      }
+        if (onlyActive) {
+          query = query.in("status", ["waiting", "notified"]);
+        }
 
-      const { data, error } = await query;
-      if (error) throw error;
+        return query.range(from, to);
+      });
       return data as WaitlistEntry[];
     },
     enabled: !!unitId,

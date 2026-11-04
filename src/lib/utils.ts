@@ -1,3 +1,4 @@
+import { addDaysKey, brtTodayKey } from "./brt";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -26,45 +27,25 @@ export function isoToLocalDate(iso: string): string {
   return `${y}-${m}-${day}`;
 }
 
-/**
- * Data de hoje no fuso local do browser, formato YYYY-MM-DD.
- * Substitui `new Date().toISOString().split("T")[0]`, que retorna em UTC
- * e dá o dia ERRADO entre 21:00–23:59 BRT (já passou da meia-noite UTC).
- */
+/** Dia civil atual em Brasília (YYYY-MM-DD), independente do fuso do navegador. */
 export function todayLocalISO(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return brtTodayKey();
 }
 
 /**
- * Data N dias à frente (ou atrás, se negativo) no fuso local, YYYY-MM-DD.
- * Útil pra calcular maxDate/minDate de pickers respeitando o fuso do usuário.
+ * Dia civil em Brasília N dias à frente (ou atrás, se negativo), YYYY-MM-DD.
+ * Usado em maxDate/minDate de pickers.
  */
 export function addDaysLocalISO(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return addDaysKey(brtTodayKey(), days);
 }
 
 /**
- * Timestamp ISO correspondente ao fim do dia (23:59:59.999) no fuso local,
- * N dias à frente. Usado em validade de vouchers — o cliente tem o dia
- * inteiro até a meia-noite local independente do horário em que o voucher
- * foi emitido. Quando rodado em Edge Function (Deno=UTC), o "fim do dia
- * local" é o fim do dia UTC; pra um end-of-day em BRT a partir de um
- * runtime UTC, prefira `endOfDayBrtISO`.
+ * Fim do dia (23:59:59.999) em Brasília, N dias à frente, como ISO UTC.
+ * Validade de voucher: o cliente tem o dia inteiro até a meia-noite de Brasília.
  */
 export function endOfDayLocalISO(daysAhead: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + daysAhead);
-  d.setHours(23, 59, 59, 999);
-  return d.toISOString();
+  return new Date(`${addDaysKey(brtTodayKey(), daysAhead)}T23:59:59.999-03:00`).toISOString();
 }
 
 export function formatDateBR(

@@ -79,3 +79,20 @@ export function brtDayBounds(
 export function brtTodayKey(now = new Date()): string {
   return brtDateOf(now.toISOString());
 }
+
+/** Dia em BRT para exibição: coluna `date` pura fica como está; instante vira o dia em Brasília. */
+export function brtInstantDateKey(value: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : brtDateOf(value);
+}
+
+const brtClockFormatter = new Intl.DateTimeFormat("pt-BR", {
+  timeZone: "America/Sao_Paulo",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/** Hora atual em Brasília, "HH:MM". */
+export function brtNowHHMM(now = new Date()): string {
+  return brtClockFormatter.format(now);
+}

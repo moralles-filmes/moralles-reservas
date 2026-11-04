@@ -1,3 +1,4 @@
+import { brtInstantDateKey } from "@/lib/brt";
 import { Link } from "react-router-dom";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -66,7 +67,7 @@ export function WhatsappServiceBanner({
     // flag estiver OFF. `graceEndsAt` (quando a carência acabou) é o fallback
     // honesto: nunca mostra a data em branco nem inventa "hoje".
     const sinceIso = data.suspendedAt ?? data.graceEndsAt;
-    const sinceLabel = sinceIso ? formatDateBR(sinceIso.slice(0, 10)) : null;
+    const sinceLabel = sinceIso ? formatDateBR(brtInstantDateKey(sinceIso)) : null;
     return (
       <div
         className={cn(
@@ -121,8 +122,8 @@ export function WhatsappServiceBanner({
           Mensalidade da automação em aberto.
           {data.graceEndsAt
             ? enforced
-              ? ` Suspensão em ${formatDateBR(data.graceEndsAt.slice(0, 10))}.`
-              : ` Regularize até ${formatDateBR(data.graceEndsAt.slice(0, 10))}.`
+              ? ` Suspensão em ${formatDateBR(brtInstantDateKey(data.graceEndsAt))}.`
+              : ` Regularize até ${formatDateBR(brtInstantDateKey(data.graceEndsAt))}.`
             : ""}
         </p>
       </div>

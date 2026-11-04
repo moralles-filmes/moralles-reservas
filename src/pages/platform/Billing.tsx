@@ -1,3 +1,4 @@
+import { brtInstantDateKey } from "@/lib/brt";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -364,7 +365,7 @@ function HeldInvoicesSection() {
                           : "—"}
                       </TableCell>
                       <TableCell>
-                        {inv.enforcement_held_at ? formatDateBR(inv.enforcement_held_at.slice(0, 10)) : "—"}
+                        {inv.enforcement_held_at ? formatDateBR(brtInstantDateKey(inv.enforcement_held_at)) : "—"}
                       </TableCell>
                       <TableCell>
                         <Button variant="outline" size="sm" onClick={() => setReleaseTarget(inv)}>
@@ -443,7 +444,7 @@ function OrgRow({
         {sub?.payment_method ? PAYMENT_METHOD_LABEL[sub.payment_method] ?? sub.payment_method : "—"}
       </TableCell>
       <TableCell className="hidden lg:table-cell">
-        {sub?.current_period_end ? formatDateBR(sub.current_period_end.slice(0, 10)) : "—"}
+        {sub?.current_period_end ? formatDateBR(brtInstantDateKey(sub.current_period_end)) : "—"}
       </TableCell>
       <TableCell className="hidden md:table-cell">
         {plan ? formatCentsBRL(plan.amount_cents) : "—"}

@@ -1,3 +1,4 @@
+import { brtInstantDateKey } from "@/lib/brt";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -589,7 +590,7 @@ export default function WhatsappInstances() {
                     </Badge>
                   )}
                   <span className="text-xs text-muted-foreground">
-                    desde {formatDateBR(a.first_detected_at.slice(0, 10))} · {a.occurrences}×
+                    desde {formatDateBR(brtInstantDateKey(a.first_detected_at))} · {a.occurrences}×
                   </span>
                 </div>
                 {detail && <p className="text-sm">{detail}</p>}

@@ -1,3 +1,4 @@
+import { brtInstantDateKey } from "@/lib/brt";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -181,7 +182,7 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
             >
               {instanceOverdue ? "Pagamento da instância em atraso desde" : "Próximo vencimento da instância"}
               :{" "}
-              <span className="font-medium">{formatDateBR(data.subscription.next_due.slice(0, 10))}</span>
+              <span className="font-medium">{formatDateBR(brtInstantDateKey(data.subscription.next_due))}</span>
             </p>
           )}
           {data.override.active && (
@@ -191,7 +192,7 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
               ]}
               {" — "}
               {data.override.ends_at
-                ? `válido até ${formatDateBR(data.override.ends_at.slice(0, 10))}`
+                ? `válido até ${formatDateBR(brtInstantDateKey(data.override.ends_at))}`
                 : "próxima cobrança: não aplicável"}
               .
             </p>

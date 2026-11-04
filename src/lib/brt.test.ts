@@ -64,3 +64,12 @@ describe("brt", () => {
     expect(daysBetweenInclusive("2026-11-04", "2026-11-04")).toBe(1);
   });
 });
+
+describe("instantes e relógio BRT", () => {
+  it("preserva coluna date e converte instante para o dia em Brasília", async () => {
+    const { brtInstantDateKey, brtNowHHMM } = await import("./brt");
+    expect(brtInstantDateKey("2026-11-05")).toBe("2026-11-05");
+    expect(brtInstantDateKey("2026-11-05T01:30:00Z")).toBe("2026-11-04");
+    expect(brtNowHHMM(new Date("2026-11-05T01:07:00Z"))).toBe("22:07");
+  });
+});

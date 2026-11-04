@@ -1,3 +1,4 @@
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 
@@ -34,18 +35,25 @@ function useDeliveries(
     queryFn: async () => {
       const map: Record<string, DeliveryRow[]> = {};
       if (!ids.length) return map;
-      const { data, error } = await supabase
-        .from("notifications_sent")
-        .select(
-          `${idColumn}, kind, status, provider_message_id, sent_at, delivered_at, read_at, failed_at`,
-        )
-        .eq("unit_id", unitId)
-        .in(idColumn, ids);
-      if (error) throw error;
-      for (const r of (data ?? []) as Array<DeliveryRow & Record<string, unknown>>) {
-        const owner = r[idColumn] as string | null;
-        if (!owner) continue;
-        (map[owner] ??= []).push(r);
+      // `.in()` em lotes de 100 (URL curta) e cada lote lido em páginas.
+      for (let offset = 0; offset < ids.length; offset += 100) {
+        const batch = ids.slice(offset, offset + 100);
+        const data = await fetchAllPages((from, to) =>
+          supabase
+            .from("notifications_sent")
+            .select(
+              `${idColumn}, kind, status, provider_message_id, sent_at, delivered_at, read_at, failed_at`,
+            )
+            .eq("unit_id", unitId)
+            .in(idColumn, batch)
+            .order("id")
+            .range(from, to),
+        );
+        for (const r of data as Array<DeliveryRow & Record<string, unknown>>) {
+          const owner = r[idColumn] as string | null;
+          if (!owner) continue;
+          (map[owner] ??= []).push(r);
+        }
       }
       return map;
     },

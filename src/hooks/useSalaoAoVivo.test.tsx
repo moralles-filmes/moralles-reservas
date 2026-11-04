@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => {
   const results: Record<string, { data: unknown; error: unknown }> = {};
   const from = vi.fn((table: string) => {
     const builder: Record<string, unknown> = {};
-    for (const m of ["select", "eq", "in", "or", "not", "is", "gte", "lte", "gt", "lt", "order", "maybeSingle"]) {
+    for (const m of ["select", "eq", "in", "or", "not", "is", "gte", "lte", "gt", "lt", "order", "range", "maybeSingle"]) {
       builder[m] = (...args: unknown[]) => {
         calls.push({ table, method: m, args });
         return builder;
