@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import type { TableBox } from "@/lib/hall-plan-core";
 import type { TableState } from "@/lib/table-situation-core";
+import { elapsedLabel } from "@/lib/elapsed-label";
 import { SITUATION_TONE, TONE_CLASS } from "../situation-labels";
 import { SCENE_ROT_X, SCENE_ROT_Z, mesaAriaLabel } from "./scene-geometry";
 
@@ -15,9 +16,24 @@ interface Props {
   timeLabel?: string;
   now: Date;
   variant: "3d" | "2d";
+  /** Estado na escolha de mesas; ausente ou `off` fora da escolha. */
+  pickState?: "off" | "selectable" | "selected" | "disabled";
+  /** Mesa sugerida pela escolha (contorno tracejado). */
+  suggested?: boolean;
 }
 
-export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, now, variant }: Props) {
+export function MesaBotao({
+  box,
+  state,
+  scale,
+  selected,
+  onSelect,
+  timeLabel,
+  now,
+  variant,
+  pickState,
+  suggested,
+}: Props) {
   const cls = TONE_CLASS[SITUATION_TONE[state.situation]];
   const pulses = state.situation === "arriving" || state.situation === "late";
   const is3d = variant === "3d";
@@ -25,6 +41,13 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
   // O deslocamento em Z fica no invólucro; animação e escala de toque agem nos filhos.
   const lift = (z: number): React.CSSProperties | undefined =>
     is3d ? { transform: `translateZ(${z}px)`, transformStyle: "preserve-3d" } : undefined;
+
+  // Mesa ocupada mostra o tempo de permanência no lugar do horário de reserva.
+  const occupied = state.situation === "occupied" && !!state.occupant;
+  const elapsed = occupied && state.occupant ? elapsedLabel(state.occupant.since, now) : undefined;
+  const lateTone = state.overtime ? cn("rounded border px-1", TONE_CLASS[SITUATION_TONE.late].pill) : undefined;
+  // Rótulo secundário: contador quando ocupada, senão o HH:MM de reserva.
+  const secondary = occupied ? elapsed : timeLabel;
 
   return (
     <div
@@ -56,7 +79,9 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
           type="button"
           data-table-id={box.tableId}
           aria-label={mesaAriaLabel(box, state, now)}
-          aria-pressed={selected}
+          disabled={pickState === "disabled"}
+          aria-disabled={pickState === "disabled"}
+          aria-pressed={pickState && pickState !== "off" ? pickState === "selected" : selected}
           onClick={() => onSelect(box.tableId)}
           className={cn(
             "pointer-events-auto absolute inset-0 flex select-none items-center justify-center border-2 text-foreground",
@@ -66,16 +91,22 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
             // então o alvo precisa de ≥ 44/0,56 ≈ 79 px de altura no plano para seguir com 44 px na tela.
             is3d ? "coarse:after:h-20 coarse:after:w-11" : "coarse:after:h-11 coarse:after:w-11",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            pickState === "disabled" && "opacity-40",
+            pickState === "selected" && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+            suggested && "outline-dashed outline-2 outline-primary/70",
             shape,
             cls.cap,
             selected && "ring-2 ring-ring",
           )}
         >
           {!is3d && (
-              <span className="pointer-events-none flex flex-col items-center text-[11px] font-semibold leading-tight" style={{ transform: `rotate(${-box.rotation}deg)` }}>
-                <span>{box.number}</span>
-                {timeLabel && <span className="text-[10px] font-normal">{timeLabel}</span>}
-              </span>
+            <span
+              className="pointer-events-none flex flex-col items-center text-[11px] font-semibold leading-tight"
+              style={{ transform: `rotate(${-box.rotation}deg)` }}
+            >
+              <span>{box.number}</span>
+              {secondary && <span className={cn("text-[10px] font-normal", occupied && lateTone)}>{secondary}</span>}
+            </span>
           )}
         </button>
       </div>
@@ -91,7 +122,9 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
         >
           <span className="absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center whitespace-nowrap text-sm font-bold leading-none text-foreground [text-shadow:0_0_4px_hsl(var(--background))]">
             <span>{box.number}</span>
-            {timeLabel && <span className="mt-0.5 text-[11px] font-medium">{timeLabel}</span>}
+            {secondary && (
+              <span className={cn("mt-0.5 text-[11px] font-medium", occupied && lateTone)}>{secondary}</span>
+            )}
           </span>
         </div>
       )}

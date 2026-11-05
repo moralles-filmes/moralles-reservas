@@ -7,7 +7,7 @@ import { SalaoPlano3D } from "./SalaoPlano3D";
 import { SCENE_PERSPECTIVE, SCENE_ROT_X, SCENE_ROT_Z, fitSceneScale, projectedSpanCm } from "./scene-geometry";
 import { useContainerWidth, useViewportHeight } from "./useContainerWidth";
 
-function PlantaCena3DInner({ halls, layout, showLabels, states, timeLabels, selectedId, onSelect, now, focus, onFocusHandled, maxHeightPx }: CenaProps) {
+function PlantaCena3DInner({ halls, layout, showLabels, states, timeLabels, selectedId, onSelect, now, focus, onFocusHandled, maxHeightPx, pick, linked }: CenaProps) {
   const { ref, width } = useContainerWidth();
   const apiRef = useRef<PlanViewportApi | null>(null);
   useFocusTable(apiRef, focus, onFocusHandled);
@@ -53,6 +53,8 @@ function PlantaCena3DInner({ halls, layout, showLabels, states, timeLabels, sele
             {halls.map((hall) => (
               <SalaoPlano3D
                 key={hall.id}
+                pick={pick}
+                linked={linked}
                 hall={hall}
                 scale={scale}
                 showLabel={showLabels}

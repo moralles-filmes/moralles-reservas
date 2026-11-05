@@ -5,11 +5,13 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchSalaoBlocks,
+  fetchSalaoCombinations,
   fetchSalaoPlan,
   fetchSalaoReservations,
   fetchSalaoSeatedWaitlist,
   fetchSalaoSeatedWalkIns,
   fetchSalaoDurationSetting,
+  fetchSalaoOccupantTables,
 } from "@/features/planta/api";
 import { parseDurationMinutes, useSalaoAoVivo } from "./useSalaoAoVivo";
 
@@ -52,12 +54,13 @@ const eqUnit = (table: string) =>
 describe("fetch* do salão ao vivo", () => {
   it("toda consulta filtra por unit_id", async () => {
     await fetchSalaoPlan("unit-a");
+    await fetchSalaoCombinations("unit-a");
     await fetchSalaoReservations("unit-a", "2026-11-03", "2026-11-02");
     await fetchSalaoSeatedWaitlist("unit-a", "2026-11-02");
     await fetchSalaoSeatedWalkIns("unit-a", "2026-11-02");
     await fetchSalaoBlocks("unit-a", "2026-11-03", "2026-11-04");
     await fetchSalaoDurationSetting("unit-a");
-    for (const t of ["halls", "tables", "reservations", "waitlist", "walk_ins", "table_blocks", "settings"]) {
+    for (const t of ["halls", "tables", "reservations", "waitlist", "walk_ins", "table_blocks", "settings", "table_combinations"]) {
       expect(eqUnit(t), t).toBe(true);
     }
   });
@@ -150,5 +153,68 @@ describe("useSalaoAoVivo", () => {
     mocks.results.table_blocks = { data: null, error: { message: "boom" } };
     const { result } = renderHook(() => useSalaoAoVivo("unit-a"), { wrapper });
     await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+});
+
+describe("fetchSalaoOccupantTables", () => {
+  it("filtra por unit_id e pelos ids de cada ocupante", async () => {
+    await fetchSalaoOccupantTables("unit-a", { reservationIds: ["r1", "r2"], walkInIds: ["w1"], waitlistIds: [] });
+    const ins = mocks.calls.filter((c) => c.table === "occupant_tables" && c.method === "in");
+    expect(ins.map((c) => c.args)).toEqual([
+      ["reservation_id", ["r1", "r2"]],
+      ["walk_in_id", ["w1"]],
+    ]);
+    const eqs = mocks.calls.filter((c) => c.table === "occupant_tables" && c.method === "eq");
+    expect(eqs).toHaveLength(2);
+    expect(eqs.every((c) => c.args[0] === "unit_id" && c.args[1] === "unit-a")).toBe(true);
+  });
+
+  it("divide em lotes de 100 ids", async () => {
+    const ids = Array.from({ length: 250 }, (_, i) => "r" + i);
+    await fetchSalaoOccupantTables("unit-a", { reservationIds: ids, walkInIds: [], waitlistIds: [] });
+    const ins = mocks.calls.filter((c) => c.table === "occupant_tables" && c.method === "in");
+    expect(ins.map((c) => (c.args[1] as string[]).length)).toEqual([100, 100, 50]);
+  });
+
+  it("sem ocupantes não consulta nada", async () => {
+    expect(await fetchSalaoOccupantTables("unit-a", { reservationIds: [], walkInIds: [], waitlistIds: [] })).toEqual([]);
+    expect(mocks.calls.some((c) => c.table === "occupant_tables")).toBe(false);
+  });
+
+  it("erro sobe (nunca vira lista vazia)", async () => {
+    const err = { code: "42501", message: "x" };
+    mocks.results.occupant_tables = { data: null, error: err };
+    await expect(
+      fetchSalaoOccupantTables("unit-a", { reservationIds: ["r1"], walkInIds: [], waitlistIds: [] }),
+    ).rejects.toBe(err);
+  });
+});
+
+describe("useSalaoAoVivo occupantTables", () => {
+  it("mantém canceladas e no_show somente na lista do dia", async () => {
+    mocks.results.reservations = { data: [
+      { id: "active", status: "confirmed" },
+      { id: "cancelled", status: "cancelled" },
+      { id: "absent", status: "no_show" },
+    ], error: null };
+    const { result } = renderHook(() => useSalaoAoVivo("unit-a"), { wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.dayReservations).toHaveLength(3);
+    expect(result.current.reservations.map(r => r.id)).toEqual(["active"]);
+    const calls = mocks.calls.filter(c => c.table === "occupant_tables" && c.method === "in");
+    expect(calls.map(c => c.args)).toEqual([["reservation_id", ["active"]]]);
+  });
+  it("lê occupant_tables dos ocupantes carregados, com a key [occupant-tables, unitId, salao, hoje]", async () => {
+    mocks.results.reservations = { data: [{ id: "r1", table_id: "t1", status: "confirmed" }], error: null };
+    mocks.results.occupant_tables = {
+      data: [{ table_id: "t1", reservation_id: "r1", walk_in_id: null, waitlist_id: null, overlap_ok: false }],
+      error: null,
+    };
+    const { result } = renderHook(() => useSalaoAoVivo("unit-a"), { wrapper });
+    await waitFor(() => expect(result.current.occupantTables).toHaveLength(1));
+    // A key carrega os ids: a de antes de os ocupantes chegarem fica no cache, inativa.
+    const active = client.getQueryCache().findAll({ queryKey: ["occupant-tables", "unit-a", "salao"], type: "active" });
+    expect(active).toHaveLength(1);
+    expect(active[0].queryKey[4]).toBe("r1||");
   });
 });

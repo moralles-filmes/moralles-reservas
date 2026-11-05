@@ -1,8 +1,16 @@
 import type { PlanWall } from "@/lib/hall-plan-core";
 import type { TableState } from "@/lib/table-situation-core";
 import { MesaBotao } from "./MesaBotao";
-import type { SceneHall } from "./PlantaCena2D";
-import { SCENE_ROT_X, SCENE_ROT_Z, WINDOW_STRIPES, entranceRect, wallRect } from "./scene-geometry";
+import type { CenaProps, SceneHall } from "./PlantaCena2D";
+import {
+  SCENE_ROT_X,
+  SCENE_ROT_Z,
+  WINDOW_STRIPES,
+  entranceRect,
+  linkedOutlineRect,
+  pickStateOf,
+  wallRect,
+} from "./scene-geometry";
 
 const WALL_PX = 6;
 /** Bem acima da etiqueta da mesa (30 px + texto): mesa no canto não encosta no nome. */
@@ -20,10 +28,25 @@ interface Props {
   selectedId: string | null;
   onSelect: (tableId: string) => void;
   now: Date;
+  /** Escolha de mesas em andamento: selecionáveis, selecionadas e sugeridas. */
+  pick?: CenaProps["pick"];
+  /** Grupos de mesas ligados visualmente (contorno tracejado). */
+  linked?: string[][];
 }
 
 /** Um salão dentro do plano girado: chão, paredes elevadas, janelas, entrada e mesas. */
-export function SalaoPlano3D({ hall, scale, showLabel, states, timeLabels, selectedId, onSelect, now }: Props) {
+export function SalaoPlano3D({
+  hall,
+  scale,
+  showLabel,
+  states,
+  timeLabels,
+  selectedId,
+  onSelect,
+  now,
+  pick,
+  linked,
+}: Props) {
   const { plan } = hall;
   const entrance = entranceRect(plan, scale, WALL_PX + 2);
   return (
@@ -88,9 +111,23 @@ export function SalaoPlano3D({ hall, scale, showLabel, states, timeLabels, selec
             style={{ ...entrance, transform: "translateZ(2px)" }}
           />
         )}
+        {linked?.map((ids, i) => {
+          const outline = linkedOutlineRect(hall.boxes, ids, scale);
+          if (!outline) return null;
+          return (
+            <div
+              key={i}
+              aria-hidden="true"
+              className="pointer-events-none absolute rounded-lg border-2 border-dashed border-primary/70"
+              style={{ transform: "translateZ(2px)", ...outline }}
+            />
+          );
+        })}
         {hall.boxes.map((box) => (
           <MesaBotao
             key={box.tableId}
+            pickState={pickStateOf(pick, box.tableId)}
+            suggested={pick?.suggested?.has(box.tableId)}
             variant="3d"
             box={box}
             state={states.get(box.tableId)}

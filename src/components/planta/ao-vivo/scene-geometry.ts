@@ -1,6 +1,7 @@
 import { ENTRANCE_CM } from "@/lib/hall-plan-core";
 import type { HallPlan, PlanWall, TableBox } from "@/lib/hall-plan-core";
 import type { TableState } from "@/lib/table-situation-core";
+import { elapsedLabel } from "@/lib/elapsed-label";
 import { SITUATION_LABEL, situationText } from "../situation-labels";
 
 export const WINDOW_STRIPES =
@@ -31,8 +32,8 @@ export function entranceRect(plan: HallPlan, scale: number, thickness: number): 
 export function mesaAriaLabel(box: TableBox, state: TableState, now: Date): string {
   const head = `Mesa ${box.number}, ${box.capacity} lugares`;
   if (state.situation === "occupied" && state.occupant) {
-    const min = Math.max(0, Math.floor((now.getTime() - new Date(state.occupant.since).getTime()) / 60_000));
-    return `${head}, ${SITUATION_LABEL.occupied} há ${min} min${state.overtime ? ", passou do tempo" : ""}`;
+    const tempo = elapsedLabel(state.occupant.since, now);
+    return `${head}, ${SITUATION_LABEL.occupied} ${tempo === "agora" ? "agora" : `há ${tempo}`}${state.overtime ? ", passou do tempo" : ""}`;
   }
   return `${head}, ${situationText(state)}`;
 }
@@ -63,4 +64,30 @@ export function fitSceneScale(widthCm: number, depthCm: number, availW: number, 
   const nearCm = ((widthCm * Math.sin(z) + depthCm * Math.cos(z)) / 2) * Math.sin(x);
   const mag = SCENE_PERSPECTIVE / Math.max(SCENE_PERSPECTIVE - nearCm * base, SCENE_PERSPECTIVE / 2);
   return base / mag;
+}
+
+/** Contorno tracejado que junta as caixas do grupo, em px; `null` com menos de 2 caixas. */
+export function linkedOutlineRect(
+  boxes: TableBox[],
+  ids: string[],
+  scale: number,
+  padCm = 8,
+): { left: number; top: number; width: number; height: number } | null {
+  const picked = boxes.filter(b => ids.includes(b.tableId));
+  if (picked.length < 2) return null;
+  const left = Math.min(...picked.map(b => b.x - b.w / 2)) - padCm;
+  const top = Math.min(...picked.map(b => b.y - b.h / 2)) - padCm;
+  const right = Math.max(...picked.map(b => b.x + b.w / 2)) + padCm;
+  const bottom = Math.max(...picked.map(b => b.y + b.h / 2)) + padCm;
+  return { left: left * scale, top: top * scale, width: (right - left) * scale, height: (bottom - top) * scale };
+}
+
+/** Estado de seleção de uma mesa na escolha; `off` fora dela. */
+export function pickStateOf(
+  pick: { selectable: Set<string>; selected: Set<string> } | null | undefined,
+  tableId: string,
+): "off" | "selectable" | "selected" | "disabled" {
+  if (!pick) return "off";
+  if (pick.selected.has(tableId)) return "selected";
+  return pick.selectable.has(tableId) ? "selectable" : "disabled";
 }

@@ -2,31 +2,47 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { Maximize2, Minimize2 } from "lucide-react";
+import { toast } from "sonner";
 import { useFullscreen } from "@/hooks/useFullscreen";
-import { useViewportHeight } from "@/components/planta/ao-vivo/useContainerWidth";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
 import { useSalaoAoVivo } from "@/hooks/useSalaoAoVivo";
+import { useSetOccupantTables, useSetOccupantPartySize } from "@/hooks/useOcupacaoAcoes";
+import { useReservationPresence, type PresenceAction } from "@/hooks/useMesaAcoes";
+import { conversationHref } from "@/lib/conversation-link";
 import { useWalkIns } from "@/hooks/useWalkIns";
 import { useNotifyWaitlist } from "@/hooks/useWaitlist";
 import { useWaitlistTemplates } from "@/hooks/useWaitlistTemplates";
+import { validSeatTargets, type OccupantRef } from "@/lib/seat-pick-core";
 import { buildWaitlistMessage } from "@/lib/waitlist-message";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { hallPlanFrom, resolveTableBoxes } from "@/lib/hall-plan-core";
-import { brtNow, deriveTableStates } from "@/lib/table-situation-core";
-import type { TableSituation } from "@/lib/table-situation-core";
-import type { Mesa, WaitlistEntry } from "@/types/reserva";
-import { SITUATION_ORDER } from "@/components/planta/situation-labels";
 import { arrangeHalls } from "@/lib/hall-arrange-core";
+import { brtNow, deriveTableStates, reservationTableIds, type TableSituation } from "@/lib/table-situation-core";
+import type { Mesa, ReservaComCliente, SeatConflict, WaitlistEntry } from "@/types/reserva";
+import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
+import { SITUATION_ORDER } from "@/components/planta/situation-labels";
+import { BarraSelecaoMesas } from "@/components/planta/ao-vivo/BarraSelecaoMesas";
+import { AjustarPessoasDialog } from "@/components/planta/ao-vivo/AjustarPessoasDialog";
+import { useViewportHeight } from "@/components/planta/ao-vivo/useContainerWidth";
 import { PlantaCena2D, type SceneHall } from "@/components/planta/ao-vivo/PlantaCena2D";
 import { PlantaCena3D } from "@/components/planta/ao-vivo/PlantaCena3D";
 import { LegendaSituacoes } from "@/components/planta/ao-vivo/LegendaSituacoes";
 import { PainelMesa } from "@/components/planta/ao-vivo/PainelMesa";
 import { AcoesMesa } from "@/components/planta/ao-vivo/AcoesMesa";
-import { ProximasChegadas } from "@/components/planta/ao-vivo/ProximasChegadas";
+import { ReservasDoDia } from "@/components/planta/ao-vivo/ReservasDoDia";
 import { ResumoFila } from "@/components/planta/ao-vivo/ResumoFila";
 import { WaitlistEntryDialog } from "@/components/waitlist/WaitlistEntryDialog";
 
@@ -48,6 +64,73 @@ export default function SalaoAoVivo() {
   const unitId = unit?.unit_id ?? "";
   const data = useSalaoAoVivo(unitId);
   const now = useNow();
+  const setTables = useSetOccupantTables(unitId);
+  const setPeople = useSetOccupantPartySize(unitId);
+  const presence = useReservationPresence(unitId);
+  type ActionContext = { occupant: OccupantRef; partySize: number; label: string };
+  const [pick, setPick] = useState<(ActionContext & { mode: "move" | "join"; selected: Set<string> }) | null>(null);
+  const [adjust, setAdjust] = useState<(ActionContext & { tableIds: string[] }) | null>(null);
+  const [conflict, setConflict] = useState<{
+    conflicts: SeatConflict[];
+    occupant: OccupantRef;
+    tableIds: string[];
+  } | null>(null);
+  const cancelPick = () => {
+    setPick(null);
+    setConflict(null);
+  };
+  const currentTables = (o: OccupantRef): string[] => {
+    if (o.kind === "reservation") {
+      return reservationTableIds(o.id, { reservations: data.reservations, occupantTables: data.occupantTables });
+    }
+    const ids = (data.occupantTables ?? [])
+      .filter(t => (o.kind === "walk_in" ? t.walk_in_id === o.id : t.waitlist_id === o.id))
+      .map(t => t.table_id);
+    const row = (o.kind === "walk_in" ? data.walkIns : data.waitlistSeated).find(t => t.id === o.id);
+    return ids.length ? ids : row?.table_id ? [row.table_id] : [];
+  };
+  const startPick = (mode: "move" | "join", ctx: ActionContext) => {
+    setAdjust(null);
+    setConflict(null);
+    setPick({ ...ctx, mode, selected: new Set(mode === "join" ? currentTables(ctx.occupant) : []) });
+  };
+  const occupantAction = (action: "move" | "join" | "adjust", occupant: OccupantRef, partySize: number) => {
+    const row =
+      occupant.kind === "reservation"
+        ? data.reservations.find(r => r.id === occupant.id)
+        : (occupant.kind === "walk_in" ? data.walkIns : data.waitlistSeated).find(r => r.id === occupant.id);
+    const customerName = (row as { customer_name?: string } | undefined)?.customer_name;
+    const label =
+      occupant.kind === "reservation"
+        ? (data.reservations.find(r => r.id === occupant.id)?.customer?.name ?? customerName ?? "Cliente")
+        : (customerName ?? "Cliente");
+    const ctx = { occupant, partySize, label };
+    if (action === "adjust") {
+      cancelPick();
+      setAdjust({ ...ctx, tableIds: currentTables(occupant) });
+    } else {
+      startPick(action, ctx);
+    }
+  };
+  const confirmTables = (occupant: OccupantRef, tableIds: string[], allowOverlap = false) => {
+    setTables.mutate(
+      { occupant, tableIds, allowOverlap },
+      {
+        onSuccess: result => {
+          if (result.status === "conflict") {
+            setConflict({ conflicts: result.conflicts, occupant, tableIds });
+            return;
+          }
+          if (result.status === "noop") {
+            toast.info("Nada mudou");
+          } else {
+            toast.success("Mesa atualizada");
+          }
+          cancelPick();
+        },
+      },
+    );
+  };
   const narrow = useMediaQuery("(max-width: 639px)");
   const reduced = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [hallPref, setHallPref] = useState<string | null>(() => readStoredHall(unitId));
@@ -71,7 +154,7 @@ export default function SalaoAoVivo() {
   const [focus, setFocus] = useState<{ tableId: string; nonce: number } | undefined>(undefined);
   const walkInsAtivos = useWalkIns(unitId);
   const waitingWalkIns = useMemo(
-    () => (walkInsAtivos.data ?? []).filter((w) => w.status === "waiting"),
+    () => (walkInsAtivos.data ?? []).filter(w => w.status === "waiting"),
     [walkInsAtivos.data],
   );
   const { data: templates } = useWaitlistTemplates(unitId);
@@ -89,6 +172,8 @@ export default function SalaoAoVivo() {
 
   // O inicializador do useState roda uma vez: ao trocar de unidade, relê a preferência dela.
   useEffect(() => {
+    cancelPick();
+    setAdjust(null);
     setHallPref(readStoredHall(unitId));
     setSelectedId(null);
     setPickedReservationId(null);
@@ -109,10 +194,19 @@ export default function SalaoAoVivo() {
         blocks: data.blocks,
         now,
         durationMinutes: data.durationMinutes,
+        occupantTables: data.occupantTables,
       }),
-    [tables, data.reservations, data.walkIns, data.waitlistSeated, data.blocks, now, data.durationMinutes],
+    [tables, data.reservations, data.walkIns, data.waitlistSeated, data.blocks, now, data.durationMinutes, data.occupantTables],
   );
 
+  const targets = pick
+    ? validSeatTargets({ ...pick, tables, states, combinations: data.combinations ?? [], blocks: data.blocks, now })
+    : null;
+  const linked = useMemo(() => {
+    if (pick) return pick.mode === "join" ? [[...pick.selected]] : [];
+    const groups = [...states.values()].filter(s => s.groupTableIds?.length > 1);
+    return [...new Map(groups.map(s => [s.groupTableIds.slice().sort().join(","), s.groupTableIds])).values()];
+  }, [pick, states]);
   const viewAll = halls.length > 1 && hallPref === ALL_HALLS;
   const visibleHalls = useMemo(() => (viewAll ? halls : hall ? [hall] : []), [viewAll, halls, hall]);
   const hallTables = useMemo(() => {
@@ -177,14 +271,20 @@ export default function SalaoAoVivo() {
 
   // Troca pelo seletor limpa a mesa selecionada (ela pode ser de outro salão).
   const chooseHall = (id: string) => {
+    cancelPick();
     applyHall(id);
     setSelectedId(null);
     setPickedReservationId(null);
     setFocus(undefined);
   };
 
-  // Vindo de próximas chegadas, a troca de salão mantém a mesa recém escolhida.
-  const pickTable = (t: Mesa, reservationId: string) => {
+  // Vindo da lista do dia, a troca de salão mantém a mesa recém escolhida; sem mesa, só destaca a reserva.
+  const pickTable = (t: Mesa | null, reservationId: string) => {
+    if (!t) {
+      setSelectedId(null);
+      setPickedReservationId(reservationId);
+      return;
+    }
     if (viewAll) {
       setFocus({ tableId: t.id, nonce: Date.now() });
     } else if (t.hall_id) {
@@ -194,6 +294,57 @@ export default function SalaoAoVivo() {
     setPickedReservationId(reservationId);
   };
 
+  const reservationActions = (r: ReservaComCliente, close: () => void) => {
+    if ((r.status !== "pending" && r.status !== "confirmed") || r.released_at) return null;
+    const occupant: OccupantRef = { kind: "reservation", id: r.id };
+    const hasTable = currentTables(occupant).length > 0;
+    const actions: Array<["move" | "join" | "adjust", string]> = [["move", "Trocar mesa"]];
+    if (hasTable) actions.push(["join", "Juntar mesas"], ["adjust", "Ajustar pessoas"]);
+    const busy = presence.isPending && presence.variables?.reservationId === r.id;
+    const presenceButton = (action: PresenceAction, label: string, variant?: "outline") => (
+      <Button
+        key={action}
+        type="button"
+        size="sm"
+        variant={variant}
+        className="coarse:min-h-[44px]"
+        disabled={busy}
+        onClick={() => presence.mutate({ reservationId: r.id, action })}
+      >
+        {label}
+      </Button>
+    );
+    const customerId = r.customer_id ?? r.customer?.id;
+    return (
+      <div className="mt-3 flex flex-wrap gap-2">
+        {/* Mesmas ações de presença do painel da mesa; reserva sem mesa primeiro ganha mesa. */}
+        {hasTable &&
+          (r.arrived_at
+            ? [presenceButton("release", "Liberar mesa"), presenceButton("undo_arrive", "Desfazer chegada", "outline")]
+            : presenceButton("arrive", "Marcar chegada"))}
+        {actions.map(([action, label]) => (
+          <Button
+            key={action}
+            type="button"
+            variant="outline"
+            size="sm"
+            className="coarse:min-h-[44px]"
+            onClick={() => {
+              close();
+              occupantAction(action, occupant, r.party_size);
+            }}
+          >
+            {label}
+          </Button>
+        ))}
+        {customerId && unit?.unit_slug && (
+          <Button asChild variant="outline" size="sm" className="coarse:min-h-[44px]">
+            <Link to={conversationHref(`/o/${unit.unit_slug}`, customerId)}>Abrir conversa</Link>
+          </Button>
+        )}
+      </div>
+    );
+  };
   const selectedTable = tables.find((t) => t.id === selectedId) ?? null;
   const selectedState = selectedTable ? (states.get(selectedTable.id) ?? null) : null;
 
@@ -246,6 +397,17 @@ export default function SalaoAoVivo() {
             )}
           </p>
         )}
+        {pick && (
+          <BarraSelecaoMesas
+            mode={pick.mode}
+            label={pick.label}
+            selectedNumbers={tables.filter(t => pick.selected.has(t.id)).map(t => t.number)}
+            canConfirm={pick.mode === "move" ? pick.selected.size === 1 : pick.selected.size >= 2}
+            busy={setTables.isPending}
+            onCancel={cancelPick}
+            onConfirm={() => confirmTables(pick.occupant, [...pick.selected])}
+          />
+        )}
         <Cena
           key={viewAll ? ALL_HALLS : hall.id}
           halls={scene.halls}
@@ -255,8 +417,25 @@ export default function SalaoAoVivo() {
           onFocusHandled={() => setFocus(undefined)}
           states={states}
           timeLabels={timeLabels}
+          pick={
+            pick && targets
+              ? { selectable: targets.selectable, selected: pick.selected, suggested: new Set(targets.suggested.flat()) }
+              : null
+          }
+          linked={linked}
           selectedId={selectedId}
           onSelect={(id) => {
+            if (pick) {
+              if (!targets?.selectable.has(id) || setTables.isPending) return;
+              const selected = pick.mode === "move" ? new Set<string>() : new Set(pick.selected);
+              if (selected.has(id)) {
+                selected.delete(id);
+              } else {
+                selected.add(id);
+              }
+              setPick({ ...pick, selected });
+              return;
+            }
             setSelectedId(id);
             setPickedReservationId(null);
           }}
@@ -328,6 +507,9 @@ export default function SalaoAoVivo() {
           table={selectedTable}
           state={selectedState}
           reservations={data.reservations}
+          tables={tables}
+          states={states}
+          occupantTables={data.occupantTables}
           walkIns={data.walkIns}
           waitlistSeated={data.waitlistSeated}
           now={now}
@@ -336,6 +518,7 @@ export default function SalaoAoVivo() {
           actions={
             selectedTable && selectedState ? (
               <AcoesMesa
+                onOccupantAction={occupantAction}
                 unitId={unitId}
                 basePath={unit?.unit_slug ? `/o/${unit.unit_slug}` : undefined}
                 table={selectedTable}
@@ -350,7 +533,17 @@ export default function SalaoAoVivo() {
             ) : undefined
           }
         />
-        <ProximasChegadas reservations={data.reservations} tables={tables} today={today} onPick={pickTable} />
+        <ReservasDoDia
+          reservations={data.dayReservations}
+          tables={tables}
+          occupantTables={data.occupantTables}
+          states={states}
+          today={today}
+          now={now}
+          durationMinutes={data.durationMinutes}
+          onPick={pickTable}
+          renderActions={reservationActions}
+        />
         <ResumoFila
           entries={data.waitlistActive}
           now={now}
@@ -364,7 +557,71 @@ export default function SalaoAoVivo() {
 
   // O diálogo fica fora da subárvore que muda de pai na tela cheia: sair dela (Esc do
   // navegador) não remonta o formulário nem perde o que o atendente digitou.
-  const dialog = <WaitlistEntryDialog unitId={unitId} open={addOpen} onOpenChange={setAddOpen} />;
+  // Só é chamada com o diálogo de ajuste aberto (adjust definido).
+  const saveParty = (partySize: number) => {
+    setPeople.mutate(
+      { occupant: adjust.occupant, partySize },
+      {
+        onSuccess: changed => {
+          if (changed) {
+            toast.success("Pessoas atualizadas");
+          } else {
+            toast.info("Nada mudou");
+          }
+          setAdjust(null);
+        },
+      },
+    );
+  };
+  const adjustCapacity = adjust
+    ? tables.filter(t => adjust.tableIds.includes(t.id)).reduce((n, t) => n + (t.max_capacity ?? t.capacity), 0)
+    : 0;
+  const dialog = <>
+    <WaitlistEntryDialog unitId={unitId} open={addOpen} onOpenChange={setAddOpen} />
+    {adjust && (
+      <AjustarPessoasDialog
+        open
+        onOpenChange={open => {
+          if (!open) setAdjust(null);
+        }}
+        label={adjust.label}
+        current={adjust.partySize}
+        capacity={adjustCapacity}
+        busy={setPeople.isPending}
+        onSave={saveParty}
+        onMove={() => startPick("move", adjust)}
+        onJoin={() => startPick("join", adjust)}
+      />
+    )}
+    <AlertDialog
+      open={!!conflict}
+      onOpenChange={open => {
+        if (!open) setConflict(null);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Confirmar mesa</AlertDialogTitle>
+          <AlertDialogDescription>
+            {conflict &&
+              `Livre até ${conflict.conflicts[0]?.time}, quando chega a reserva de ${conflict.conflicts[0]?.customer_name}. Colocar mesmo assim?`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel className="coarse:min-h-[44px]">Cancelar</AlertDialogCancel>
+          <AlertDialogAction
+            className="coarse:min-h-[44px]"
+            disabled={setTables.isPending}
+            onClick={() => {
+              if (conflict) confirmTables(conflict.occupant, conflict.tableIds, true);
+            }}
+          >
+            Colocar mesmo assim
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </>;
   if (!fullscreen.active) {
     return (
       <>

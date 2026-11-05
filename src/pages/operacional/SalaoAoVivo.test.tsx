@@ -7,7 +7,7 @@ const NOW = new Date("2026-11-03T18:00:00Z"); // 15:00 BRT
 
 const hall = { id: "h1", unit_id: "u1", name: "Salão", active: true, sort_order: 0, plan_width_cm: 1200, plan_depth_cm: 900 };
 const mk = (id: string, n: number) => ({
-  id, unit_id: "u1", hall_id: "h1", number: n, capacity: 4, min_capacity: 2, max_capacity: 4, active: true,
+  id, unit_id: "u1", hall_id: "h1", number: n, capacity: 4, min_capacity: 2, max_capacity: 4, active: true, bookable: true,
 });
 const tables = [mk("t1", 1), mk("t2", 2), mk("t3", 3), mk("t4", 4), mk("t5", 5)];
 const res = (id: string, table_id: string, time: string, extra = {}) => ({
@@ -24,6 +24,7 @@ const hookData = {
     res("r4", "t4", "15:05"), // chegando
     res("r5", "t5", "17:00"), // reservada
   ],
+  occupantTables: [],
   walkIns: [],
   waitlistActive: [],
   waitlistSeated: [],
@@ -33,9 +34,17 @@ const hookData = {
   isError: false,
   refetch: vi.fn(),
 };
-let current: typeof hookData = hookData;
+// Sem dayReservations explícito, a lista do dia é a mesma das reservas ativas.
+let current: typeof hookData & { dayReservations?: unknown[] } = hookData;
 
-vi.mock("@/hooks/useSalaoAoVivo", () => ({ useSalaoAoVivo: () => current }));
+vi.mock("@/hooks/useSalaoAoVivo", () => ({
+  useSalaoAoVivo: () => ({ ...current, dayReservations: current.dayReservations ?? current.reservations }),
+}));
+const tableMutate = vi.fn();
+vi.mock("@/hooks/useOcupacaoAcoes", () => ({
+  useSetOccupantTables: () => ({ mutate: tableMutate, isPending: false }),
+  useSetOccupantPartySize: () => ({ mutate: vi.fn(), isPending: false }),
+}));
 const presenceMutate = vi.fn();
 vi.mock("@/hooks/useMesaAcoes", () => ({
   useReservationPresence: () => ({ mutate: presenceMutate, isPending: false, variables: undefined }),
@@ -73,6 +82,7 @@ const renderPage = () => render(<MemoryRouter><SalaoAoVivo /></MemoryRouter>);
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
+  tableMutate.mockReset();
   current = hookData;
   currentUnitId = "u1";
   currentSlug = "moralles";
@@ -135,7 +145,7 @@ describe("SalaoAoVivo", () => {
 
   it("tocar numa linha de próximas chegadas seleciona a mesa", () => {
     renderPage();
-    const chegadas = screen.getByTestId("proximas-chegadas");
+    const chegadas = screen.getByTestId("reservas-do-dia");
     fireEvent.click(within(chegadas).getByText("Cliente r5").closest("button")!);
     expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 5");
     expect(screen.getByRole("button", { name: /^Mesa 5,/ })).toHaveAttribute("aria-pressed", "true");
@@ -145,7 +155,7 @@ describe("SalaoAoVivo", () => {
     // Mesa 2: r2 das 14:40 atrasada (agora 15:00) e rg das 19:00 ainda por vir.
     current = { ...hookData, reservations: [...hookData.reservations, res("rg", "t2", "19:00")] };
     renderPage();
-    fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente rg").closest("button")!);
+    fireEvent.click(within(screen.getByTestId("reservas-do-dia")).getByText("Cliente rg").closest("button")!);
     const outras = within(screen.getByTestId("painel-mesa")).getByTestId("painel-mesa-outras");
     const linha = within(outras).getByText("Cliente rg").closest("li")!;
     expect(linha).toHaveAttribute("aria-current", "true");
@@ -208,7 +218,7 @@ describe("SalaoAoVivo", () => {
     expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Toque numa mesa");
     // volta ao salão 1 e escolhe uma mesa; depois pula para o salão 2 via próximas chegadas
     fireEvent.click(screen.getByRole("button", { name: "Salão" }));
-    fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r6").closest("button")!);
+    fireEvent.click(within(screen.getByTestId("reservas-do-dia")).getByText("Cliente r6").closest("button")!);
     expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 6");
   });
 
@@ -262,7 +272,7 @@ describe("SalaoAoVivo", () => {
       current = twoHalls();
       localStorage.setItem("salao-ao-vivo:hall:u1", "all");
       renderPage();
-      fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r6").closest("button")!);
+      fireEvent.click(within(screen.getByTestId("reservas-do-dia")).getByText("Cliente r6").closest("button")!);
       expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "true");
       expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 6");
       expect(localStorage.getItem("salao-ao-vivo:hall:u1")).toBe("all");
@@ -360,9 +370,9 @@ describe("SalaoAoVivo", () => {
   it("reserva em mesa fora da planta não aparece como sem mesa", () => {
     current = { ...hookData, reservations: [...hookData.reservations, res("r9", "t-inativa", "18:00")] };
     renderPage();
-    const linha = within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r9").closest("button")!;
-    expect(linha).toHaveTextContent("em mesa fora da planta");
-    expect(linha).not.toHaveTextContent("sem mesa");
+    const linha = within(screen.getByTestId("reservas-do-dia")).getByText("Cliente r9").closest("button")!;
+    expect(linha).toHaveTextContent("Mesa fora da planta");
+    expect(linha).not.toHaveTextContent("Sem mesa");
   });
 
   it("no 3D só o botão da mesa recebe ponteiro; o resto da cena não rouba o toque", () => {
@@ -377,4 +387,169 @@ describe("SalaoAoVivo", () => {
       el = el.parentElement;
     }
   });
+});
+
+describe("escolha de mesas", () => {
+  const setupPick = () => {
+    current = { ...hookData, blocks: [], tables: [...tables, { ...mk("t6", 6), bookable: false }] };
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 4,/ }));
+  };
+
+  it("troca mesa e impede escolher outro ocupante", () => {
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Trocar mesa" }));
+    expect(screen.getByRole("region", { name: "Seleção de mesas" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Mesa 3,/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 1,/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar" }));
+    expect(tableMutate).toHaveBeenCalledWith(
+      { occupant: { kind: "reservation", id: "r4" }, tableIds: ["t1"], allowOverlap: false },
+      expect.anything(),
+    );
+  });
+
+  it("junta inclusive mesa não reservável", () => {
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Juntar mesas" }));
+    expect(screen.getByRole("button", { name: "Confirmar" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 6,/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar" }));
+    expect(tableMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ tableIds: ["t4", "t6"] }),
+      expect.anything(),
+    );
+  });
+
+  it.each(["Cancelar", "Escape"])("%s sai sem mutação", action => {
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Trocar mesa" }));
+    if (action === "Escape") {
+      fireEvent.keyDown(document, { key: action });
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: action }));
+    }
+    expect(screen.queryByRole("region", { name: "Seleção de mesas" })).toBeNull();
+    expect(tableMutate).not.toHaveBeenCalled();
+  });
+
+  it("confirma conflito com allowOverlap", () => {
+    tableMutate.mockImplementationOnce((_args, callbacks) =>
+      callbacks.onSuccess({ status: "conflict", conflicts: [{ time: "18:00", customer_name: "Ana" }] }),
+    );
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Trocar mesa" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 1,/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar" }));
+    expect(
+      screen.getByText("Livre até 18:00, quando chega a reserva de Ana. Colocar mesmo assim?"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Colocar mesmo assim" }));
+    expect(tableMutate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ allowOverlap: true }),
+      expect.anything(),
+    );
+  });
+
+  it("ajuste acima da capacidade oferece juntar", () => {
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Ajustar pessoas" }));
+    fireEvent.change(screen.getByLabelText("Número de pessoas"), { target: { value: "8" } });
+    expect(screen.getByText("Não cabe na mesa atual")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Juntar mesas" }));
+    expect(screen.getByRole("region", { name: "Seleção de mesas" })).toBeInTheDocument();
+  });
+});
+
+it("passante sentado oferece ajuste", () => {
+  current = {
+    ...hookData,
+    blocks: [],
+    walkIns: [
+      {
+        id: "w",
+        table_id: "t1",
+        status: "seated",
+        seated_at: "2026-11-03T17:00:00Z",
+        released_at: null,
+        party_size: 2,
+        customer_name: "Ana",
+      },
+    ],
+  } as unknown as typeof hookData;
+  renderPage();
+  fireEvent.click(screen.getByRole("button", { name: /^Mesa 1,/ }));
+  expect(screen.getByRole("button", { name: "Trocar mesa" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Juntar mesas" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Ajustar pessoas" })).toBeInTheDocument();
+});
+
+it("reserva sem mesa abre o card e inicia a seleção", () => {
+  const unassigned = res("sem-mesa", null, "18:00");
+  current = { ...hookData, reservations: [...hookData.reservations, unassigned] };
+  renderPage();
+  const list = screen.getByTestId("reservas-do-dia");
+  const row = within(list).getByText("Cliente sem-mesa").closest("button");
+  expect(row).toHaveTextContent("Sem mesa");
+  fireEvent.click(row);
+  const card = screen.getByRole("dialog");
+  fireEvent.click(within(card).getByRole("button", { name: "Trocar mesa" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("region", { name: "Seleção de mesas" })).toBeInTheDocument();
+});
+
+describe("card da lista do dia: presença e conversa", () => {
+  const openCard = (name: string) => {
+    renderPage();
+    const list = screen.getByTestId("reservas-do-dia");
+    fireEvent.click(within(list).getByText(name).closest("button")!);
+    return screen.getByRole("dialog");
+  };
+
+  beforeEach(() => {
+    current = hookData;
+    currentSlug = "moralles";
+    presenceMutate.mockClear();
+  });
+
+  it("reserva que não chegou oferece Marcar chegada e Abrir conversa", () => {
+    const card = openCard("Cliente r2");
+    fireEvent.click(within(card).getByRole("button", { name: "Marcar chegada" }));
+    expect(presenceMutate).toHaveBeenCalledWith({ reservationId: "r2", action: "arrive" });
+    expect(within(card).getByRole("link", { name: "Abrir conversa" })).toHaveAttribute(
+      "href",
+      "/o/moralles/conversas?cliente=cr2",
+    );
+    expect(within(card).queryByRole("button", { name: "Liberar mesa" })).toBeNull();
+  });
+
+  it("reserva que chegou oferece Liberar mesa e Desfazer chegada", () => {
+    const card = openCard("Cliente r3");
+    expect(within(card).queryByRole("button", { name: "Marcar chegada" })).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: "Desfazer chegada" }));
+    expect(presenceMutate).toHaveBeenCalledWith({ reservationId: "r3", action: "undo_arrive" });
+    fireEvent.click(within(card).getByRole("button", { name: "Liberar mesa" }));
+    expect(presenceMutate).toHaveBeenCalledWith({ reservationId: "r3", action: "release" });
+  });
+
+  it("reserva sem mesa não marca chegada (só Trocar mesa)", () => {
+    current = { ...hookData, reservations: [...hookData.reservations, res("sem-mesa", null, "18:00")] };
+    const card = openCard("Cliente sem-mesa");
+    expect(within(card).queryByRole("button", { name: "Marcar chegada" })).toBeNull();
+    expect(within(card).getByRole("button", { name: "Trocar mesa" })).toBeInTheDocument();
+  });
+
+  it("sem slug da unidade, Abrir conversa some", () => {
+    currentSlug = undefined;
+    const card = openCard("Cliente r2");
+    expect(within(card).queryByRole("link", { name: "Abrir conversa" })).toBeNull();
+  });
+});
+
+it("cancelada aparece só na lista sem mudar a situação das mesas", () => {
+  current = { ...hookData, dayReservations: [...hookData.reservations, res("cancelada", "t5", "15:00", { status: "cancelled" })] };
+  renderPage();
+  fireEvent.click(screen.getByRole("button", { name: "Finalizadas (1)" }));
+  expect(within(screen.getByTestId("reservas-finalizadas")).getByText("Cliente cancelada")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Mesa 5,/ })).toHaveAccessibleName(/Reservada/);
 });

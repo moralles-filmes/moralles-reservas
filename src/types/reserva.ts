@@ -545,6 +545,8 @@ export interface Reserva {
   released_at?: string | null;
   /** Como a reserva ganhou a mesa; nulo nas reservas anteriores à escolha de mesa. */
   table_choice?: TableChoice | null;
+  /** Canal de origem registrado na criação da reserva. */
+  source?: "web" | "whatsapp" | "instagram" | null;
   /** Pessoas antes do primeiro ajuste na recepção (histórico; os totais usam party_size). */
   original_party_size?: number | null;
   created_at: string;
@@ -552,6 +554,10 @@ export interface Reserva {
   customer?: Customer;
   table?: Mesa;
 }
+
+export type ReservaComCliente = Omit<Reserva, "customer"> & {
+  customer?: { id?: string; name?: string | null; phone?: string | null } | null;
+};
 
 export type TableChoice = "customer" | "system" | "staff";
 

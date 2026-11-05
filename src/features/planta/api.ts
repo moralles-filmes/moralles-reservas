@@ -1,5 +1,7 @@
+import type { OccupantRef } from "@/lib/seat-pick-core";
+import type { SeatActionResult } from "@/types/reserva";
 import { supabase } from "@/lib/supabase";
-import type { Hall, Mesa, TableCombination, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
+import type { Hall, Mesa, OccupantTable, TableCombination, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 import type { BlockWindow } from "@/lib/table-situation-core";
 import { HALL_NOT_IN_UNIT_MESSAGE } from "@/lib/layout-errors";
 
@@ -107,10 +109,49 @@ export async function fetchSalaoReservations(unitId: string, today: string, yest
     .from("reservations")
     .select("*, customer:customers(id, name, phone)")
     .eq("unit_id", unitId)
-    .in("status", ["pending", "confirmed"])
-    .or(`date.eq.${today},and(date.eq.${yesterday},arrived_at.not.is.null,released_at.is.null)`);
+    .or(`and(date.eq.${today},status.in.(pending,confirmed,no_show,cancelled)),and(date.eq.${yesterday},status.in.(pending,confirmed),arrived_at.not.is.null,released_at.is.null)`);
   if (error) throw error;
   return (data ?? []) as Reserva[];
+}
+
+export interface SalaoOccupantIds {
+  reservationIds: string[];
+  walkInIds: string[];
+  waitlistIds: string[];
+}
+
+const OCCUPANT_ID_CHUNK = 100;
+
+/**
+ * Mesas de cada ocupante já carregado no Salão (`occupant_tables`), só da unidade dada.
+ * Lotes de `.in()` para não estourar a URL; erro sobe (nunca vira "sem junção").
+ */
+export async function fetchSalaoOccupantTables(unitId: string, ids: SalaoOccupantIds): Promise<OccupantTable[]> {
+  const jobs: Array<PromiseLike<{ data: unknown; error: unknown }>> = [];
+  const cols = [
+    ["reservation_id", ids.reservationIds],
+    ["walk_in_id", ids.walkInIds],
+    ["waitlist_id", ids.waitlistIds],
+  ] as const;
+  for (const [col, list] of cols) {
+    const unique = [...new Set(list)];
+    for (let i = 0; i < unique.length; i += OCCUPANT_ID_CHUNK) {
+      jobs.push(
+        supabase
+          .from("occupant_tables")
+          .select("table_id, reservation_id, walk_in_id, waitlist_id, overlap_ok")
+          .eq("unit_id", unitId)
+          .in(col, unique.slice(i, i + OCCUPANT_ID_CHUNK)),
+      );
+    }
+  }
+  const results = await Promise.all(jobs);
+  const rows: OccupantTable[] = [];
+  for (const r of results) {
+    if (r.error) throw r.error;
+    rows.push(...((r.data ?? []) as OccupantTable[]));
+  }
+  return rows;
 }
 
 // Estas consultas são limitadas a ≤ 2 dias (hoje e ontem em BRT), bem abaixo do teto de 1000 linhas do PostgREST.
@@ -199,4 +240,21 @@ export async function releaseWaitlistEntry(waitlistId: string): Promise<void> {
 export async function releaseWalkIn(walkInId: string): Promise<void> {
   const { error } = await supabase.rpc("release_walk_in", { p_walk_in_id: walkInId });
   if (error) throw error;
+}
+
+export async function setOccupantTables(o: OccupantRef, tableIds: string[], allowOverlap = false): Promise<SeatActionResult> {
+ const { data, error } = await supabase.rpc("set_occupant_tables", { p_kind: o.kind, p_id: o.id, p_table_ids: tableIds, p_allow_overlap: allowOverlap });
+ if (error) throw error;
+ if (!data || !["ok", "noop", "conflict"].includes(data.status)) throw new Error("Invalid seat action response");
+ return data as SeatActionResult;
+}
+export async function setOccupantPartySize(o: OccupantRef, partySize: number): Promise<boolean> {
+ const { data, error } = await supabase.rpc("set_occupant_party_size", { p_kind: o.kind, p_id: o.id, p_party_size: partySize });
+ if (error) throw error;
+ return data !== false;
+}
+export async function fetchSalaoCombinations(unitId: string): Promise<TableCombination[]> {
+ const { data, error } = await supabase.from("table_combinations").select("id, unit_id, hall_id, min_capacity, max_capacity, active, table_combination_members(table_id)").eq("unit_id", unitId).eq("active", true);
+ if (error) throw error;
+ return (data ?? []).map(({ table_combination_members, ...c }) => ({ ...c, table_ids: table_combination_members.map(m => m.table_id) })) as TableCombination[];
 }

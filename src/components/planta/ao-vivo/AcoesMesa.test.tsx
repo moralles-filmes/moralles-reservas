@@ -177,3 +177,36 @@ describe("AcoesMesa", () => {
     expect(screen.getByText("Mesa bloqueada até 17:30")).toBeInTheDocument();
   });
 });
+
+describe("ações de ocupação", () => {
+  it.each(["reservation", "walk_in", "waitlist"] as const)("oferece as três ações para %s", kind => {
+    const callback = vi.fn();
+    setup(
+      { situation: "occupied", occupant: { kind, id: "x", since: "", partySize: 3 } },
+      { onOccupantAction: callback },
+    );
+    for (const [label, action] of [
+      ["Trocar mesa", "move"],
+      ["Juntar mesas", "join"],
+      ["Ajustar pessoas", "adjust"],
+    ]) {
+      fireEvent.click(screen.getByRole("button", { name: label }));
+      expect(callback).toHaveBeenCalledWith(action, expect.objectContaining({ kind, id: "x" }), 3);
+    }
+  });
+
+  it("oferece ações para reserva a chegar", () => {
+    const callback = vi.fn();
+    setup(
+      { situation: "arriving", focusReservationId: "r1" },
+      { onOccupantAction: callback, reservations: [{ ...res, party_size: 4 }] },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Trocar mesa" }));
+    expect(callback).toHaveBeenCalledWith("move", { kind: "reservation", id: "r1" }, 4);
+  });
+
+  it("não oferece ações numa mesa livre", () => {
+    setup({ situation: "free" }, { onOccupantAction: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Trocar mesa" })).toBeNull();
+  });
+});

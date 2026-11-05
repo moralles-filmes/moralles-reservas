@@ -3,6 +3,8 @@ import {
   brtNow,
   deriveTableStates,
   reservationLiveSituation,
+  reservationTableIds,
+  tableInUse,
   type BlockWindow,
   type SituationInput,
 } from "./table-situation-core";
@@ -369,5 +371,110 @@ describe("reservationLiveSituation", () => {
       reservationLiveSituation({ ...base, arrived_at: "2026-10-30T22:00:00Z", released_at: "2026-10-30T22:10:00Z" }, NOW, 90),
     ).toBeNull();
     expect(reservationLiveSituation({ ...base, status: "cancelled" }, NOW, 90)).toBeNull();
+  });
+});
+
+describe("ocupação de várias mesas (occupant_tables)", () => {
+  const tables = [
+    { id: "t1", hall_id: "h1" },
+    { id: "t2", hall_id: "h1" },
+    { id: "t3", hall_id: "h1" },
+  ];
+  type Row = { table_id: string; reservation_id: string | null; walk_in_id: string | null; waitlist_id: string | null; overlap_ok: boolean };
+  const ot = (o: Partial<Row>): Row => ({ table_id: "t1", reservation_id: null, walk_in_id: null, waitlist_id: null, overlap_ok: false, ...o });
+
+  it("junção de passante pinta as duas mesas como ocupadas pelo mesmo ocupante", () => {
+    const states = deriveTableStates(
+      input({
+        tables,
+        walkIns: [walk({ id: "w1", table_id: "t1" })],
+        occupantTables: [ot({ table_id: "t1", walk_in_id: "w1" }), ot({ table_id: "t2", walk_in_id: "w1" })],
+      }),
+    );
+    expect(states.get("t1")!.situation).toBe("occupied");
+    expect(states.get("t2")!.situation).toBe("occupied");
+    expect(states.get("t2")!.occupant).toEqual(states.get("t1")!.occupant);
+    expect(states.get("t1")!.groupTableIds).toEqual(["t1", "t2"]);
+    expect(states.get("t3")!.situation).toBe("free");
+  });
+
+  it("reserva a chegar com combinação pinta reservada nas duas", () => {
+    const states = deriveTableStates(
+      input({
+        tables,
+        reservations: [res({ id: "r1", table_id: "t1", time: "21:00", status: "pending" })],
+        occupantTables: [ot({ table_id: "t1", reservation_id: "r1" }), ot({ table_id: "t3", reservation_id: "r1" })],
+      }),
+    );
+    expect(states.get("t1")!.situation).toBe("reserved");
+    expect(states.get("t3")!.situation).toBe("reserved");
+    expect(states.get("t3")!.focusReservationId).toBe("r1");
+    expect(states.get("t3")!.groupTableIds).toEqual(["t1", "t3"]);
+    expect(states.get("t2")!.situation).toBe("free");
+  });
+
+  it("ocupante sem linha em occupant_tables continua no table_id", () => {
+    const states = deriveTableStates(input({ tables, walkIns: [walk({ id: "w9", table_id: "t2" })], occupantTables: [] }));
+    expect(states.get("t2")!.situation).toBe("occupied");
+    expect(states.get("t2")!.groupTableIds).toBeUndefined();
+  });
+
+  it("sem occupantTables o resultado é idêntico ao de antes", () => {
+    const base = input({
+      tables,
+      reservations: [res({ id: "r1", table_id: "t1", time: "19:30" }), res({ id: "r2", table_id: "t2", time: "19:00" })],
+      walkIns: [walk({ id: "w1", table_id: "t3" })],
+    });
+    const a = deriveTableStates(base);
+    const b = deriveTableStates({ ...base, occupantTables: undefined });
+    expect([...b.entries()]).toEqual([...a.entries()]);
+    for (const st of a.values()) expect("groupTableIds" in st).toBe(false);
+  });
+
+  it("reservationTableIds usa occupant_tables e cai para o table_id", () => {
+    const i = {
+      reservations: [res({ id: "r1", table_id: "t1" }), res({ id: "r2", table_id: "t2" }), res({ id: "r3", table_id: null })],
+      occupantTables: [ot({ table_id: "t1", reservation_id: "r1" }), ot({ table_id: "t3", reservation_id: "r1" })],
+    };
+    expect(reservationTableIds("r1", i)).toEqual(["t1", "t3"]);
+    expect(reservationTableIds("r2", i)).toEqual(["t2"]);
+    expect(reservationTableIds("r3", i)).toEqual([]);
+  });
+});
+
+describe("tableInUse", () => {
+  // Reserva das 20:00 com a mesa t1 sentada por um passante.
+  const r = { id: "r1", date: "2026-10-30", time: "20:00", status: "confirmed" as const, arrived_at: null };
+  const statesAt = (now: Date) =>
+    deriveTableStates(input({ now, walkIns: [walk({ id: "w1", table_id: "t1", seated_at: "2026-10-30T22:00:00Z" })] }));
+
+  it("verdadeiro às 19:50 (dentro dos 15 min)", () => {
+    const now = new Date("2026-10-30T22:50:00Z");
+    expect(tableInUse(r, statesAt(now), ["t1"], now)).toBe(true);
+  });
+
+  it("falso às 19:30", () => {
+    const now = new Date("2026-10-30T22:30:00Z");
+    expect(tableInUse(r, statesAt(now), ["t1"], now)).toBe(false);
+  });
+
+  it("falso quando quem ocupa é a própria reserva, ou ela já chegou", () => {
+    const now = new Date("2026-10-30T22:55:00Z");
+    const own = deriveTableStates(
+      input({ now, reservations: [res({ id: "r1", table_id: "t1", time: "20:00", arrived_at: "2026-10-30T22:50:00Z" })] }),
+    );
+    expect(tableInUse(r, own, ["t1"], now)).toBe(false);
+    expect(tableInUse({ ...r, arrived_at: "2026-10-30T22:50:00Z" }, statesAt(now), ["t1"], now)).toBe(false);
+  });
+
+  it("falso para reserva de outro dia ou cancelada", () => {
+    const now = new Date("2026-10-30T22:50:00Z");
+    expect(tableInUse({ ...r, date: "2026-10-31" }, statesAt(now), ["t1"], now)).toBe(false);
+    expect(tableInUse({ ...r, status: "cancelled" }, statesAt(now), ["t1"], now)).toBe(false);
+  });
+
+  it("vale para qualquer mesa da junção", () => {
+    const now = new Date("2026-10-30T22:50:00Z");
+    expect(tableInUse(r, statesAt(now), ["t9", "t1"], now)).toBe(true);
   });
 });
