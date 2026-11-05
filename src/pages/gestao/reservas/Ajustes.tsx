@@ -39,6 +39,7 @@ const SETTING_KEYS = [
   "additional_info",
   "reminder_d1_enabled",
   "survey_d1_enabled",
+  "seat_choice_enabled",
 ] as const;
 
 type Tab = "geral" | "pagamentos";
@@ -130,6 +131,7 @@ function InfoTab({ unitId }: { unitId: string }) {
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [surveyEnabled, setSurveyEnabled] = useState(true);
+  const [seatChoiceEnabled, setSeatChoiceEnabled] = useState(false);
 
   useEffect(() => {
     if (!settings) return;
@@ -141,6 +143,8 @@ function InfoTab({ unitId }: { unitId: string }) {
     setAdditionalInfo(coerceString(map.additional_info));
     setReminderEnabled(coerceBoolean(map.reminder_d1_enabled, true));
     setSurveyEnabled(coerceBoolean(map.survey_d1_enabled, true));
+    // Ausente = desligada: o cliente reserva como sempre, sem escolher a mesa.
+    setSeatChoiceEnabled(coerceBoolean(map.seat_choice_enabled, false));
   }, [settings]);
 
   const upsertSettings = useMutation({
@@ -194,6 +198,7 @@ function InfoTab({ unitId }: { unitId: string }) {
       { key: "reservation_tolerance_minutes", value: tol },
       { key: "rules_and_conditions", value: rulesPrepared },
       { key: "additional_info", value: additionalInfoPrepared },
+      { key: "seat_choice_enabled", value: seatChoiceEnabled },
     ];
     // The new per-kind authority owns automatic v2 delivery. Never write
     // legacy switches unless the server proved this is an existing cohort.
@@ -269,6 +274,28 @@ function InfoTab({ unitId }: { unitId: string }) {
             onChange={(e) => setTolerance(e.target.value)}
           />
           <span className="text-sm text-muted-foreground">minutos</span>
+        </div>
+      </div>
+
+      <div className="border-t pt-6 space-y-3">
+        <h3 className="text-base font-semibold">Escolha de mesa</h3>
+        <div className="flex items-start gap-3">
+          <Switch
+            id="seat-choice-enabled"
+            checked={seatChoiceEnabled}
+            onCheckedChange={setSeatChoiceEnabled}
+            aria-describedby="seat-choice-enabled-help"
+          />
+          <div className="space-y-0.5">
+            <Label htmlFor="seat-choice-enabled" className="text-sm font-medium cursor-pointer">
+              Cliente escolhe a mesa no salão
+            </Label>
+            <p id="seat-choice-enabled-help" className="text-xs text-muted-foreground">
+              Ligada, o cliente vê o salão e escolhe a mesa ao reservar pela página online, pelo
+              WhatsApp ou pelo Instagram. Desligada, a reserva segue como hoje e o sistema escolhe
+              a mesa. A recepção continua trocando e juntando mesas no Salão ao vivo nos dois casos.
+            </p>
+          </div>
         </div>
       </div>
 

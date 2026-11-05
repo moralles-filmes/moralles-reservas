@@ -40,7 +40,7 @@ vi.mock("@/hooks/useCurrentUnit", () => ({ useCurrentUnit: () => ({ unit_id: "un
 vi.mock("./Saloes", () => ({ BreadcrumbReservas: () => null }));
 vi.mock("sonner", () => ({ toast: mocks.toast }));
 vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: { id: "actor-1" } }) }));
-// Coorte manual: o Salvar ainda grava os 2 interruptores legados, e o lote fica com 7 chaves.
+// Coorte manual: o Salvar ainda grava os 2 interruptores legados, e o lote fica com 8 chaves.
 vi.mock("@/hooks/useWhatsappServicePreferences", () => ({
   useWhatsappServicePreferences: () => ({ query: { isPending: false, isError: false, data: { auto_cohort: false, eligible: false } } }),
 }));
@@ -129,7 +129,7 @@ describe("Ajustes: textos do agente (Regras e Condições, Informações adicion
     expect(saveButton().disabled).toBe(false);
   });
 
-  it("grava o lote de 7 num upsert com .select(), normalizando \\r (dado legado) antes de aparar", async () => {
+  it("grava o lote de 8 num upsert com .select(), normalizando \\r (dado legado) antes de aparar", async () => {
     // O navegador normaliza o que se digita; o `\r` só chega por dado legado já salvo.
     mocks.state.read = {
       data: [
@@ -143,14 +143,14 @@ describe("Ajustes: textos do agente (Regras e Condições, Informações adicion
     await user.click(saveButton());
     await waitFor(() => expect(mocks.toast.success).toHaveBeenCalledWith("Ajustes salvos."));
     expect(mocks.state.upserts).toHaveLength(1);
-    expect(mocks.state.upserts[0].rows).toHaveLength(7);
+    expect(mocks.state.upserts[0].rows).toHaveLength(8);
     expect(mocks.state.upserts[0].selected).toBe(true);
     expect(JSON.stringify(mocks.state.upserts[0].options)).toBe(JSON.stringify({ onConflict: "unit_id,key" }));
     expect(saved().rules_and_conditions).toBe("linha 1\nlinha 2\nlinha 3");
     expect(saved().additional_info).toBe("a\nb");
   });
 
-  it.each([0, 6])("volta %i linhas em vez de 7 (error nulo): erro, não sucesso", async (n) => {
+  it.each([0, 7])("volta %i linhas em vez de 8 (error nulo): erro, não sucesso", async (n) => {
     mocks.state.write = (rows) => ({ data: rows.slice(0, n), error: null });
     const user = await openAjustes();
     await user.click(saveButton());
@@ -169,5 +169,37 @@ describe("Ajustes: textos do agente (Regras e Condições, Informações adicion
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith(copy));
     expect(JSON.stringify(mocks.toast.error.mock.calls)).not.toContain("regras secretas");
     expect(mocks.toast.success).not.toHaveBeenCalled();
+  });
+});
+
+describe("Ajustes: chave Cliente escolhe a mesa", () => {
+  const seatSwitch = () => screen.getByRole("switch", { name: "Cliente escolhe a mesa no salão" });
+
+  it("sem linha salva abre desligada e o Salvar grava false (booleano)", async () => {
+    const user = await openAjustes();
+    expect(seatSwitch().getAttribute("aria-checked")).toBe("false");
+    await user.click(saveButton());
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled());
+    expect(saved().seat_choice_enabled).toBe(false);
+  });
+
+  it("ligada no banco abre ligada; desligar e salvar grava false", async () => {
+    mocks.state.read = { data: [{ key: "seat_choice_enabled", value: true }], error: null };
+    const user = await openAjustes();
+    await waitFor(() => expect(seatSwitch().getAttribute("aria-checked")).toBe("true"));
+    await user.click(seatSwitch());
+    await user.click(saveButton());
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled());
+    expect(saved().seat_choice_enabled).toBe(false);
+  });
+
+  it("ligar e salvar grava true; o texto de ajuda diz que a recepção não muda", async () => {
+    const user = await openAjustes();
+    expect(seatSwitch().getAttribute("aria-describedby")).toBe("seat-choice-enabled-help");
+    expect(document.getElementById("seat-choice-enabled-help")?.textContent).toContain("A recepção continua");
+    await user.click(seatSwitch());
+    await user.click(saveButton());
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled());
+    expect(saved().seat_choice_enabled).toBe(true);
   });
 });
