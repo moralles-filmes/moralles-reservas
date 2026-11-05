@@ -1,6 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { isoToLocalDate } from "@/lib/utils";
+import { brtDateOf, brtDayBounds, eachDateKey, localDateKey } from "@/lib/brt";
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import type { DateRange } from "@/hooks/useFluxoClientes";
 import type { VoucherStatus, VoucherTrigger } from "@/hooks/useVouchers";
 
@@ -58,23 +59,6 @@ const TRIGGER_LABEL: Record<TriggerBucket["trigger"], string> = {
   manual_avulso: "Manual",
 };
 
-function toIsoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-function eachDay(from: Date, to: Date): string[] {
-  const days: string[] = [];
-  const cur = new Date(from);
-  cur.setHours(0, 0, 0, 0);
-  const end = new Date(to);
-  end.setHours(0, 0, 0, 0);
-  while (cur <= end) {
-    days.push(toIsoDate(cur));
-    cur.setDate(cur.getDate() + 1);
-  }
-  return days;
-}
-
 function dayLabel(iso: string): string {
   const [y, m, d] = iso.split("-");
   return `${d}/${m}/${y.slice(2)}`;
@@ -112,40 +96,26 @@ function ruleOf(row: RawRow) {
 }
 
 export function useGiftbackRelatorio(unitId: string, range: DateRange) {
-  const fromIso = toIsoDate(range.from);
-  const toIso = toIsoDate(range.to);
+  const fromIso = localDateKey(range.from);
+  const toIso = localDateKey(range.to);
 
   return useQuery({
     queryKey: ["giftback-relatorio", unitId, fromIso, toIso],
     placeholderData: keepPreviousData,
     enabled: !!unitId,
     queryFn: async (): Promise<GiftbackData> => {
-      // Boundaries em fuso local — alinhados com isoToLocalDate() abaixo. Antes
-      // o startTs usava 'T00:00:00.000Z' (UTC puro) enquanto endTs convertia
-      // do local → vazava 3h do dia anterior em BRT e excluía 3h do último.
-      const startDate = new Date(range.from);
-      startDate.setHours(0, 0, 0, 0);
-      const startTs = startDate.toISOString();
-      const endDate = new Date(range.to);
-      endDate.setHours(23, 59, 59, 999);
-      const endTs = endDate.toISOString();
-
-      // Limit defensivo (B15): unit com volume alto pode passar 5000 vouchers/range.
-      // Caso atinja, exibe truncado — relatório deveria migrar pra RPC agregada.
-      const { data, error } = await supabase
+      const { startIso, endIsoExclusive } = brtDayBounds(fromIso, toIso);
+      const rows = await fetchAllPages<RawRow>((from, to) => supabase
         .from("vouchers")
         .select(
           "id, code, status, discount_percent, issued_at, expires_at, used_at, rule_id, customer:customers(name, phone), rule:voucher_rules(trigger_type)",
         )
         .eq("unit_id", unitId)
-        .gte("issued_at", startTs)
-        .lte("issued_at", endTs)
+        .gte("issued_at", startIso)
+        .lt("issued_at", endIsoExclusive)
         .order("issued_at", { ascending: false })
-        .limit(5000);
-
-      if (error) throw error;
-
-      const rows = (data ?? []) as unknown as RawRow[];
+        .order("id")
+        .range(from, to));
 
       // KPIs
       const kpis: GiftbackKpis = {
@@ -162,7 +132,7 @@ export function useGiftbackRelatorio(unitId: string, range: DateRange) {
           : null;
 
       // Daily
-      const days = eachDay(range.from, range.to);
+      const days = eachDateKey(fromIso, toIso);
       const daily = days.map((date) => ({
         date,
         label: dayLabel(date),
@@ -174,12 +144,12 @@ export function useGiftbackRelatorio(unitId: string, range: DateRange) {
       for (const r of rows) {
         // issued_at e used_at são timestamptz UTC — converte pro dia local
         // do restaurante para evitar bug de fuso em eventos próximos da meia-noite.
-        const issuedDay = isoToLocalDate(r.issued_at);
+        const issuedDay = brtDateOf(r.issued_at);
         const issuedSlot = dailyByDate.get(issuedDay);
         if (issuedSlot) issuedSlot.issued += 1;
 
         if (r.used_at) {
-          const usedDay = isoToLocalDate(r.used_at);
+          const usedDay = brtDateOf(r.used_at);
           const usedSlot = dailyByDate.get(usedDay);
           if (usedSlot) usedSlot.used += 1;
         }

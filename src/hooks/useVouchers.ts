@@ -1,3 +1,5 @@
+import { addDaysKey, brtTodayKey } from "@/lib/brt";
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { endOfDayLocalISO } from "@/lib/utils";
@@ -85,12 +87,11 @@ export function useVoucherRules(unitId: string) {
   return useQuery({
     queryKey: ["voucher-rules", unitId],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const data = await fetchAllPages((from, to) => supabase
         .from("voucher_rules")
         .select("*")
         .eq("unit_id", unitId)
-        .order("created_at", { ascending: false });
-      if (error) throw error;
+        .order("created_at", { ascending: false }).order("id").range(from, to));
       return data as VoucherRule[];
     },
     enabled: !!unitId,
@@ -165,16 +166,32 @@ export function useVouchers(unitId: string) {
   return useQuery({
     queryKey: ["vouchers", unitId],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("vouchers")
-        .select(
-          "*, customer:customers(id, name, phone, email), rule:voucher_rules(id, name, trigger_type)",
-        )
-        .eq("unit_id", unitId)
-        .order("issued_at", { ascending: false })
-        .limit(500);
-      if (error) throw error;
-      return data as unknown as VoucherWithCustomer[];
+      // Todos os ativos (qualquer data) + os demais emitidos nos últimos 90 dias (BRT), sem teto.
+      const cutoff = `${addDaysKey(brtTodayKey(), -90)}T00:00:00-03:00`;
+      const read = (active: boolean) =>
+        fetchAllPages((from, to) => {
+          let query = supabase
+            .from("vouchers")
+            .select(
+              "*, customer:customers(id, name, phone, email), rule:voucher_rules(id, name, trigger_type)",
+            )
+            .eq("unit_id", unitId);
+          query = active
+            ? query.eq("status", "active")
+            : query.neq("status", "active").gte("issued_at", cutoff);
+          return query
+            .order("issued_at", { ascending: false })
+            .order("id", { ascending: true })
+            .range(from, to);
+        });
+      const [active, recent] = await Promise.all([read(true), read(false)]);
+      const rows = [...active, ...recent] as unknown as VoucherWithCustomer[];
+      const unique = [...new Map(rows.map((row) => [row.id, row])).values()];
+      return unique.sort(
+        (a, b) =>
+          new Date(b.issued_at).getTime() - new Date(a.issued_at).getTime() ||
+          a.id.localeCompare(b.id),
+      );
     },
     enabled: !!unitId,
   });

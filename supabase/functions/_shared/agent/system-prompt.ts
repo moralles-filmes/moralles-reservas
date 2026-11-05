@@ -22,6 +22,8 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { buildUpcomingDaysLines, WEEKDAY_NAMES_PT } from "../agent-calendar-core.ts";
+import { daysUntilBirthdayBrt } from "../brt-date-core.ts";
+import { formatExpiryBR } from "../giftback.ts";
 import type { AgentCustomer, AgentUnit } from "./channel-context.ts";
 import { renderGlobalLayer, STORE_TEXT_LIMITS, type GlobalPromptSource } from "./global-prompt-core.ts";
 import { loadGlobalPrompt, type GlobalPromptLog } from "./global-prompt.ts";
@@ -582,14 +584,16 @@ export async function loadAgentSystemPrompt(
   // declarado não pode descobrir vouchers de quem é dono do telefone.
   let customerVouchers: unknown[] | null = null;
   if (privateCustomer) {
-    const todayIso = new Date().toISOString().slice(0, 10);
+    // expires_at é timestamptz (fim do dia BRT); o status só vira `expired` no cron
+    // das 09h BRT, então o corte é "ainda não venceu agora", não uma data UTC crua.
+    const nowIso = new Date().toISOString();
     const { data } = await supabase
       .from("vouchers")
       .select("code, discount_percent, expires_at")
       .eq("unit_id", unitId)
       .eq("customer_id", privateCustomer.id)
       .eq("status", "active")
-      .gte("expires_at", todayIso)
+      .gt("expires_at", nowIso)
       .order("expires_at", { ascending: true });
     customerVouchers = data;
   }
@@ -599,8 +603,8 @@ export async function loadAgentSystemPrompt(
     discount_percent: number;
     expires_at: string;
   }[]).map((v) => {
-    const [y, m, d] = v.expires_at.slice(0, 10).split("-");
-    return `- Voucher *${v.code}*: ${v.discount_percent}% de desconto, válido até ${d}/${m}/${y}.`;
+    // Fim do dia BRT é 02:59 UTC do dia seguinte: slice(0, 10) cru mostraria um dia a mais.
+    return `- Voucher *${v.code}*: ${v.discount_percent}% de desconto, válido até ${formatExpiryBR(v.expires_at)}.`;
   });
 
   // ── Aniversário do cliente — hoje? nos próximos 7 dias?
@@ -609,21 +613,12 @@ export async function loadAgentSystemPrompt(
     const bday = String(privateCustomer.birthday); // YYYY-MM-DD
     const bMM = bday.slice(5, 7);
     const bDD = bday.slice(8, 10);
-    const now = new Date();
-    const todayMM = String(now.getMonth() + 1).padStart(2, "0");
-    const todayDD = String(now.getDate()).padStart(2, "0");
-    if (bMM === todayMM && bDD === todayDD) {
+    // Dia civil de Brasília (Deno roda em UTC: das 21h à meia-noite o "hoje" cru é amanhã).
+    const diffDays = daysUntilBirthdayBrt(bday);
+    if (diffDays === 0) {
       birthdayLine = `- HOJE é aniversário do cliente. Parabenize com calor logo no início da resposta, antes de tratar do pedido dele.`;
-    } else {
-      // Próximos 7 dias
-      const target = new Date(`${now.getUTCFullYear()}-${bMM}-${bDD}T12:00:00Z`);
-      if (target.getTime() < now.getTime()) {
-        target.setUTCFullYear(target.getUTCFullYear() + 1);
-      }
-      const diffDays = Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-      if (diffDays > 0 && diffDays <= 7) {
-        birthdayLine = `- Aniversário do cliente em ${diffDays} dia(s) (${bDD}/${bMM}). Se ele tocar no assunto, parabenize antecipadamente; senão, não force.`;
-      }
+    } else if (diffDays != null && diffDays > 0 && diffDays <= 7) {
+      birthdayLine = `- Aniversário do cliente em ${diffDays} dia(s) (${bDD}/${bMM}). Se ele tocar no assunto, parabenize antecipadamente; senão, não force.`;
     }
   }
 

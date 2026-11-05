@@ -1,3 +1,5 @@
+import { localDateKey } from "./brt";
+import { fetchAllPages } from "./fetch-all-pages";
 import { supabase } from "@/lib/supabase";
 import type { DateRange } from "@/hooks/useFluxoClientes";
 import type { AvaliacaoRow } from "@/hooks/useAvaliacoes";
@@ -61,10 +63,9 @@ export async function exportClientesCsv(
   unitId: string,
   range: DateRange,
 ): Promise<{ count: number }> {
-  const fromIso = range.from.toISOString().slice(0, 10);
-  const toIso = range.to.toISOString().slice(0, 10);
+  const { fromKey: fromIso, toKey: toIso } = exportRangeKeys(range);
 
-  const { data, error } = await supabase
+  const data = await fetchAllPages((from, to) => supabase
     .from("reservations")
     .select(
       "date, party_size, source, customer:customers!inner(id, name, phone, email)",
@@ -73,9 +74,7 @@ export async function exportClientesCsv(
     .gte("date", fromIso)
     .lte("date", toIso)
     .in("status", ["confirmed", "no_show", "cancelled"])
-    .order("date", { ascending: false });
-
-  if (error) throw error;
+    .order("date", { ascending: false }).order("id").range(from, to));
 
   const rows = (data ?? []) as unknown as ReservationRow[];
 
@@ -147,8 +146,7 @@ export function exportAvaliacoesCsv(
   range: DateRange,
   rows: AvaliacaoRow[],
 ): { count: number } {
-  const fromIso = range.from.toISOString().slice(0, 10);
-  const toIso = range.to.toISOString().slice(0, 10);
+  const { fromKey: fromIso, toKey: toIso } = exportRangeKeys(range);
 
   const csv = toCsv([
     ["Data", "Hora", "Nome", "Telefone", "E-mail", "Nota", "Comentário"],
@@ -167,4 +165,8 @@ export function exportAvaliacoesCsv(
   downloadBlob(csv, filename);
 
   return { count: rows.length };
+}
+
+export function exportRangeKeys(range: DateRange): { fromKey: string; toKey: string } {
+ return { fromKey: localDateKey(range.from), toKey: localDateKey(range.to) };
 }

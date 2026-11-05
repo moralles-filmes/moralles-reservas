@@ -213,7 +213,7 @@ export function useFluxoClientes(
         ),
       ]);
 
-      return { reservations, waitlist, walkIns };
+      return { reservations, waitlist, walkIns, keys: { fromIso, toIso } };
     },
     enabled: !!unitId,
   });
@@ -234,7 +234,7 @@ export function useFluxoClientes(
       };
     }
 
-    const { reservations, waitlist, walkIns } = query.data;
+    const { reservations, waitlist, walkIns, keys } = query.data;
 
     const ticketCents =
       ticketMedioReais && ticketMedioReais > 0
@@ -457,7 +457,7 @@ export function useFluxoClientes(
     };
 
     // ── Daily flow ─────────────────────────────────────────────────────────
-    const days = eachDateKey(fromIso, toIso);
+    const days = eachDateKey(keys.fromIso, keys.toIso);
     const daily: DailyFlow[] = days.map((d) => ({
       date: d,
       label: d.slice(8, 10) + "/" + d.slice(5, 7),
@@ -517,7 +517,7 @@ export function useFluxoClientes(
     }));
 
     for (const r of reservations) {
-      const d = new Date(r.date + "T00:00:00").getDay();
+      const d = new Date(`${r.date}T12:00:00Z`).getUTCDay();
       dow[d].reserva_mesas += 1;
       dow[d].reserva_pessoas += r.party_size;
     }
@@ -551,11 +551,12 @@ export function useFluxoClientes(
       dow: dowReordered,
       origem,
     };
-  }, [query.data, fromIso, toIso, ticketMedioReais]);
+  }, [query.data, ticketMedioReais]);
 
   return {
     data,
     isLoading: query.isLoading,
+    isPlaceholderData: query.isPlaceholderData,
     error: query.error as Error | null,
   };
 }

@@ -1,3 +1,5 @@
+import { addDaysKey, brtTodayKey } from "@/lib/brt";
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
@@ -17,37 +19,48 @@ export function useReservas(
     queryFn: async () => {
       const term = filters?.search?.trim();
 
-      // Path A — sem busca por termo: query direta com join.
+      // Path A — sem busca por termo: query direta com join. Sem data, a lista
+      // traz os últimos 90 dias (BRT) e todas as futuras.
       if (!term) {
-        let query = supabase
-          .from("reservations")
-          .select("*, customer:customers(*), table:tables(*)")
-          .eq("unit_id", unitId)
-          .order("date", { ascending: true })
-          .order("time", { ascending: true });
+        const cutoff = addDaysKey(brtTodayKey(), -90);
+        const data = await fetchAllPages((from, to) => {
+          let query = supabase
+            .from("reservations")
+            .select("*, customer:customers(*), table:tables(*)")
+            .eq("unit_id", unitId)
+            .order("date", { ascending: true })
+            .order("time", { ascending: true })
+            .order("id", { ascending: true });
 
-        if (filters?.date) query = query.eq("date", filters.date);
-        if (filters?.status) query = query.eq("status", filters.status);
+          query = filters?.date ? query.eq("date", filters.date) : query.gte("date", cutoff);
+          if (filters?.status) query = query.eq("status", filters.status);
 
-        const { data, error } = await query;
-        if (error) throw error;
+          return query.range(from, to);
+        });
         return data as Reserva[];
       }
 
       // Path B — com busca: PostgREST não suporta `.or()` cross-table, então
       // usamos a RPC `search_reservations` (criada na migration 055) que faz
       // o JOIN no servidor e devolve o conjunto. O `.select(...)` em cima da
-      // RPC adiciona o embedding de customer/table.
-      const { data, error } = await supabase
-        .rpc("search_reservations", {
-          p_unit_id: unitId,
-          p_term: term,
-          p_date: filters?.date ?? null,
-          p_status: filters?.status ?? null,
-        })
-        .select("*, customer:customers(*), table:tables(*)");
-      if (error) throw error;
-      return (data ?? []) as Reserva[];
+      // RPC adiciona o embedding de customer/table. A busca cobre todo o
+      // histórico (o termo já restringe), lida em páginas.
+      const data = await fetchAllPages((from, to) =>
+        supabase
+          .rpc("search_reservations", {
+            p_unit_id: unitId,
+            p_term: term,
+            p_date: filters?.date ?? null,
+            p_status: filters?.status ?? null,
+          })
+          .select("*, customer:customers(*), table:tables(*)")
+          .eq("unit_id", unitId)
+          .order("date", { ascending: true })
+          .order("time", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to),
+      );
+      return data as Reserva[];
     },
     enabled: !!unitId,
   });
@@ -392,12 +405,11 @@ export function useReservaStats(unitId: string) {
     queryKey: ["reserva-stats", unitId],
     queryFn: async () => {
       const today = todayLocalISO();
-      const { data, error } = await supabase
+      const data = await fetchAllPages((from, to) => supabase
         .from("reservations")
         .select("status, party_size, date")
         .eq("unit_id", unitId)
-        .eq("date", today);
-      if (error) throw error;
+        .eq("date", today).order("id").range(from, to));
 
       const hoje = data ?? [];
       return {

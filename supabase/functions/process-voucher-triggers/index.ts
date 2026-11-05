@@ -29,6 +29,15 @@ import {
   resolveWhatsAppGateByUnit,
   clearWhatsAppGateCache,
 } from "../_shared/whatsapp-service-gate.ts";
+import { chunk, fetchAllByIdKeyset, IN_BATCH_SIZE } from "../_shared/paginate-core.ts";
+
+/** Mensagem curta de erro (PostgrestError não é Error; String(obj) vira "[object Object]"). */
+function errMessage(err: unknown): string {
+  const msg = err && typeof err === "object" && "message" in err
+    ? String((err as { message: unknown }).message)
+    : String(err);
+  return msg.slice(0, 200);
+}
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -314,17 +323,27 @@ async function processBirthday(): Promise<{ issued: number; errors: string[]; se
       .maybeSingle();
     if (!unitRow) continue;
 
-    const { data: customers } = await supabase
-      .from("customers")
-      .select("id, name, phone, birthday")
-      .eq("organization_id", unitRow.organization_id)
-      .not("birthday", "is", null)
-      .is("deleted_at", null);
+    // Paginado: PostgREST trunca em 1000 sem aviso, e cliente além da linha 1000
+    // perderia o aniversário do ano (a data não volta). Erro de página reprova
+    // só esta regra, registrado em `errors` — nunca segue com lista parcial.
+    let customers: { id: string; name: string | null; phone: string | null; birthday: string | null }[];
+    try {
+      customers = await fetchAllByIdKeyset((afterId, limit) => {
+        let q = supabase
+          .from("customers")
+          .select("id, name, phone, birthday")
+          .eq("organization_id", unitRow.organization_id)
+          .not("birthday", "is", null)
+          .is("deleted_at", null);
+        if (afterId) q = q.gt("id", afterId);
+        return q.order("id", { ascending: true }).limit(limit);
+      });
+    } catch (err) {
+      errors.push(`birthday rule=${rule.id} customers: ${errMessage(err)}`);
+      continue;
+    }
 
-    if (!customers) continue;
-
-    // deno-lint-ignore no-explicit-any
-    const matching = (customers as any[]).filter((c) => {
+    const matching = customers.filter((c) => {
       if (!c.birthday) return false;
       const mmdd = String(c.birthday).slice(5, 10); // YYYY-MM-DD → MM-DD
       if (mmdd === todayMmdd) return true;
@@ -341,18 +360,25 @@ async function processBirthday(): Promise<{ issued: number; errors: string[]; se
       }
 
       // Visitou esta unit? (confirmed efetivada OU no_show; ambos contam como visita registrada)
-      const { count: visits } = await supabase
+      // Erro de leitura vai para `errors` (antes virava "não visitou" em silêncio).
+      const { count: visits, error: visitsErr } = await supabase
         .from("reservations")
         .select("id", { count: "exact", head: true })
         .eq("unit_id", rule.unit_id)
         .eq("customer_id", customer.id)
         .in("status", ["confirmed", "no_show"]);
+      if (visitsErr) {
+        errors.push(`birthday rule=${rule.id} customer=${customer.id} visits: ${errMessage(visitsErr)}`);
+        continue;
+      }
       if (!visits || visits === 0) continue;
 
       // Idempotência: já emitiu voucher dessa rule pra esse customer no último ano?
       const oneYearAgo = new Date();
       oneYearAgo.setDate(oneYearAgo.getDate() - 365);
-      const { data: existing } = await supabase
+      // Falha fechado: erro de leitura não pode virar "sem voucher anterior" — o
+      // índice único só protege voucher `active`, não o usado/expirado no ano.
+      const { data: existing, error: existingErr } = await supabase
         .from("vouchers")
         .select("id")
         .eq("rule_id", rule.id)
@@ -360,20 +386,31 @@ async function processBirthday(): Promise<{ issued: number; errors: string[]; se
         .gt("issued_at", oneYearAgo.toISOString())
         .limit(1)
         .maybeSingle();
+      if (existingErr) {
+        errors.push(`birthday rule=${rule.id} customer=${customer.id} idempotency: ${errMessage(existingErr)}`);
+        continue;
+      }
       if (existing) continue;
 
-      const result = await issueAndSend({
-        unitId: rule.unit_id,
-        ruleId: rule.id,
-        customerId: customer.id,
-        customerPhone: phoneDigits,
-        discountPercent: rule.discount_percent,
-        validityDays: rule.validity_days,
-        suppressSend,
-        serviceReadFailed: !gate || gate.readFailed,
-        triggerType: 'birthday', visitsRequired: rule.visits_required, daysWindow: rule.days_window,
-        selectedBrtDay: today.isoDate,
-      });
+      let result: Awaited<ReturnType<typeof issueAndSend>>;
+      try {
+        result = await issueAndSend({
+          unitId: rule.unit_id,
+          ruleId: rule.id,
+          customerId: customer.id,
+          customerPhone: phoneDigits,
+          discountPercent: rule.discount_percent,
+          validityDays: rule.validity_days,
+          suppressSend,
+          serviceReadFailed: !gate || gate.readFailed,
+          triggerType: 'birthday', visitsRequired: rule.visits_required, daysWindow: rule.days_window,
+          selectedBrtDay: today.isoDate,
+        });
+      } catch (err) {
+        // Um cliente que lança não derruba os demais da regra.
+        errors.push(`birthday rule=${rule.id} customer=${customer.id}: ${errMessage(err)}`);
+        continue;
+      }
 
       if (result.ok) {
         issued++;
@@ -433,82 +470,110 @@ async function processFrequency(): Promise<{ issued: number; errors: string[]; s
     windowStart.setUTCDate(windowStart.getUTCDate() - (rule.days_window as number));
     const windowStartIso = windowStart.toISOString().slice(0, 10);
 
-    // B7: window agora tem upper bound (yesterday, inclusivo).
-    const { data: reservations } = await supabase
-      .from("reservations")
-      .select("customer_id")
-      .eq("unit_id", rule.unit_id)
-      .in("status", ["confirmed", "no_show"])
-      .gte("date", windowStartIso)
-      .lte("date", yesterdayIso);
-
-    if (!reservations || reservations.length === 0) continue;
-
-    const counts = new Map<string, number>();
-    for (const r of reservations) {
-      const cid = (r as { customer_id: string }).customer_id;
-      counts.set(cid, (counts.get(cid) ?? 0) + 1);
-    }
-
-    const eligible = [...counts.entries()]
-      .filter(([, count]) => count >= (rule.visits_required as number))
-      .map(([id]) => id);
-
-    if (eligible.length === 0) continue;
-
-    // B9: cooldown estável usa `validity_days` da regra. Cliente só pode
-    // ganhar de novo após esse período. Antes o filtro era "issued_at >
-    // windowStart" — windowStart desliza dia a dia, então cliente que
-    // ganhou há `days_window + 1` dias virava re-elegível.
-    const cooldownStart = new Date();
-    cooldownStart.setUTCDate(cooldownStart.getUTCDate() - (rule.validity_days as number));
-
-    const { data: recentVouchers } = await supabase
-      .from("vouchers")
-      .select("customer_id")
-      .eq("rule_id", rule.id)
-      .in("customer_id", eligible)
-      .gt("issued_at", cooldownStart.toISOString());
-
-    const alreadyIssued = new Set(
-      // deno-lint-ignore no-explicit-any
-      ((recentVouchers ?? []) as any[]).map((v) => v.customer_id),
-    );
-
-    const remaining = eligible.filter((id) => !alreadyIssued.has(id));
-    if (remaining.length === 0) continue;
-
-    // B8: já filtra phone non-empty no DB.
-    const { data: customers } = await supabase
-      .from("customers")
-      .select("id, phone")
-      .in("id", remaining)
-      .is("deleted_at", null)
-      .not("phone", "is", null);
-
-    if (!customers) continue;
-
-    for (const c of customers) {
-      const phoneDigits = String((c as { phone: string }).phone ?? "").replace(/\D/g, "");
-      if (phoneDigits.length < 10) {
-        jsonLog("info", { evt: "frequency_skipped_no_phone", customer_id: c.id });
-        continue;
-      }
-
-      const result = await issueAndSend({
-        unitId: rule.unit_id,
-        ruleId: rule.id,
-        customerId: c.id,
-        customerPhone: phoneDigits,
-        discountPercent: rule.discount_percent,
-        validityDays: rule.validity_days,
-        serviceReadFailed: !gate || gate.readFailed,
-        triggerType: 'frequency', visitsRequired: rule.visits_required, daysWindow: rule.days_window,
-        selectedBrtDay: upperBrtDay, lowerBrtDay,
+    // Leituras desta regra falham fechado: erro registra em `errors` e pula a
+    // regra (a janela é recalculada amanhã). Antes, erro virava "sem dados" e o
+    // cooldown lido como vazio podia reemitir voucher.
+    try {
+      // B7: window agora tem upper bound (yesterday, inclusivo). Paginado: com
+      // mais de 1000 visitas na janela a contagem ficava menor que a real.
+      // Keyset: reserva repetida entre páginas inflaria a contagem e criaria
+      // elegível falso.
+      const reservations = await fetchAllByIdKeyset<{ id: string; customer_id: string | null }>((afterId, limit) => {
+        let q = supabase
+          .from("reservations")
+          .select("id, customer_id")
+          .eq("unit_id", rule.unit_id)
+          .in("status", ["confirmed", "no_show"])
+          .gte("date", windowStartIso)
+          .lte("date", yesterdayIso);
+        if (afterId) q = q.gt("id", afterId);
+        return q.order("id", { ascending: true }).limit(limit);
       });
 
-      if (result.ok) issued++;
-      else errors.push(`frequency rule=${rule.id} customer=${c.id}: ${result.reason}`);
+      if (reservations.length === 0) continue;
+
+      const counts = new Map<string, number>();
+      for (const r of reservations) {
+        if (!r.customer_id) continue;
+        counts.set(r.customer_id, (counts.get(r.customer_id) ?? 0) + 1);
+      }
+
+      const eligible = [...counts.entries()]
+        .filter(([, count]) => count >= (rule.visits_required as number))
+        .map(([id]) => id);
+
+      if (eligible.length === 0) continue;
+
+      // B9: cooldown estável usa `validity_days` da regra. Cliente só pode
+      // ganhar de novo após esse período. Antes o filtro era "issued_at >
+      // windowStart" — windowStart desliza dia a dia, então cliente que
+      // ganhou há `days_window + 1` dias virava re-elegível.
+      const cooldownStart = new Date();
+      cooldownStart.setUTCDate(cooldownStart.getUTCDate() - (rule.validity_days as number));
+
+      // `.in()` em lotes: lista longa de uuid estoura a URL do PostgREST.
+      const alreadyIssued = new Set<string>();
+      for (const batch of chunk(eligible, IN_BATCH_SIZE)) {
+        const recentVouchers = await fetchAllByIdKeyset<{ id: string; customer_id: string }>((afterId, limit) => {
+          let q = supabase
+            .from("vouchers")
+            .select("id, customer_id")
+            .eq("rule_id", rule.id)
+            .in("customer_id", batch)
+            .gt("issued_at", cooldownStart.toISOString());
+          if (afterId) q = q.gt("id", afterId);
+          return q.order("id", { ascending: true }).limit(limit);
+        });
+        for (const v of recentVouchers) alreadyIssued.add(v.customer_id);
+      }
+
+      const remaining = eligible.filter((id) => !alreadyIssued.has(id));
+      if (remaining.length === 0) continue;
+
+      // B8: já filtra phone non-empty no DB.
+      const customers: { id: string; phone: string | null }[] = [];
+      for (const batch of chunk(remaining, IN_BATCH_SIZE)) {
+        const { data, error } = await supabase
+          .from("customers")
+          .select("id, phone")
+          .in("id", batch)
+          .is("deleted_at", null)
+          .not("phone", "is", null);
+        if (error) throw error;
+        customers.push(...((data ?? []) as { id: string; phone: string | null }[]));
+      }
+
+      for (const c of customers) {
+        const phoneDigits = String(c.phone ?? "").replace(/\D/g, "");
+        if (phoneDigits.length < 10) {
+          jsonLog("info", { evt: "frequency_skipped_no_phone", customer_id: c.id });
+          continue;
+        }
+
+        let result: Awaited<ReturnType<typeof issueAndSend>>;
+        try {
+          result = await issueAndSend({
+            unitId: rule.unit_id,
+            ruleId: rule.id,
+            customerId: c.id,
+            customerPhone: phoneDigits,
+            discountPercent: rule.discount_percent,
+            validityDays: rule.validity_days,
+            serviceReadFailed: !gate || gate.readFailed,
+            triggerType: 'frequency', visitsRequired: rule.visits_required, daysWindow: rule.days_window,
+            selectedBrtDay: upperBrtDay, lowerBrtDay,
+          });
+        } catch (err) {
+          // Um cliente que lança não derruba os demais da regra.
+          errors.push(`frequency rule=${rule.id} customer=${c.id}: ${errMessage(err)}`);
+          continue;
+        }
+
+        if (result.ok) issued++;
+        else errors.push(`frequency rule=${rule.id} customer=${c.id}: ${result.reason}`);
+      }
+    } catch (err) {
+      errors.push(`frequency rule=${rule.id}: ${errMessage(err)}`);
     }
   }
 

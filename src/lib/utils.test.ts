@@ -76,3 +76,20 @@ describe("generateReservationCode", () => {
     expect(codes.size).toBe(50);
   });
 });
+
+describe("dia civil BRT", () => {
+  it("hoje, dias à frente e fim do dia seguem Brasília na virada UTC", async () => {
+    const { vi } = await import("vitest");
+    const { todayLocalISO, addDaysLocalISO, endOfDayLocalISO } = await import("./utils");
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-05T01:30:00Z"));
+      expect(todayLocalISO()).toBe("2026-11-04");
+      expect(addDaysLocalISO(1)).toBe("2026-11-05");
+      expect(endOfDayLocalISO(0)).toBe("2026-11-05T02:59:59.999Z");
+      expect(endOfDayLocalISO(1)).toBe("2026-11-06T02:59:59.999Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
