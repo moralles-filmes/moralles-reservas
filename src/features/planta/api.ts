@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase";
-import type { Hall, Mesa, TableCombination, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
+import type { Hall, Mesa, OccupantTable, TableCombination, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 import type { BlockWindow } from "@/lib/table-situation-core";
 import { HALL_NOT_IN_UNIT_MESSAGE } from "@/lib/layout-errors";
 
@@ -111,6 +111,46 @@ export async function fetchSalaoReservations(unitId: string, today: string, yest
     .or(`date.eq.${today},and(date.eq.${yesterday},arrived_at.not.is.null,released_at.is.null)`);
   if (error) throw error;
   return (data ?? []) as Reserva[];
+}
+
+export interface SalaoOccupantIds {
+  reservationIds: string[];
+  walkInIds: string[];
+  waitlistIds: string[];
+}
+
+const OCCUPANT_ID_CHUNK = 100;
+
+/**
+ * Mesas de cada ocupante já carregado no Salão (`occupant_tables`), só da unidade dada.
+ * Lotes de `.in()` para não estourar a URL; erro sobe (nunca vira "sem junção").
+ */
+export async function fetchSalaoOccupantTables(unitId: string, ids: SalaoOccupantIds): Promise<OccupantTable[]> {
+  const jobs: Array<PromiseLike<{ data: unknown; error: unknown }>> = [];
+  const cols = [
+    ["reservation_id", ids.reservationIds],
+    ["walk_in_id", ids.walkInIds],
+    ["waitlist_id", ids.waitlistIds],
+  ] as const;
+  for (const [col, list] of cols) {
+    const unique = [...new Set(list)];
+    for (let i = 0; i < unique.length; i += OCCUPANT_ID_CHUNK) {
+      jobs.push(
+        supabase
+          .from("occupant_tables")
+          .select("table_id, reservation_id, walk_in_id, waitlist_id, overlap_ok")
+          .eq("unit_id", unitId)
+          .in(col, unique.slice(i, i + OCCUPANT_ID_CHUNK)),
+      );
+    }
+  }
+  const results = await Promise.all(jobs);
+  const rows: OccupantTable[] = [];
+  for (const r of results) {
+    if (r.error) throw r.error;
+    rows.push(...((r.data ?? []) as OccupantTable[]));
+  }
+  return rows;
 }
 
 // Estas consultas são limitadas a ≤ 2 dias (hoje e ontem em BRT), bem abaixo do teto de 1000 linhas do PostgREST.

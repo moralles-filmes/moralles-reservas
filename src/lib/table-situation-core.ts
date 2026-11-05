@@ -1,5 +1,5 @@
 import type { StatusTone } from "@/lib/status-tone";
-import type { Mesa, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
+import type { Mesa, OccupantTable, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 
 export type TableSituation = "blocked" | "occupied" | "late" | "arriving" | "reserved" | "free";
 
@@ -29,6 +29,8 @@ export interface TableState {
   focusReservationId?: string;
   /** Próxima reserva de hoje ainda não chegada, para o painel. */
   nextReservationId?: string;
+  /** Mesas do mesmo ocupante (ou da reserva em foco) quando são duas ou mais; a cena liga. */
+  groupTableIds?: string[];
 }
 
 export interface BlockWindow {
@@ -50,6 +52,8 @@ export interface SituationInput {
   blocks: BlockWindow[];
   now: Date;
   durationMinutes: number;
+  /** Mesas de cada ocupante (`occupant_tables`). Ausente = cada ocupante só no `table_id`. */
+  occupantTables?: OccupantTable[];
 }
 
 const ARRIVING_WINDOW_MIN = 15;
@@ -95,6 +99,68 @@ function isBlocked(table: { id: string; hall_id: string }, blocks: BlockWindow[]
   });
 }
 
+type OccupantKey = `${Occupant["kind"]}:${string}`;
+
+function occupantKeyOf(row: OccupantTable): OccupantKey | null {
+  if (row.reservation_id) return `reservation:${row.reservation_id}`;
+  if (row.walk_in_id) return `walk_in:${row.walk_in_id}`;
+  if (row.waitlist_id) return `waitlist:${row.waitlist_id}`;
+  return null;
+}
+
+/** Ocupante → mesas, a partir de `occupant_tables`. */
+function indexOccupantTables(rows: OccupantTable[] | undefined): Map<OccupantKey, string[]> | null {
+  if (!rows) return null;
+  const map = new Map<OccupantKey, string[]>();
+  for (const row of rows) {
+    const key = occupantKeyOf(row);
+    if (!key) continue;
+    const list = map.get(key);
+    if (!list) map.set(key, [row.table_id]);
+    else if (!list.includes(row.table_id)) list.push(row.table_id);
+  }
+  return map;
+}
+
+/** Mesas de um ocupante: as de `occupant_tables` quando houver linha, senão o `table_id` dele. */
+function tablesOf(index: Map<OccupantKey, string[]> | null, key: OccupantKey, tableId: string | null | undefined): string[] {
+  const rows = index?.get(key);
+  if (rows?.length) return rows;
+  return tableId ? [tableId] : [];
+}
+
+/** Mesas de uma reserva (junção inclusa); vazio quando ela não tem mesa. */
+export function reservationTableIds(
+  reservationId: string,
+  input: Pick<SituationInput, "reservations" | "occupantTables">,
+): string[] {
+  const index = indexOccupantTables(input.occupantTables);
+  const r = input.reservations.find((x) => x.id === reservationId);
+  return tablesOf(index, `reservation:${reservationId}`, r?.table_id);
+}
+
+/**
+ * Reserva de hoje ainda não chegada, a partir de 15 min antes do horário, com alguma das
+ * suas mesas ocupada por OUTRO ocupante: a recepção resolve na chegada.
+ */
+export function tableInUse(
+  r: Pick<Reserva, "id" | "date" | "time" | "status" | "arrived_at">,
+  states: Map<string, TableState>,
+  tableIds: string[],
+  now: Date,
+): boolean {
+  if (r.status !== "pending" && r.status !== "confirmed") return false;
+  if (r.arrived_at) return false;
+  const brt = brtNow(now);
+  if (r.date !== brt.date) return false;
+  if (toMinutes(r.time) - brt.minutes > ARRIVING_WINDOW_MIN) return false;
+  return tableIds.some((id) => {
+    const st = states.get(id);
+    if (st?.situation !== "occupied" || !st.occupant) return false;
+    return !(st.occupant.kind === "reservation" && st.occupant.id === r.id);
+  });
+}
+
 function pushTo<T>(map: Map<string, T[]>, key: string | null | undefined, value: T) {
   if (key == null) return;
   const list = map.get(key);
@@ -134,6 +200,11 @@ export function reservationLiveSituation(
   return null;
 }
 
+/** Só põe a chave quando há junção: sem `occupantTables` o estado fica idêntico ao de antes. */
+function withGroup(ids: string[] | undefined): Pick<TableState, "groupTableIds"> {
+  return ids ? { groupTableIds: ids } : {};
+}
+
 export function deriveTableStates(input: SituationInput): Map<string, TableState> {
   const { now, durationMinutes } = input;
   const nowMs = now.getTime();
@@ -141,6 +212,15 @@ export function deriveTableStates(input: SituationInput): Map<string, TableState
 
   const occupants = new Map<string, Occupant[]>();
   const pending = new Map<string, Array<{ id: string; minutes: number; confirmed: boolean }>>();
+  const index = indexOccupantTables(input.occupantTables);
+  /** Ocupante (ou reserva a chegar) → todas as suas mesas, para `groupTableIds`. */
+  const groups = new Map<OccupantKey, string[]>();
+  const place = <T,>(map: Map<string, T[]>, key: OccupantKey, tableId: string | null | undefined, value: T) => {
+    const ids = tablesOf(index, key, tableId);
+    if (ids.length > 1) groups.set(key, ids);
+    for (const id of ids) pushTo(map, id, value);
+  };
+  const groupOf = (key: OccupantKey) => groups.get(key);
 
   // Passante/fila legados ficam `seated` sem `released_at` para sempre: só conta
   // quem sentou hoje ou ontem (BRT), a mesma janela das reservas.
@@ -152,25 +232,25 @@ export function deriveTableStates(input: SituationInput): Map<string, TableState
   for (const w of input.walkIns) {
     // Sentado sem `seated_at` não tem como datar: ignora.
     if (w.status !== "seated" || w.released_at || !w.seated_at || !inWindow(w.seated_at)) continue;
-    pushTo(occupants, w.table_id, { kind: "walk_in", id: w.id, since: w.seated_at, partySize: w.party_size });
+    place(occupants, `walk_in:${w.id}`, w.table_id, { kind: "walk_in", id: w.id, since: w.seated_at, partySize: w.party_size });
   }
   for (const f of input.waitlistSeated) {
     if (f.status !== "seated" || f.released_at || !f.seated_at || !inWindow(f.seated_at)) continue;
-    pushTo(occupants, f.table_id, { kind: "waitlist", id: f.id, since: f.seated_at, partySize: f.party_size });
+    place(occupants, `waitlist:${f.id}`, f.table_id, { kind: "waitlist", id: f.id, since: f.seated_at, partySize: f.party_size });
   }
   for (const r of input.reservations) {
     if (r.status !== "pending" && r.status !== "confirmed") continue;
     if (r.released_at) continue;
     if (r.arrived_at) {
       if (r.date !== brt.date && r.date !== brt.yesterday) continue;
-      pushTo(occupants, r.table_id, {
+      place(occupants, `reservation:${r.id}`, r.table_id, {
         kind: "reservation",
         id: r.id,
         since: r.arrived_at,
         partySize: r.party_size,
       });
     } else if (r.date === brt.date) {
-      pushTo(pending, r.table_id, {
+      place(pending, `reservation:${r.id}`, r.table_id, {
         id: r.id,
         minutes: toMinutes(r.time),
         confirmed: r.status === "confirmed",
@@ -196,6 +276,7 @@ export function deriveTableStates(input: SituationInput): Map<string, TableState
         occupant: occ,
         overtime: ts(occ.since) + durationMinutes * 60_000 < nowMs,
         nextReservationId,
+        ...withGroup(groupOf(`${occ.kind}:${occ.id}`)),
       });
       continue;
     }
@@ -207,6 +288,7 @@ export function deriveTableStates(input: SituationInput): Map<string, TableState
         minutesLate: brt.minutes - late.minutes,
         focusReservationId: late.id,
         nextReservationId,
+        ...withGroup(groupOf(`reservation:${late.id}`)),
       });
       continue;
     }
@@ -219,9 +301,15 @@ export function deriveTableStates(input: SituationInput): Map<string, TableState
           minutesUntil: until,
           focusReservationId: next.id,
           nextReservationId,
+          ...withGroup(groupOf(`reservation:${next.id}`)),
         });
       } else {
-        result.set(table.id, { situation: "reserved", focusReservationId: next.id, nextReservationId });
+        result.set(table.id, {
+          situation: "reserved",
+          focusReservationId: next.id,
+          nextReservationId,
+          ...withGroup(groupOf(`reservation:${next.id}`)),
+        });
       }
       continue;
     }

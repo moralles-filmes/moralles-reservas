@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   fetchSalaoBlocks,
   fetchSalaoDurationSetting,
+  fetchSalaoOccupantTables,
   fetchSalaoPlan,
   fetchSalaoReservations,
   fetchSalaoSeatedWalkIns,
@@ -73,7 +74,26 @@ export function useSalaoAoVivo(unitId: string) {
     enabled,
   });
 
-  const all = [plan, reservations, walkIns, waitlist, seated, blocks, duration];
+
+  // Mesas de cada ocupante já carregado (junções). A chave carrega os ids para refazer a
+  // leitura quando alguém senta ou chega; o prefixo ["occupant-tables", unitId] invalida tudo.
+  const occupantIds = {
+    reservationIds: (reservations.data ?? []).map((r) => r.id).sort(),
+    walkInIds: (walkIns.data ?? []).map((w) => w.id).sort(),
+    waitlistIds: (seated.data ?? []).map((f) => f.id).sort(),
+  };
+  const occupantKey = [occupantIds.reservationIds, occupantIds.walkInIds, occupantIds.waitlistIds]
+    .map((l) => l.join(","))
+    .join("|");
+  const occupantTables = useQuery({
+    queryKey: ["occupant-tables", unitId, "salao", today, occupantKey],
+    queryFn: () => fetchSalaoOccupantTables(unitId, occupantIds),
+    enabled: enabled && reservations.data !== undefined && walkIns.data !== undefined && seated.data !== undefined,
+    refetchInterval: pollWhenVisible,
+    placeholderData: (prev) => prev,
+  });
+
+  const all = [plan, reservations, walkIns, waitlist, seated, blocks, duration, occupantTables];
   return {
     halls: plan.data?.halls ?? [],
     tables: plan.data?.tables ?? [],
@@ -82,6 +102,7 @@ export function useSalaoAoVivo(unitId: string) {
     waitlistActive: waitlist.data ?? [],
     waitlistSeated: seated.data ?? [],
     blocks: blocks.data ?? [],
+    occupantTables: occupantTables.data ?? [],
     durationMinutes: parseDurationMinutes(duration.data),
     isLoading: all.some((q) => q.isLoading),
     /** Todas as consultas têm dados (a duração ausente vem como null, não undefined): um erro de refetch não deve derrubar a cena. */

@@ -109,8 +109,9 @@ export default function SalaoAoVivo() {
         blocks: data.blocks,
         now,
         durationMinutes: data.durationMinutes,
+        occupantTables: data.occupantTables,
       }),
-    [tables, data.reservations, data.walkIns, data.waitlistSeated, data.blocks, now, data.durationMinutes],
+    [tables, data.reservations, data.walkIns, data.waitlistSeated, data.blocks, now, data.durationMinutes, data.occupantTables],
   );
 
   const viewAll = halls.length > 1 && hallPref === ALL_HALLS;
