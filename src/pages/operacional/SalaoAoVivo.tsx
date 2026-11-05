@@ -329,6 +329,9 @@ export default function SalaoAoVivo() {
           table={selectedTable}
           state={selectedState}
           reservations={data.reservations}
+          tables={tables}
+          states={states}
+          occupantTables={data.occupantTables}
           walkIns={data.walkIns}
           waitlistSeated={data.waitlistSeated}
           now={now}

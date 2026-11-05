@@ -1,6 +1,4 @@
-import type { Mesa, Reserva } from "@/types/reserva";
-
-type ReservaComCliente = Reserva & { customer?: { name?: string | null } | null };
+import type { Mesa, ReservaComCliente } from "@/types/reserva";
 
 const MAX_ROWS = 8;
 

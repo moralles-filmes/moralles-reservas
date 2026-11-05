@@ -1,16 +1,18 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { StatusPill } from "@/components/ui/status-pill";
-import type { Mesa, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
-import { brtNow, reservationLiveSituation, type TableState } from "@/lib/table-situation-core";
+import type { Mesa, OccupantTable, ReservaComCliente, WaitlistEntry, WalkIn } from "@/types/reserva";
+import { brtNow, reservationLiveSituation, reservationTableIds, tableInUse, type TableState } from "@/lib/table-situation-core";
 import { SITUATION_TONE, TONE_CLASS, situationText } from "../situation-labels";
-
-type ReservaComCliente = Reserva & { customer?: { name?: string | null } | null };
+import { ReservaDetalhe } from "./ReservaDetalhe";
 
 interface Props {
   table: Mesa | null;
   state: TableState | null;
   reservations: ReservaComCliente[];
+  occupantTables?: OccupantTable[];
+  states?: Map<string, TableState>;
+  tables?: Mesa[];
   walkIns: WalkIn[];
   waitlistSeated: WaitlistEntry[];
   /** Preenchido pelas ações da planta (Task 12). */
@@ -34,6 +36,9 @@ export function PainelMesa({
   table,
   state,
   reservations,
+  occupantTables = [],
+  states = new Map(),
+  tables = [],
   walkIns,
   waitlistSeated,
   actions,
@@ -45,6 +50,9 @@ export function PainelMesa({
 
   if (table && state) {
     const reservaPorId = (id?: string) => reservations.find((r) => r.id === id);
+    const focusedReservation = reservaPorId(
+      state.occupant?.kind === "reservation" ? state.occupant.id : state.focusReservationId,
+    );
     let name: string | null = null;
     let partySize: number | null = null;
     let timeText: string | null = null;
@@ -83,7 +91,7 @@ export function PainelMesa({
     const others = reservations
       .filter(
         (r) =>
-          r.table_id === table.id &&
+          reservationTableIds(r.id, { reservations, occupantTables }).includes(table.id) &&
           r.id !== shownId &&
           r.date === today &&
           !r.arrived_at &&
@@ -108,7 +116,25 @@ export function PainelMesa({
             {situationText(state)}
           </span>
         </div>
-        {name && (
+        {focusedReservation ? (
+          (() => {
+            const ids = reservationTableIds(focusedReservation.id, { reservations, occupantTables });
+            const tableNumbers = ids
+              .map((id) => tables.find((item) => item.id === id)?.number)
+              .filter((number): number is number => number != null);
+            if (tableNumbers.length === 0) tableNumbers.push(table.number);
+            return (
+              <ReservaDetalhe
+                reserva={focusedReservation}
+                tableNumbers={tableNumbers}
+                now={now}
+                durationMinutes={durationMinutes}
+                inUse={tableInUse(focusedReservation, states, ids.length ? ids : [table.id], now)}
+                actions={actions}
+              />
+            );
+          })()
+        ) : name && (
           <div>
             <p className="font-medium">{name}</p>
             {partySize != null && (
@@ -119,13 +145,15 @@ export function PainelMesa({
           </div>
         )}
         {note && <p className="text-sm text-muted-foreground">{note}</p>}
-        {actions}
+        {!focusedReservation && actions}
         {others.length > 0 && (
           <div data-testid="painel-mesa-outras" className="border-t border-border pt-3">
             <p className="mb-1 text-xs font-medium text-muted-foreground">Outras reservas de hoje nesta mesa</p>
             <ul className="space-y-1">
               {others.map((r) => {
                 const live = reservationLiveSituation(r, now, durationMinutes);
+                const ids = reservationTableIds(r.id, { reservations, occupantTables });
+                const inUse = tableInUse(r, states, ids, now);
                 const picked = r.id === pickedReservationId;
                 return (
                   <li
@@ -142,6 +170,7 @@ export function PainelMesa({
                     </span>
                     <span className="flex shrink-0 items-center gap-2">
                       {live && <StatusPill tone={live.tone}>{live.label}</StatusPill>}
+                      {inUse && <span className="text-xs font-medium text-status-late">Mesa em uso</span>}
                       <span className="text-sm tabular-nums">{r.time.slice(0, 5)}</span>
                     </span>
                   </li>
