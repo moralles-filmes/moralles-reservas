@@ -21,6 +21,7 @@ import {
   insertWithTables,
   loadHallSeating,
   loadPlanHall,
+  loadSeatChoiceEnabled,
   readFailed,
   unitHasActiveHall,
 } from "./adapters/hall-seating.ts";
@@ -1004,7 +1005,8 @@ export type ReserveSlotResult =
     }
   | {
       success: false;
-      reason: AvailabilityReason | "insert_failed";
+      /** `seat_choice_disabled`: escolha do cliente com a chave da unidade desligada (ou ilegível). */
+      reason: AvailabilityReason | "insert_failed" | "seat_choice_disabled";
       message: string;
     };
 
@@ -1023,6 +1025,16 @@ export async function reserveSlot(
 ): Promise<ReserveSlotResult> {
   const checkParams: AvailabilityParams = params;
   const tableChoice = params.tableChoice ?? (params.choice ? "customer" : "system");
+  // Escolha do cliente só com a chave da unidade ligada. Desligada ou ilegível:
+  // recusa com motivo próprio (nunca troca a mesa em silêncio). A recepção usa
+  // as RPCs dela, não esta função; `system` e reserva sem escolha não leem a chave.
+  if (params.choice && tableChoice === "customer" && !(await loadSeatChoiceEnabled(supabase, params.unitId))) {
+    return {
+      success: false,
+      reason: "seat_choice_disabled",
+      message: "A escolha de mesa não está disponível neste restaurante. Reserve sem escolher a mesa.",
+    };
+  }
   let check = await checkAvailability(supabase, checkParams);
   if (!check.available) {
     // Sem override: recusa como sempre. Com override (reserva manual forçada

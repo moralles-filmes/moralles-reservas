@@ -6,6 +6,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { loadSeatMap } from "../_shared/availability.ts";
+import { loadSeatChoiceEnabled } from "../_shared/adapters/hall-seating.ts";
 import { ipRateKeyFor } from "../_shared/ip-rate-key.ts";
 import { toE164BrPhone } from "../_shared/phone.ts";
 import { genRequestId, jsonLog } from "../_shared/security.ts";
@@ -82,6 +83,7 @@ serve(async (req) => {
         expiresAt: data.expires_at,
       };
     },
+    seatChoiceEnabled: (unitId) => loadSeatChoiceEnabled(supabase, unitId),
     seatMap: (args) => loadSeatMap(supabase, args),
     channelPhone: async (channelId, unitId) => {
       const { data, error } = await supabase.from("whatsapp_channels")

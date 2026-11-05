@@ -231,6 +231,30 @@ export async function unitHasActiveHall(supabase: SupabaseClient, unitId: string
   return (data ?? []).length > 0;
 }
 
+/**
+ * Chave `seat_choice_enabled` da unidade (cliente escolhe a mesa).
+ * Falha FECHADA de propósito: erro de leitura ou linha ausente = desligada, e o
+ * cliente segue o fluxo sem escolha (decisão do dono). Nunca lança.
+ */
+export async function loadSeatChoiceEnabled(supabase: SupabaseClient, unitId: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from("settings")
+      .select("value")
+      .eq("unit_id", unitId)
+      .eq("key", "seat_choice_enabled")
+      .maybeSingle();
+    if (error) {
+      console.error(JSON.stringify({ evt: "seat_choice_setting_read_failed" }));
+      return false;
+    }
+    return data?.value === true;
+  } catch {
+    console.error(JSON.stringify({ evt: "seat_choice_setting_read_failed" }));
+    return false;
+  }
+}
+
 export interface PlanHallRow {
   id: string;
   name: string;

@@ -25,6 +25,8 @@ export interface SeatMapDeps {
   rateLimit: (unitId: string | null) => Promise<boolean>;
   /** Link pelo hash do token; null = inexistente. Lança em erro de leitura. */
   link: (tokenHash: string) => Promise<SeatMapLink | null>;
+  /** Chave `seat_choice_enabled` da unidade. Não lança: erro de leitura = false (falha fechada). */
+  seatChoiceEnabled: (unitId: string) => Promise<boolean>;
   seatMap: (args: { unitId: string; hallId: string; date: string; time: string; partySize: number }) => Promise<SeatMap | { error: AvailabilityReason }>;
   /** Número do canal do link, já em E.164, filtrado pela unidade; null sem número. */
   channelPhone: (channelId: string, unitId: string) => Promise<string | null>;
@@ -75,6 +77,9 @@ async function unitOk(deps: SeatMapDeps, unitId: string): Promise<{ name: string
 }
 
 async function respond(deps: SeatMapDeps, req: Request, unitName: string, whatsappPhone: string | null): Promise<Out> {
+  // Chave da unidade desligada (ou ilegível): sem mapa. A página e o agente
+  // seguem sem a opção de escolher a mesa.
+  if ((await deps.seatChoiceEnabled(req.unitId)) !== true) return fail(200, "choice_disabled");
   const map = await deps.seatMap(req);
   if ("error" in map) return fail(200, map.error);
   return {
