@@ -65,3 +65,29 @@ export function fitSceneScale(widthCm: number, depthCm: number, availW: number, 
   const mag = SCENE_PERSPECTIVE / Math.max(SCENE_PERSPECTIVE - nearCm * base, SCENE_PERSPECTIVE / 2);
   return base / mag;
 }
+
+/** Contorno tracejado que junta as caixas do grupo, em px; `null` com menos de 2 caixas. */
+export function linkedOutlineRect(
+  boxes: TableBox[],
+  ids: string[],
+  scale: number,
+  padCm = 8,
+): { left: number; top: number; width: number; height: number } | null {
+  const picked = boxes.filter(b => ids.includes(b.tableId));
+  if (picked.length < 2) return null;
+  const left = Math.min(...picked.map(b => b.x - b.w / 2)) - padCm;
+  const top = Math.min(...picked.map(b => b.y - b.h / 2)) - padCm;
+  const right = Math.max(...picked.map(b => b.x + b.w / 2)) + padCm;
+  const bottom = Math.max(...picked.map(b => b.y + b.h / 2)) + padCm;
+  return { left: left * scale, top: top * scale, width: (right - left) * scale, height: (bottom - top) * scale };
+}
+
+/** Estado de seleção de uma mesa na escolha; `off` fora dela. */
+export function pickStateOf(
+  pick: { selectable: Set<string>; selected: Set<string> } | null | undefined,
+  tableId: string,
+): "off" | "selectable" | "selected" | "disabled" {
+  if (!pick) return "off";
+  if (pick.selected.has(tableId)) return "selected";
+  return pick.selectable.has(tableId) ? "selectable" : "disabled";
+}

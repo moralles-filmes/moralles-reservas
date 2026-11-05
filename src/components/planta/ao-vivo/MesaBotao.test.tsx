@@ -70,3 +70,26 @@ describe("MesaBotao contador de tempo", () => {
     expect(screen.queryByText(/\d+ min/)).toBeNull();
   });
 });
+
+it("pick desabilita mesas e marca a selecionada", () => {
+  const { rerender } = render(
+    <MesaBotao box={box} state={state} scale={1} selected={false} onSelect={vi.fn()} now={now} variant="2d" pickState="disabled" />,
+  );
+  expect(screen.getByRole("button")).toBeDisabled();
+  expect(screen.getByRole("button")).toHaveAttribute("aria-disabled", "true");
+  rerender(
+    <MesaBotao
+      box={box}
+      state={state}
+      scale={1}
+      selected={false}
+      onSelect={vi.fn()}
+      now={now}
+      variant="2d"
+      pickState="selected"
+      suggested
+    />,
+  );
+  expect(screen.getByRole("button")).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button").className).toContain("ring-primary");
+});

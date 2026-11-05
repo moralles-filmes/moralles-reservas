@@ -7,7 +7,7 @@ const NOW = new Date("2026-11-03T18:00:00Z"); // 15:00 BRT
 
 const hall = { id: "h1", unit_id: "u1", name: "Salão", active: true, sort_order: 0, plan_width_cm: 1200, plan_depth_cm: 900 };
 const mk = (id: string, n: number) => ({
-  id, unit_id: "u1", hall_id: "h1", number: n, capacity: 4, min_capacity: 2, max_capacity: 4, active: true,
+  id, unit_id: "u1", hall_id: "h1", number: n, capacity: 4, min_capacity: 2, max_capacity: 4, active: true, bookable: true,
 });
 const tables = [mk("t1", 1), mk("t2", 2), mk("t3", 3), mk("t4", 4), mk("t5", 5)];
 const res = (id: string, table_id: string, time: string, extra = {}) => ({
@@ -36,6 +36,11 @@ const hookData = {
 let current: typeof hookData = hookData;
 
 vi.mock("@/hooks/useSalaoAoVivo", () => ({ useSalaoAoVivo: () => current }));
+const tableMutate = vi.fn();
+vi.mock("@/hooks/useOcupacaoAcoes", () => ({
+  useSetOccupantTables: () => ({ mutate: tableMutate, isPending: false }),
+  useSetOccupantPartySize: () => ({ mutate: vi.fn(), isPending: false }),
+}));
 const presenceMutate = vi.fn();
 vi.mock("@/hooks/useMesaAcoes", () => ({
   useReservationPresence: () => ({ mutate: presenceMutate, isPending: false, variables: undefined }),
@@ -73,6 +78,7 @@ const renderPage = () => render(<MemoryRouter><SalaoAoVivo /></MemoryRouter>);
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
+  tableMutate.mockReset();
   current = hookData;
   currentUnitId = "u1";
   currentSlug = "moralles";
@@ -377,4 +383,99 @@ describe("SalaoAoVivo", () => {
       el = el.parentElement;
     }
   });
+});
+
+describe("escolha de mesas", () => {
+  const setupPick = () => {
+    current = { ...hookData, blocks: [], tables: [...tables, { ...mk("t6", 6), bookable: false }] };
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 4,/ }));
+  };
+
+  it("troca mesa e impede escolher outro ocupante", () => {
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Trocar mesa" }));
+    expect(screen.getByRole("region", { name: "Seleção de mesas" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Mesa 3,/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 1,/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar" }));
+    expect(tableMutate).toHaveBeenCalledWith(
+      { occupant: { kind: "reservation", id: "r4" }, tableIds: ["t1"], allowOverlap: false },
+      expect.anything(),
+    );
+  });
+
+  it("junta inclusive mesa não reservável", () => {
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Juntar mesas" }));
+    expect(screen.getByRole("button", { name: "Confirmar" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 6,/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar" }));
+    expect(tableMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ tableIds: ["t4", "t6"] }),
+      expect.anything(),
+    );
+  });
+
+  it.each(["Cancelar", "Escape"])("%s sai sem mutação", action => {
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Trocar mesa" }));
+    if (action === "Escape") {
+      fireEvent.keyDown(document, { key: action });
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: action }));
+    }
+    expect(screen.queryByRole("region", { name: "Seleção de mesas" })).toBeNull();
+    expect(tableMutate).not.toHaveBeenCalled();
+  });
+
+  it("confirma conflito com allowOverlap", () => {
+    tableMutate.mockImplementationOnce((_args, callbacks) =>
+      callbacks.onSuccess({ status: "conflict", conflicts: [{ time: "18:00", customer_name: "Ana" }] }),
+    );
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Trocar mesa" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Mesa 1,/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar" }));
+    expect(
+      screen.getByText("Livre até 18:00, quando chega a reserva de Ana. Colocar mesmo assim?"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Colocar mesmo assim" }));
+    expect(tableMutate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ allowOverlap: true }),
+      expect.anything(),
+    );
+  });
+
+  it("ajuste acima da capacidade oferece juntar", () => {
+    setupPick();
+    fireEvent.click(screen.getByRole("button", { name: "Ajustar pessoas" }));
+    fireEvent.change(screen.getByLabelText("Número de pessoas"), { target: { value: "8" } });
+    expect(screen.getByText("Não cabe na mesa atual")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Juntar mesas" }));
+    expect(screen.getByRole("region", { name: "Seleção de mesas" })).toBeInTheDocument();
+  });
+});
+
+it("passante sentado oferece ajuste", () => {
+  current = {
+    ...hookData,
+    blocks: [],
+    walkIns: [
+      {
+        id: "w",
+        table_id: "t1",
+        status: "seated",
+        seated_at: "2026-11-03T17:00:00Z",
+        released_at: null,
+        party_size: 2,
+        customer_name: "Ana",
+      },
+    ],
+  } as unknown as typeof hookData;
+  renderPage();
+  fireEvent.click(screen.getByRole("button", { name: /^Mesa 1,/ }));
+  expect(screen.getByRole("button", { name: "Trocar mesa" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Juntar mesas" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Ajustar pessoas" })).toBeInTheDocument();
 });

@@ -16,9 +16,24 @@ interface Props {
   timeLabel?: string;
   now: Date;
   variant: "3d" | "2d";
+  /** Estado na escolha de mesas; ausente ou `off` fora da escolha. */
+  pickState?: "off" | "selectable" | "selected" | "disabled";
+  /** Mesa sugerida pela escolha (contorno tracejado). */
+  suggested?: boolean;
 }
 
-export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, now, variant }: Props) {
+export function MesaBotao({
+  box,
+  state,
+  scale,
+  selected,
+  onSelect,
+  timeLabel,
+  now,
+  variant,
+  pickState,
+  suggested,
+}: Props) {
   const cls = TONE_CLASS[SITUATION_TONE[state.situation]];
   const pulses = state.situation === "arriving" || state.situation === "late";
   const is3d = variant === "3d";
@@ -64,7 +79,9 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
           type="button"
           data-table-id={box.tableId}
           aria-label={mesaAriaLabel(box, state, now)}
-          aria-pressed={selected}
+          disabled={pickState === "disabled"}
+          aria-disabled={pickState === "disabled"}
+          aria-pressed={pickState && pickState !== "off" ? pickState === "selected" : selected}
           onClick={() => onSelect(box.tableId)}
           className={cn(
             "pointer-events-auto absolute inset-0 flex select-none items-center justify-center border-2 text-foreground",
@@ -74,18 +91,22 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
             // então o alvo precisa de ≥ 44/0,56 ≈ 79 px de altura no plano para seguir com 44 px na tela.
             is3d ? "coarse:after:h-20 coarse:after:w-11" : "coarse:after:h-11 coarse:after:w-11",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            pickState === "disabled" && "opacity-40",
+            pickState === "selected" && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+            suggested && "outline-dashed outline-2 outline-primary/70",
             shape,
             cls.cap,
             selected && "ring-2 ring-ring",
           )}
         >
           {!is3d && (
-              <span className="pointer-events-none flex flex-col items-center text-[11px] font-semibold leading-tight" style={{ transform: `rotate(${-box.rotation}deg)` }}>
-                <span>{box.number}</span>
-                {secondary && (
-                  <span className={cn("text-[10px] font-normal", occupied && lateTone)}>{secondary}</span>
-                )}
-              </span>
+            <span
+              className="pointer-events-none flex flex-col items-center text-[11px] font-semibold leading-tight"
+              style={{ transform: `rotate(${-box.rotation}deg)` }}
+            >
+              <span>{box.number}</span>
+              {secondary && <span className={cn("text-[10px] font-normal", occupied && lateTone)}>{secondary}</span>}
+            </span>
           )}
         </button>
       </div>

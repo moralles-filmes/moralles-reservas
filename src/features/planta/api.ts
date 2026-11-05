@@ -1,3 +1,5 @@
+import type { OccupantRef } from "@/lib/seat-pick-core";
+import type { SeatActionResult } from "@/types/reserva";
 import { supabase } from "@/lib/supabase";
 import type { Hall, Mesa, OccupantTable, TableCombination, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 import type { BlockWindow } from "@/lib/table-situation-core";
@@ -239,4 +241,21 @@ export async function releaseWaitlistEntry(waitlistId: string): Promise<void> {
 export async function releaseWalkIn(walkInId: string): Promise<void> {
   const { error } = await supabase.rpc("release_walk_in", { p_walk_in_id: walkInId });
   if (error) throw error;
+}
+
+export async function setOccupantTables(o: OccupantRef, tableIds: string[], allowOverlap = false): Promise<SeatActionResult> {
+ const { data, error } = await supabase.rpc("set_occupant_tables", { p_kind: o.kind, p_id: o.id, p_table_ids: tableIds, p_allow_overlap: allowOverlap });
+ if (error) throw error;
+ if (!data || !["ok", "noop", "conflict"].includes(data.status)) throw new Error("Invalid seat action response");
+ return data as SeatActionResult;
+}
+export async function setOccupantPartySize(o: OccupantRef, partySize: number): Promise<boolean> {
+ const { data, error } = await supabase.rpc("set_occupant_party_size", { p_kind: o.kind, p_id: o.id, p_party_size: partySize });
+ if (error) throw error;
+ return data !== false;
+}
+export async function fetchSalaoCombinations(unitId: string): Promise<TableCombination[]> {
+ const { data, error } = await supabase.from("table_combinations").select("id, unit_id, hall_id, min_capacity, max_capacity, active, table_combination_members(table_id)").eq("unit_id", unitId).eq("active", true);
+ if (error) throw error;
+ return (data ?? []).map(({ table_combination_members, ...c }) => ({ ...c, table_ids: table_combination_members.map(m => m.table_id) })) as TableCombination[];
 }

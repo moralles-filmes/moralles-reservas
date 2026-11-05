@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   fetchSalaoBlocks,
+  fetchSalaoCombinations,
   fetchSalaoDurationSetting,
   fetchSalaoOccupantTables,
   fetchSalaoPlan,
@@ -93,8 +94,10 @@ export function useSalaoAoVivo(unitId: string) {
     placeholderData: (prev) => prev,
   });
 
-  const all = [plan, reservations, walkIns, waitlist, seated, blocks, duration, occupantTables];
+  const combinations = useQuery({ queryKey: ["table-combinations", unitId, "salao"], queryFn: () => fetchSalaoCombinations(unitId), enabled });
+  const all = [combinations, plan, reservations, walkIns, waitlist, seated, blocks, duration, occupantTables];
   return {
+    combinations: combinations.data ?? [],
     halls: plan.data?.halls ?? [],
     tables: plan.data?.tables ?? [],
     reservations: reservations.data ?? [],

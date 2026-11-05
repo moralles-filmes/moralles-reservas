@@ -12,6 +12,7 @@ import { useCreateWalkIn, useUpdateWalkInStatus } from "@/hooks/useWalkIns";
 import { conversationHref } from "@/lib/conversation-link";
 import { activeQueueToday } from "@/lib/waitlist-queue";
 import type { BlockWindow, TableState } from "@/lib/table-situation-core";
+import type { OccupantRef } from "@/lib/seat-pick-core";
 import type { Mesa, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 
 interface Props {
@@ -28,6 +29,8 @@ interface Props {
   /** Passantes `waiting`. */
   waitingWalkIns: WalkIn[];
   blocks: BlockWindow[];
+  /** Abre a escolha de mesa ou o ajuste de pessoas; sem ela os botões não aparecem. */
+  onOccupantAction?: (action: "move" | "join" | "adjust", occupant: OccupantRef, partySize: number) => void;
 }
 
 const BTN = "coarse:min-h-[44px]";
@@ -57,6 +60,7 @@ function blockEnd(table: Mesa, blocks: BlockWindow[], now: Date): string | null 
 }
 
 export function AcoesMesa({
+  onOccupantAction,
   unitId,
   basePath,
   table,
@@ -79,6 +83,26 @@ export function AcoesMesa({
 
   const capacity = table.max_capacity ?? table.capacity;
   const occ = state.occupant;
+  const occupantButtons = (occupant: OccupantRef, partySize: number) =>
+    onOccupantAction &&
+    (
+      [
+        ["move", "Trocar mesa"],
+        ["join", "Juntar mesas"],
+        ["adjust", "Ajustar pessoas"],
+      ] as const
+    ).map(([action, label]) => (
+      <Button
+        key={action}
+        type="button"
+        variant="outline"
+        size="sm"
+        className={BTN}
+        onClick={() => onOccupantAction(action, occupant, partySize)}
+      >
+        {label}
+      </Button>
+    ));
 
   const openChat = (customerId: string | null | undefined) =>
     customerId && basePath ? (
@@ -117,6 +141,7 @@ export function AcoesMesa({
           >
             Desfazer chegada
           </Button>
+          {occupantButtons(occ, occ.partySize)}
           {openChat(r?.customer_id)}
         </div>
       );
@@ -135,6 +160,7 @@ export function AcoesMesa({
           >
             Liberar mesa
           </Button>
+          {occupantButtons(occ, occ.partySize)}
           {openChat(w?.customer_id)}
         </div>
       );
@@ -151,6 +177,7 @@ export function AcoesMesa({
         >
           Liberar mesa
         </Button>
+        {occupantButtons(occ, occ.partySize)}
       </div>
     );
   }
@@ -170,6 +197,7 @@ export function AcoesMesa({
         >
           Marcar chegada
         </Button>
+        {occupantButtons(occ ?? { kind: "reservation", id }, occ?.partySize ?? r?.party_size ?? 1)}
         {openChat(r?.customer_id)}
       </div>
     );

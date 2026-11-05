@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchSalaoBlocks,
+  fetchSalaoCombinations,
   fetchSalaoPlan,
   fetchSalaoReservations,
   fetchSalaoSeatedWaitlist,
@@ -53,12 +54,13 @@ const eqUnit = (table: string) =>
 describe("fetch* do salão ao vivo", () => {
   it("toda consulta filtra por unit_id", async () => {
     await fetchSalaoPlan("unit-a");
+    await fetchSalaoCombinations("unit-a");
     await fetchSalaoReservations("unit-a", "2026-11-03", "2026-11-02");
     await fetchSalaoSeatedWaitlist("unit-a", "2026-11-02");
     await fetchSalaoSeatedWalkIns("unit-a", "2026-11-02");
     await fetchSalaoBlocks("unit-a", "2026-11-03", "2026-11-04");
     await fetchSalaoDurationSetting("unit-a");
-    for (const t of ["halls", "tables", "reservations", "waitlist", "walk_ins", "table_blocks", "settings"]) {
+    for (const t of ["halls", "tables", "reservations", "waitlist", "walk_ins", "table_blocks", "settings", "table_combinations"]) {
       expect(eqUnit(t), t).toBe(true);
     }
   });
