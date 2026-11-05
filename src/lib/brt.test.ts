@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addDaysKey,
   brtDateOf,
+  brtTodayKey,
   brtDayBounds,
   brtDowOf,
   brtHourOf,
@@ -11,6 +12,9 @@ import {
 } from "./brt";
 
 describe("brt", () => {
+  it("hoje em Brasília", () => {
+    expect(brtTodayKey(new Date("2026-11-05T02:30:00Z"))).toBe("2026-11-04");
+  });
   it("01:30Z é o dia anterior, hora 22, em BRT", () => {
     const iso = "2026-11-04T01:30:00Z";
     expect(brtDateOf(iso)).toBe("2026-11-03");
@@ -58,5 +62,14 @@ describe("brt", () => {
     ]);
     expect(daysBetweenInclusive("2026-12-30", "2027-01-02")).toBe(4);
     expect(daysBetweenInclusive("2026-11-04", "2026-11-04")).toBe(1);
+  });
+});
+
+describe("instantes e relógio BRT", () => {
+  it("preserva coluna date e converte instante para o dia em Brasília", async () => {
+    const { brtInstantDateKey, brtNowHHMM } = await import("./brt");
+    expect(brtInstantDateKey("2026-11-05")).toBe("2026-11-05");
+    expect(brtInstantDateKey("2026-11-05T01:30:00Z")).toBe("2026-11-04");
+    expect(brtNowHHMM(new Date("2026-11-05T01:07:00Z"))).toBe("22:07");
   });
 });

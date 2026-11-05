@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { addDaysKey, brtTodayKey, eachDateKey } from "@/lib/brt";
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import { safeDateParse } from "@/lib/utils";
 import type { Period } from "@/components/dashboard/PeriodFilter";
 import type { ReservaStatus } from "@/types/reserva";
@@ -67,6 +69,7 @@ interface DashboardMetricsResult {
   lists: DashboardLists;
   hasDataInPeriod: boolean;
   isLoading: boolean;
+  isPlaceholderData: boolean;
   error: Error | null;
 }
 
@@ -77,9 +80,6 @@ const PERIOD_DAYS: Record<Period, number> = {
   "90d": 90,
 };
 
-function toIsoDate(d: Date): string {
-  return d.toISOString().split("T")[0];
-}
 
 function pctDelta(current: number, previous: number): number | null {
   if (previous === 0) {
@@ -102,23 +102,14 @@ export function useDashboardMetrics(
 ): DashboardMetricsResult {
   const days = PERIOD_DAYS[period];
 
-  const { range, currentStart } = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const currentStart = new Date(today);
-    currentStart.setDate(currentStart.getDate() - (days - 1));
-    const previousStart = new Date(currentStart);
-    previousStart.setDate(previousStart.getDate() - days);
-    return {
-      range: { from: toIsoDate(previousStart), to: toIsoDate(today) },
-      currentStart: toIsoDate(currentStart),
-    };
-  }, [days]);
+  const today = brtTodayKey();
+  const currentStart = addDaysKey(today, -(days - 1));
+  const range = { from: addDaysKey(currentStart, -days), to: today };
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isPlaceholderData } = useQuery({
     queryKey: ["dashboard-metrics", unitId, period, range.from, range.to],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const rows = (await fetchAllPages<unknown>((from, to) => supabase
         .from("reservations")
         .select(
           "id, date, time, party_size, status, source, satisfaction_rating, satisfaction_at, customer:customers(name, phone)"
@@ -126,9 +117,10 @@ export function useDashboardMetrics(
         .eq("unit_id", unitId)
         .gte("date", range.from)
         .lte("date", range.to)
-        .order("date", { ascending: true });
-      if (error) throw error;
-      return data as unknown as MetricsRow[];
+        .order("date", { ascending: true })
+        .order("id")
+        .range(from, to))) as MetricsRow[];
+      return { rows, keys: { currentStart, days } };
     },
     enabled: !!unitId,
     staleTime: 60_000,
@@ -136,12 +128,13 @@ export function useDashboardMetrics(
   });
 
   return useMemo(() => {
-    const rows = data ?? [];
-    const current = rows.filter((r) => r.date >= currentStart);
-    const previous = rows.filter((r) => r.date < currentStart);
+    const rows = data?.rows ?? [];
+    const keys = data?.keys ?? { currentStart, days };
+    const current = rows.filter((r) => r.date >= keys.currentStart);
+    const previous = rows.filter((r) => r.date < keys.currentStart);
 
     const kpis = computeKpis(current, previous);
-    const charts = computeCharts(current, currentStart, days, unitHours);
+    const charts = computeCharts(current, keys.currentStart, keys.days, unitHours);
     const lists = computeLists(current);
 
     return {
@@ -150,10 +143,11 @@ export function useDashboardMetrics(
       lists,
       hasDataInPeriod: current.length > 0,
       isLoading,
+      isPlaceholderData,
       error: (error as Error | null) ?? null,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, currentStart, days, unitHours.min, unitHours.max, isLoading, error]);
+  }, [data, currentStart, days, unitHours.min, unitHours.max, isLoading, error, isPlaceholderData]);
 }
 
 function computeKpis(current: MetricsRow[], previous: MetricsRow[]): DashboardKpis {
@@ -234,12 +228,9 @@ function computeCharts(
   days: number,
   unitHours: UnitHourRange,
 ): DashboardCharts {
-  const startDate = safeDateParse(currentStart);
   const byDayMap = new Map<string, { confirmed: number; lost: number }>();
-  for (let i = 0; i < days; i++) {
-    const d = new Date(startDate);
-    d.setDate(d.getDate() + i);
-    byDayMap.set(toIsoDate(d), { confirmed: 0, lost: 0 });
+  for (const date of eachDateKey(currentStart, addDaysKey(currentStart, days - 1))) {
+    byDayMap.set(date, { confirmed: 0, lost: 0 });
   }
 
   for (const r of rows) {

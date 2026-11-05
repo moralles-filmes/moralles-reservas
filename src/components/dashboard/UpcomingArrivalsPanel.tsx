@@ -1,3 +1,4 @@
+import { brtNowHHMM } from "@/lib/brt";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -6,8 +7,7 @@ import { ReservaStatusPills } from "@/components/reserva/ReservaStatusPills";
 import type { Reserva } from "@/types/reserva";
 
 function currentHHMM(): string {
-  const now = new Date();
-  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  return brtNowHHMM();
 }
 
 // Relógio de minuto: chegada que já passou sai da lista sem esperar o próximo refetch.

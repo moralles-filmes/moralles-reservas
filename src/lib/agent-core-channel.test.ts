@@ -162,7 +162,7 @@ function recordingClient() {
         ? [{ code: 'VOUCHER_PRIVADO', discount_percent: 10, expires_at: '2099-12-31' }]
         : [];
       const builder: Record<string, unknown> = {};
-      for (const m of ['select', 'eq', 'in', 'is', 'gte', 'lte', 'order', 'limit']) builder[m] = () => builder;
+      for (const m of ['select', 'eq', 'in', 'is', 'gt', 'gte', 'lte', 'order', 'limit']) builder[m] = () => builder;
       builder.maybeSingle = async () => ({ data: null, error: null });
       builder.then = (ok: (v: unknown) => unknown, ko?: (e: unknown) => unknown) =>
         Promise.resolve({ data, error: null }).then(ok, ko);

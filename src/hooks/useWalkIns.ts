@@ -1,3 +1,4 @@
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
@@ -12,19 +13,21 @@ export function useWalkIns(unitId: string, onlyActive = true) {
   return useQuery({
     queryKey: ["walk-ins", unitId, onlyActive],
     queryFn: async () => {
-      let query = supabase
-        .from("walk_ins")
-        .select("*, table:tables(number)")
-        .eq("unit_id", unitId)
-        .order("arrived_at", { ascending: true });
+      const data = await fetchAllPages((from, to) => {
+        let query = supabase
+          .from("walk_ins")
+          .select("*, table:tables(number)")
+          .eq("unit_id", unitId)
+          .order("arrived_at", { ascending: true })
+          .order("id", { ascending: true });
 
-      if (onlyActive) {
-        // Liberados seguem `seated` para sempre: sem este filtro a lista ativa cresce sem limite (PostgREST trunca em 1000).
-        query = query.in("status", ["waiting", "seated"]).is("released_at", null);
-      }
+        if (onlyActive) {
+          // Liberados seguem `seated` para sempre: sem este filtro a lista ativa cresce sem limite.
+          query = query.in("status", ["waiting", "seated"]).is("released_at", null);
+        }
 
-      const { data, error } = await query;
-      if (error) throw error;
+        return query.range(from, to);
+      });
       return data as WalkIn[];
     },
     enabled: !!unitId,

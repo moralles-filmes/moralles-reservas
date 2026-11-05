@@ -1,5 +1,7 @@
 import { useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { brtDayBounds, localDateKey } from "@/lib/brt";
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import { supabase } from "@/lib/supabase";
 import type { DateRange } from "@/hooks/useFluxoClientes";
 
@@ -41,9 +43,6 @@ interface RawRow {
   customer: RawCustomer | RawCustomer[] | null;
 }
 
-function toIsoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
 
 function customerOf(row: RawRow): RawCustomer | null {
   if (!row.customer) return null;
@@ -52,43 +51,42 @@ function customerOf(row: RawRow): RawCustomer | null {
 }
 
 export function useAvaliacoes(unitId: string, range: DateRange) {
-  const fromIso = toIsoDate(range.from);
-  const toIso = toIsoDate(range.to);
+  const fromIso = localDateKey(range.from);
+  const toIso = localDateKey(range.to);
 
   return useQuery({
     queryKey: ["avaliacoes", unitId, fromIso, toIso],
     placeholderData: keepPreviousData,
     enabled: !!unitId,
     queryFn: async (): Promise<AvaliacoesData> => {
-      const startTs = `${fromIso}T00:00:00.000Z`;
-      const endDate = new Date(range.to);
-      endDate.setHours(23, 59, 59, 999);
-      const endTs = endDate.toISOString();
+      const { startIso, endIsoExclusive } = brtDayBounds(fromIso, toIso);
 
       const [rowsRes, surveysRes] = await Promise.all([
-        supabase
+        fetchAllPages<RawRow>((from, to) => supabase
           .from("reservations")
           .select(
             "id, date, time, satisfaction_rating, satisfaction_at, satisfaction_comment, customer:customers(name, phone, email)"
           )
           .eq("unit_id", unitId)
-          .gte("satisfaction_at", startTs)
-          .lte("satisfaction_at", endTs)
+          .gte("satisfaction_at", startIso)
+          .lt("satisfaction_at", endIsoExclusive)
           .not("satisfaction_rating", "is", null)
-          .order("satisfaction_at", { ascending: false }),
+          .order("satisfaction_at", { ascending: false })
+          .order("id")
+          .range(from, to)),
+        // Contagem por head: o count exato não sofre o corte de 1000 linhas.
         supabase
           .from("notifications_sent")
           .select("id", { count: "exact", head: true })
           .eq("unit_id", unitId)
           .eq("kind", "survey_d1")
           .eq("status", "sent")
-          .gte("sent_at", startTs)
-          .lte("sent_at", endTs),
+          .gte("sent_at", startIso)
+          .lt("sent_at", endIsoExclusive),
       ]);
 
-      if (rowsRes.error) throw rowsRes.error;
-
-      const raw = (rowsRes.data ?? []) as RawRow[];
+      if (surveysRes.error) throw surveysRes.error;
+      const raw = rowsRes;
       const rows: AvaliacaoRow[] = raw.map((r) => {
         const c = customerOf(r);
         return {

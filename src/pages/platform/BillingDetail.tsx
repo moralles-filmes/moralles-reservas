@@ -1,3 +1,4 @@
+import { brtInstantDateKey } from "@/lib/brt";
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import {
@@ -147,7 +148,7 @@ export default function BillingDetail() {
                 <p className="font-medium">{data.active_plan?.name ?? "Plano"}</p>
                 <p className="text-sm">{formatCentsBRL(data.active_plan?.amount_cents ?? 0)}/{data.active_plan?.interval === "year" ? "ano" : "mês"}</p>
                 <p className="text-xs text-muted-foreground">
-                  {PAYMENT_METHOD_LABEL[activeSub.payment_method]} — vence {activeSub.current_period_end ? formatDateBR(activeSub.current_period_end.slice(0, 10)) : "—"}
+                  {PAYMENT_METHOD_LABEL[activeSub.payment_method]} — vence {activeSub.current_period_end ? formatDateBR(brtInstantDateKey(activeSub.current_period_end)) : "—"}
                 </p>
                 {activeSub.cancel_at_period_end && (
                   <p className="text-xs text-warning font-medium">Cancelamento ao fim do período</p>
@@ -169,10 +170,10 @@ export default function BillingDetail() {
             <p className="text-sm">E-mail cobrança: {org.billing_email ?? "—"}</p>
             <p className="text-sm">Unidades: {data.units_count ?? "—"}</p>
             {org.trial_ends_at && (
-              <p className="text-sm">Trial até: {formatDateBR(org.trial_ends_at.slice(0, 10))}</p>
+              <p className="text-sm">Trial até: {formatDateBR(brtInstantDateKey(org.trial_ends_at))}</p>
             )}
             {org.blocked_at && (
-              <p className="text-sm text-destructive">Bloqueado em: {formatDateBR(org.blocked_at.slice(0, 10))}</p>
+              <p className="text-sm text-destructive">Bloqueado em: {formatDateBR(brtInstantDateKey(org.blocked_at))}</p>
             )}
             {org.blocked_reason && (
               <p className="text-xs text-muted-foreground">Motivo: {org.blocked_reason}</p>
@@ -348,7 +349,7 @@ function InvoicesTable({ invoices }: { invoices: BillingInvoice[] }) {
               <TableCell>{formatCentsBRL(inv.amount_cents)}</TableCell>
               <TableCell className="hidden md:table-cell">{inv.payment_method ? PAYMENT_METHOD_LABEL[inv.payment_method] : "—"}</TableCell>
               <TableCell className="hidden md:table-cell">{inv.due_date ? formatDateBR(inv.due_date) : "—"}</TableCell>
-              <TableCell className="hidden lg:table-cell">{inv.paid_at ? formatDateBR(inv.paid_at.slice(0, 10)) : "—"}</TableCell>
+              <TableCell className="hidden lg:table-cell">{inv.paid_at ? formatDateBR(brtInstantDateKey(inv.paid_at)) : "—"}</TableCell>
               <TableCell>
                 {inv.hosted_invoice_url && (
                   <div className="flex gap-1">
@@ -501,7 +502,7 @@ function OverridesTable({ overrides }: { overrides: BillingAccessOverride[] }) {
             <TableRow key={ov.id}>
               <TableCell>{TYPE_LABEL[ov.override_type] ?? ov.override_type}</TableCell>
               <TableCell className="max-w-[200px] truncate">{ov.reason}</TableCell>
-              <TableCell>{ov.valid_until ? formatDateBR(ov.valid_until.slice(0, 10)) : "Permanente"}</TableCell>
+              <TableCell>{ov.valid_until ? formatDateBR(brtInstantDateKey(ov.valid_until)) : "Permanente"}</TableCell>
               <TableCell>
                 <Badge variant={ov.active ? "default" : "secondary"}>{ov.active ? "Sim" : "Não"}</Badge>
               </TableCell>
@@ -552,7 +553,7 @@ function NotificationsTable({ notifications }: { notifications: BillingNotificat
               <TableCell>
                 <Badge variant={n.status === "sent" ? "default" : "destructive"}>{n.status}</Badge>
               </TableCell>
-              <TableCell className="hidden md:table-cell">{formatDateBR(n.sent_at.slice(0, 10))}</TableCell>
+              <TableCell className="hidden md:table-cell">{formatDateBR(brtInstantDateKey(n.sent_at))}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -1100,7 +1101,7 @@ function ImplantacaoCard({ organizationId }: { organizationId: string }) {
               </div>
               <div>
                 <p className="text-muted-foreground">Criada em</p>
-                <p className="font-medium">{formatDateBR(latest.created_at.slice(0, 10))}</p>
+                <p className="font-medium">{formatDateBR(brtInstantDateKey(latest.created_at))}</p>
               </div>
             </div>
             <p className="text-xs text-muted-foreground border-t pt-2">
@@ -1215,7 +1216,7 @@ function WhatsappAccessCard({ organizationId, orgName }: { organizationId: strin
               </Badge>
               {data.subscription.next_due && (
                 <span className="text-xs text-muted-foreground">
-                  vence {formatDateBR(data.subscription.next_due.slice(0, 10))}
+                  vence {formatDateBR(brtInstantDateKey(data.subscription.next_due))}
                 </span>
               )}
             </div>
@@ -1233,7 +1234,7 @@ function WhatsappAccessCard({ organizationId, orgName }: { organizationId: strin
                 {ENTITLEMENT_GRANT_TYPE_LABEL[(data.override.grant_type ?? "MANUAL_OVERRIDE") as EntitlementGrantType]}
                 {" — "}
                 {data.override.ends_at
-                  ? `expira em ${formatDateBR(data.override.ends_at.slice(0, 10))}`
+                  ? `expira em ${formatDateBR(brtInstantDateKey(data.override.ends_at))}`
                   : "sem validade (não expira)"}
                 . O custo de Z-API desta conta é patrocinado pela plataforma enquanto esta
                 cortesia estiver ativa.
@@ -1274,7 +1275,7 @@ function WhatsappAccessCard({ organizationId, orgName }: { organizationId: strin
                     {ov.enabled ? (
                       <span className={ov.revoked_at || isExpired ? "text-muted-foreground" : undefined}>
                         {ENTITLEMENT_GRANT_TYPE_LABEL[ov.grant_type]} —{" "}
-                        {ov.ends_at ? formatDateBR(ov.ends_at.slice(0, 10)) : "sem validade"}
+                        {ov.ends_at ? formatDateBR(brtInstantDateKey(ov.ends_at)) : "sem validade"}
                         {statusSuffix}
                       </span>
                     ) : (

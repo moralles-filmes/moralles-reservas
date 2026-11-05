@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { isoToLocalDate } from "@/lib/utils";
+import { brtDateOf, brtDayBounds, eachDateKey, localDateKey } from "@/lib/brt";
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import type { DateRange } from "@/hooks/useFluxoClientes";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -108,23 +109,6 @@ export function kindsForTab(tab: ComunicacaoTab): NotificationKind[] {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function toIsoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-function eachDay(from: Date, to: Date): string[] {
-  const days: string[] = [];
-  const cur = new Date(from);
-  cur.setHours(0, 0, 0, 0);
-  const end = new Date(to);
-  end.setHours(0, 0, 0, 0);
-  while (cur <= end) {
-    days.push(toIsoDate(cur));
-    cur.setDate(cur.getDate() + 1);
-  }
-  return days;
-}
-
 function emptyKpi(): KpiSet {
   return {
     whatsapp: 0,
@@ -164,30 +148,27 @@ function customerOf(row: Row): { name: string | null; phone: string | null } | n
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useComunicacao(unitId: string, range: DateRange) {
-  const fromIso = toIsoDate(range.from);
-  const toIso = toIsoDate(range.to);
+  const fromIso = localDateKey(range.from);
+  const toIso = localDateKey(range.to);
 
   const query = useQuery({
     queryKey: ["comunicacao", unitId, fromIso, toIso],
     placeholderData: keepPreviousData,
     queryFn: async () => {
-      const startTs = `${fromIso}T00:00:00.000Z`;
-      const endTs = new Date(range.to);
-      endTs.setHours(23, 59, 59, 999);
-      const endTsIso = endTs.toISOString();
+      const { startIso, endIsoExclusive } = brtDayBounds(fromIso, toIso);
 
-      const { data, error } = await supabase
+      const raw = await fetchAllPages((from, to) => supabase
         .from("notifications_sent")
         .select(
           "id, kind, status, error, sent_at, " +
             "reservation:reservations(customer:customers(name, phone))",
         )
         .eq("unit_id", unitId)
-        .gte("sent_at", startTs)
-        .lte("sent_at", endTsIso)
-        .order("sent_at", { ascending: false });
-
-      if (error) throw error;
+        .gte("sent_at", startIso)
+        .lt("sent_at", endIsoExclusive)
+        .order("sent_at", { ascending: false })
+        .order("id")
+        .range(from, to));
 
       // Achata reservation.customer pra customer no nível da row
       type RawRow = {
@@ -202,7 +183,7 @@ export function useComunicacao(unitId: string, range: DateRange) {
           | null;
       };
 
-      return ((data ?? []) as unknown as RawRow[]).map((r) => {
+      const rows = (raw as unknown as RawRow[]).map((r) => {
         const reserv = Array.isArray(r.reservation)
           ? r.reservation[0]
           : r.reservation;
@@ -215,6 +196,7 @@ export function useComunicacao(unitId: string, range: DateRange) {
           customer: reserv?.customer ?? null,
         } as Row;
       });
+      return { rows, keys: { fromIso, toIso } };
     },
     enabled: !!unitId,
   });
@@ -234,7 +216,7 @@ export function useComunicacao(unitId: string, range: DateRange) {
       };
     }
 
-    const rows = query.data;
+    const { rows, keys } = query.data;
 
     // ── KPIs por tab ───────────────────────────────────────────────────────
     const kpis: Record<ComunicacaoTab, KpiSet> = {
@@ -265,7 +247,7 @@ export function useComunicacao(unitId: string, range: DateRange) {
     }
 
     // ── Daily ──────────────────────────────────────────────────────────────
-    const days = eachDay(range.from, range.to);
+    const days = eachDateKey(keys.fromIso, keys.toIso);
     const daily: DailyEnvio[] = days.map((d) => ({
       date: d,
       label: d.slice(8, 10) + "/" + d.slice(5, 7),
@@ -278,7 +260,7 @@ export function useComunicacao(unitId: string, range: DateRange) {
       if (r.status !== "sent") continue;
       // sent_at é timestamptz UTC — converte pro dia local do restaurante
       // para evitar bug de fuso em envios próximos da meia-noite.
-      const day = isoToLocalDate(r.sent_at);
+      const day = brtDateOf(r.sent_at);
       const entry = dailyMap[day];
       if (!entry) continue;
       if (isEmailKind(r.kind)) entry.email += 1;
@@ -325,11 +307,12 @@ export function useComunicacao(unitId: string, range: DateRange) {
       });
 
     return { kpis, daily, byKind, recentFailures };
-  }, [query.data, range.from, range.to]);
+  }, [query.data]);
 
   return {
     data,
     isLoading: query.isLoading,
+    isPlaceholderData: query.isPlaceholderData,
     error: query.error as Error | null,
   };
 }
