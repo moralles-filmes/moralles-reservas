@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import type { TableBox } from "@/lib/hall-plan-core";
 import type { TableState } from "@/lib/table-situation-core";
+import { elapsedLabel } from "@/lib/elapsed-label";
 import { SITUATION_TONE, TONE_CLASS } from "../situation-labels";
 import { SCENE_ROT_X, SCENE_ROT_Z, mesaAriaLabel } from "./scene-geometry";
 
@@ -25,6 +26,13 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
   // O deslocamento em Z fica no invólucro; animação e escala de toque agem nos filhos.
   const lift = (z: number): React.CSSProperties | undefined =>
     is3d ? { transform: `translateZ(${z}px)`, transformStyle: "preserve-3d" } : undefined;
+
+  // Mesa ocupada mostra o tempo de permanência no lugar do horário de reserva.
+  const occupied = state.situation === "occupied" && !!state.occupant;
+  const elapsed = occupied && state.occupant ? elapsedLabel(state.occupant.since, now) : undefined;
+  const lateTone = state.overtime ? cn("rounded border px-1", TONE_CLASS[SITUATION_TONE.late].pill) : undefined;
+  // Rótulo secundário: contador quando ocupada, senão o HH:MM de reserva.
+  const secondary = occupied ? elapsed : timeLabel;
 
   return (
     <div
@@ -74,7 +82,9 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
           {!is3d && (
               <span className="pointer-events-none flex flex-col items-center text-[11px] font-semibold leading-tight" style={{ transform: `rotate(${-box.rotation}deg)` }}>
                 <span>{box.number}</span>
-                {timeLabel && <span className="text-[10px] font-normal">{timeLabel}</span>}
+                {secondary && (
+                  <span className={cn("text-[10px] font-normal", occupied && lateTone)}>{secondary}</span>
+                )}
               </span>
           )}
         </button>
@@ -91,7 +101,9 @@ export function MesaBotao({ box, state, scale, selected, onSelect, timeLabel, no
         >
           <span className="absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center whitespace-nowrap text-sm font-bold leading-none text-foreground [text-shadow:0_0_4px_hsl(var(--background))]">
             <span>{box.number}</span>
-            {timeLabel && <span className="mt-0.5 text-[11px] font-medium">{timeLabel}</span>}
+            {secondary && (
+              <span className={cn("mt-0.5 text-[11px] font-medium", occupied && lateTone)}>{secondary}</span>
+            )}
           </span>
         </div>
       )}

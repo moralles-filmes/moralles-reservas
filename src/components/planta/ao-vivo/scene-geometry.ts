@@ -1,6 +1,7 @@
 import { ENTRANCE_CM } from "@/lib/hall-plan-core";
 import type { HallPlan, PlanWall, TableBox } from "@/lib/hall-plan-core";
 import type { TableState } from "@/lib/table-situation-core";
+import { elapsedLabel } from "@/lib/elapsed-label";
 import { SITUATION_LABEL, situationText } from "../situation-labels";
 
 export const WINDOW_STRIPES =
@@ -31,8 +32,8 @@ export function entranceRect(plan: HallPlan, scale: number, thickness: number): 
 export function mesaAriaLabel(box: TableBox, state: TableState, now: Date): string {
   const head = `Mesa ${box.number}, ${box.capacity} lugares`;
   if (state.situation === "occupied" && state.occupant) {
-    const min = Math.max(0, Math.floor((now.getTime() - new Date(state.occupant.since).getTime()) / 60_000));
-    return `${head}, ${SITUATION_LABEL.occupied} há ${min} min${state.overtime ? ", passou do tempo" : ""}`;
+    const tempo = elapsedLabel(state.occupant.since, now);
+    return `${head}, ${SITUATION_LABEL.occupied} ${tempo === "agora" ? "agora" : `há ${tempo}`}${state.overtime ? ", passou do tempo" : ""}`;
   }
   return `${head}, ${situationText(state)}`;
 }
