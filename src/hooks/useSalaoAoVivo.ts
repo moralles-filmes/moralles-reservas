@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   fetchSalaoBlocks,
@@ -10,10 +11,12 @@ import {
   fetchSalaoSeatedWaitlist,
 } from "@/features/planta/api";
 import { brtNow } from "@/lib/table-situation-core";
+import type { Reserva } from "@/types/reserva";
 import { useNow } from "./useNow";
 import { useWaitlist } from "./useWaitlist";
 
 const DEFAULT_DURATION_MINUTES = 90;
+const NO_RESERVATIONS: Reserva[] = [];
 
 // Polling só com a aba visível (painel aberto o dia todo).
 const pollWhenVisible = () =>
@@ -78,8 +81,12 @@ export function useSalaoAoVivo(unitId: string) {
 
   // Mesas de cada ocupante já carregado (junções). A chave carrega os ids para refazer a
   // leitura quando alguém senta ou chega; o prefixo ["occupant-tables", unitId] invalida tudo.
+  // A lista do dia inclui no_show/cancelled de hoje; a situação das mesas e as junções só as ativas.
+  // Memoizado: a página deriva a situação de todas as mesas a partir desta referência.
+  const day = reservations.data ?? NO_RESERVATIONS;
+  const active = useMemo(() => day.filter((r) => r.status === "pending" || r.status === "confirmed"), [day]);
   const occupantIds = {
-    reservationIds: (reservations.data ?? []).map((r) => r.id).sort(),
+    reservationIds: active.map((r) => r.id).sort(),
     walkInIds: (walkIns.data ?? []).map((w) => w.id).sort(),
     waitlistIds: (seated.data ?? []).map((f) => f.id).sort(),
   };
@@ -100,7 +107,9 @@ export function useSalaoAoVivo(unitId: string) {
     combinations: combinations.data ?? [],
     halls: plan.data?.halls ?? [],
     tables: plan.data?.tables ?? [],
-    reservations: reservations.data ?? [],
+    reservations: active,
+    /** Inclui no_show/cancelled de hoje, só para a lista do dia. */
+    dayReservations: day,
     walkIns: walkIns.data ?? [],
     waitlistActive: waitlist.data ?? [],
     waitlistSeated: seated.data ?? [],

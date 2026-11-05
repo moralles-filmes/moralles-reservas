@@ -24,6 +24,7 @@ const hookData = {
     res("r4", "t4", "15:05"), // chegando
     res("r5", "t5", "17:00"), // reservada
   ],
+  occupantTables: [],
   walkIns: [],
   waitlistActive: [],
   waitlistSeated: [],
@@ -33,9 +34,12 @@ const hookData = {
   isError: false,
   refetch: vi.fn(),
 };
-let current: typeof hookData = hookData;
+// Sem dayReservations explícito, a lista do dia é a mesma das reservas ativas.
+let current: typeof hookData & { dayReservations?: unknown[] } = hookData;
 
-vi.mock("@/hooks/useSalaoAoVivo", () => ({ useSalaoAoVivo: () => current }));
+vi.mock("@/hooks/useSalaoAoVivo", () => ({
+  useSalaoAoVivo: () => ({ ...current, dayReservations: current.dayReservations ?? current.reservations }),
+}));
 const tableMutate = vi.fn();
 vi.mock("@/hooks/useOcupacaoAcoes", () => ({
   useSetOccupantTables: () => ({ mutate: tableMutate, isPending: false }),
@@ -141,7 +145,7 @@ describe("SalaoAoVivo", () => {
 
   it("tocar numa linha de próximas chegadas seleciona a mesa", () => {
     renderPage();
-    const chegadas = screen.getByTestId("proximas-chegadas");
+    const chegadas = screen.getByTestId("reservas-do-dia");
     fireEvent.click(within(chegadas).getByText("Cliente r5").closest("button")!);
     expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 5");
     expect(screen.getByRole("button", { name: /^Mesa 5,/ })).toHaveAttribute("aria-pressed", "true");
@@ -151,7 +155,7 @@ describe("SalaoAoVivo", () => {
     // Mesa 2: r2 das 14:40 atrasada (agora 15:00) e rg das 19:00 ainda por vir.
     current = { ...hookData, reservations: [...hookData.reservations, res("rg", "t2", "19:00")] };
     renderPage();
-    fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente rg").closest("button")!);
+    fireEvent.click(within(screen.getByTestId("reservas-do-dia")).getByText("Cliente rg").closest("button")!);
     const outras = within(screen.getByTestId("painel-mesa")).getByTestId("painel-mesa-outras");
     const linha = within(outras).getByText("Cliente rg").closest("li")!;
     expect(linha).toHaveAttribute("aria-current", "true");
@@ -214,7 +218,7 @@ describe("SalaoAoVivo", () => {
     expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Toque numa mesa");
     // volta ao salão 1 e escolhe uma mesa; depois pula para o salão 2 via próximas chegadas
     fireEvent.click(screen.getByRole("button", { name: "Salão" }));
-    fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r6").closest("button")!);
+    fireEvent.click(within(screen.getByTestId("reservas-do-dia")).getByText("Cliente r6").closest("button")!);
     expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 6");
   });
 
@@ -268,7 +272,7 @@ describe("SalaoAoVivo", () => {
       current = twoHalls();
       localStorage.setItem("salao-ao-vivo:hall:u1", "all");
       renderPage();
-      fireEvent.click(within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r6").closest("button")!);
+      fireEvent.click(within(screen.getByTestId("reservas-do-dia")).getByText("Cliente r6").closest("button")!);
       expect(screen.getByRole("button", { name: "Todos" })).toHaveAttribute("aria-pressed", "true");
       expect(screen.getByTestId("painel-mesa")).toHaveTextContent("Mesa 6");
       expect(localStorage.getItem("salao-ao-vivo:hall:u1")).toBe("all");
@@ -366,9 +370,9 @@ describe("SalaoAoVivo", () => {
   it("reserva em mesa fora da planta não aparece como sem mesa", () => {
     current = { ...hookData, reservations: [...hookData.reservations, res("r9", "t-inativa", "18:00")] };
     renderPage();
-    const linha = within(screen.getByTestId("proximas-chegadas")).getByText("Cliente r9").closest("button")!;
-    expect(linha).toHaveTextContent("em mesa fora da planta");
-    expect(linha).not.toHaveTextContent("sem mesa");
+    const linha = within(screen.getByTestId("reservas-do-dia")).getByText("Cliente r9").closest("button")!;
+    expect(linha).toHaveTextContent("Mesa fora da planta");
+    expect(linha).not.toHaveTextContent("Sem mesa");
   });
 
   it("no 3D só o botão da mesa recebe ponteiro; o resto da cena não rouba o toque", () => {
@@ -478,4 +482,26 @@ it("passante sentado oferece ajuste", () => {
   expect(screen.getByRole("button", { name: "Trocar mesa" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Juntar mesas" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Ajustar pessoas" })).toBeInTheDocument();
+});
+
+it("reserva sem mesa abre o card e inicia a seleção", () => {
+  const unassigned = res("sem-mesa", null, "18:00");
+  current = { ...hookData, reservations: [...hookData.reservations, unassigned] };
+  renderPage();
+  const list = screen.getByTestId("reservas-do-dia");
+  const row = within(list).getByText("Cliente sem-mesa").closest("button");
+  expect(row).toHaveTextContent("Sem mesa");
+  fireEvent.click(row);
+  const card = screen.getByRole("dialog");
+  fireEvent.click(within(card).getByRole("button", { name: "Trocar mesa" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("region", { name: "Seleção de mesas" })).toBeInTheDocument();
+});
+
+it("cancelada aparece só na lista sem mudar a situação das mesas", () => {
+  current = { ...hookData, dayReservations: [...hookData.reservations, res("cancelada", "t5", "15:00", { status: "cancelled" })] };
+  renderPage();
+  fireEvent.click(screen.getByRole("button", { name: "Finalizadas (1)" }));
+  expect(within(screen.getByTestId("reservas-finalizadas")).getByText("Cliente cancelada")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Mesa 5,/ })).toHaveAccessibleName(/Reservada/);
 });

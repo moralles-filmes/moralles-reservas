@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { hallPlanFrom, resolveTableBoxes } from "@/lib/hall-plan-core";
 import { arrangeHalls } from "@/lib/hall-arrange-core";
 import { brtNow, deriveTableStates, reservationTableIds, type TableSituation } from "@/lib/table-situation-core";
-import type { Mesa, SeatConflict, WaitlistEntry } from "@/types/reserva";
+import type { Mesa, ReservaComCliente, SeatConflict, WaitlistEntry } from "@/types/reserva";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -40,7 +40,7 @@ import { PlantaCena3D } from "@/components/planta/ao-vivo/PlantaCena3D";
 import { LegendaSituacoes } from "@/components/planta/ao-vivo/LegendaSituacoes";
 import { PainelMesa } from "@/components/planta/ao-vivo/PainelMesa";
 import { AcoesMesa } from "@/components/planta/ao-vivo/AcoesMesa";
-import { ProximasChegadas } from "@/components/planta/ao-vivo/ProximasChegadas";
+import { ReservasDoDia } from "@/components/planta/ao-vivo/ReservasDoDia";
 import { ResumoFila } from "@/components/planta/ao-vivo/ResumoFila";
 import { WaitlistEntryDialog } from "@/components/waitlist/WaitlistEntryDialog";
 
@@ -275,8 +275,13 @@ export default function SalaoAoVivo() {
     setFocus(undefined);
   };
 
-  // Vindo de próximas chegadas, a troca de salão mantém a mesa recém escolhida.
-  const pickTable = (t: Mesa, reservationId: string) => {
+  // Vindo da lista do dia, a troca de salão mantém a mesa recém escolhida; sem mesa, só destaca a reserva.
+  const pickTable = (t: Mesa | null, reservationId: string) => {
+    if (!t) {
+      setSelectedId(null);
+      setPickedReservationId(reservationId);
+      return;
+    }
     if (viewAll) {
       setFocus({ tableId: t.id, nonce: Date.now() });
     } else if (t.hall_id) {
@@ -286,6 +291,31 @@ export default function SalaoAoVivo() {
     setPickedReservationId(reservationId);
   };
 
+  const reservationActions = (r: ReservaComCliente, close: () => void) => {
+    if ((r.status !== "pending" && r.status !== "confirmed") || r.released_at) return null;
+    const occupant: OccupantRef = { kind: "reservation", id: r.id };
+    const actions: Array<["move" | "join" | "adjust", string]> = [["move", "Trocar mesa"]];
+    if (currentTables(occupant).length) actions.push(["join", "Juntar mesas"], ["adjust", "Ajustar pessoas"]);
+    return (
+      <div className="mt-3 flex flex-wrap gap-2">
+        {actions.map(([action, label]) => (
+          <Button
+            key={action}
+            type="button"
+            variant="outline"
+            size="sm"
+            className="coarse:min-h-[44px]"
+            onClick={() => {
+              close();
+              occupantAction(action, occupant, r.party_size);
+            }}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+    );
+  };
   const selectedTable = tables.find((t) => t.id === selectedId) ?? null;
   const selectedState = selectedTable ? (states.get(selectedTable.id) ?? null) : null;
 
@@ -474,7 +504,17 @@ export default function SalaoAoVivo() {
             ) : undefined
           }
         />
-        <ProximasChegadas reservations={data.reservations} tables={tables} today={today} onPick={pickTable} />
+        <ReservasDoDia
+          reservations={data.dayReservations}
+          tables={tables}
+          occupantTables={data.occupantTables}
+          states={states}
+          today={today}
+          now={now}
+          durationMinutes={data.durationMinutes}
+          onPick={pickTable}
+          renderActions={reservationActions}
+        />
         <ResumoFila
           entries={data.waitlistActive}
           now={now}

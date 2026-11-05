@@ -191,8 +191,21 @@ describe("fetchSalaoOccupantTables", () => {
 });
 
 describe("useSalaoAoVivo occupantTables", () => {
+  it("mantém canceladas e no_show somente na lista do dia", async () => {
+    mocks.results.reservations = { data: [
+      { id: "active", status: "confirmed" },
+      { id: "cancelled", status: "cancelled" },
+      { id: "absent", status: "no_show" },
+    ], error: null };
+    const { result } = renderHook(() => useSalaoAoVivo("unit-a"), { wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.dayReservations).toHaveLength(3);
+    expect(result.current.reservations.map(r => r.id)).toEqual(["active"]);
+    const calls = mocks.calls.filter(c => c.table === "occupant_tables" && c.method === "in");
+    expect(calls.map(c => c.args)).toEqual([["reservation_id", ["active"]]]);
+  });
   it("lê occupant_tables dos ocupantes carregados, com a key [occupant-tables, unitId, salao, hoje]", async () => {
-    mocks.results.reservations = { data: [{ id: "r1", table_id: "t1" }], error: null };
+    mocks.results.reservations = { data: [{ id: "r1", table_id: "t1", status: "confirmed" }], error: null };
     mocks.results.occupant_tables = {
       data: [{ table_id: "t1", reservation_id: "r1", walk_in_id: null, waitlist_id: null, overlap_ok: false }],
       error: null,

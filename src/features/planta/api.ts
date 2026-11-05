@@ -109,8 +109,7 @@ export async function fetchSalaoReservations(unitId: string, today: string, yest
     .from("reservations")
     .select("*, customer:customers(id, name, phone)")
     .eq("unit_id", unitId)
-    .in("status", ["pending", "confirmed"])
-    .or(`date.eq.${today},and(date.eq.${yesterday},arrived_at.not.is.null,released_at.is.null)`);
+    .or(`and(date.eq.${today},status.in.(pending,confirmed,no_show,cancelled)),and(date.eq.${yesterday},status.in.(pending,confirmed),arrived_at.not.is.null,released_at.is.null)`);
   if (error) throw error;
   return (data ?? []) as Reserva[];
 }
