@@ -810,7 +810,8 @@ function createReservationProducerIO(base: {
       if (name === 'finish_whatsapp_legacy_automation_post') return { data: { recorded: true,
         state: args.p_outcome === 'accepted' ? 'accepted' : 'uncertain' }, error: null };
       if (name === 'release_whatsapp_legacy_automation_claim') return { data: { released: true }, error: null };
-      if (name === 'try_giftback_lock' || name === 'release_giftback_lock') return { data: true, error: null };
+      if (name === 'try_giftback_lock' || name === 'release_giftback_lock'
+        || name === 'acquire_giftback_lease' || name === 'release_giftback_lease') return { data: true, error: null };
       if (name === 'expire_vouchers') return { data: 0, error: null };
       if (name === 'get_waitlist_for_feedback') return { data: tables.waitlist.map(row => ({ waitlist_id: row.id,
         unit_id: row.unit_id, customer_phone: row.customer_phone, customer_name: row.customer_name,
