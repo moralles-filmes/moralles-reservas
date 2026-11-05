@@ -9,6 +9,8 @@ import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
 import { useSalaoAoVivo } from "@/hooks/useSalaoAoVivo";
 import { useSetOccupantTables, useSetOccupantPartySize } from "@/hooks/useOcupacaoAcoes";
+import { useReservationPresence, type PresenceAction } from "@/hooks/useMesaAcoes";
+import { conversationHref } from "@/lib/conversation-link";
 import { useWalkIns } from "@/hooks/useWalkIns";
 import { useNotifyWaitlist } from "@/hooks/useWaitlist";
 import { useWaitlistTemplates } from "@/hooks/useWaitlistTemplates";
@@ -64,6 +66,7 @@ export default function SalaoAoVivo() {
   const now = useNow();
   const setTables = useSetOccupantTables(unitId);
   const setPeople = useSetOccupantPartySize(unitId);
+  const presence = useReservationPresence(unitId);
   type ActionContext = { occupant: OccupantRef; partySize: number; label: string };
   const [pick, setPick] = useState<(ActionContext & { mode: "move" | "join"; selected: Set<string> }) | null>(null);
   const [adjust, setAdjust] = useState<(ActionContext & { tableIds: string[] }) | null>(null);
@@ -294,10 +297,31 @@ export default function SalaoAoVivo() {
   const reservationActions = (r: ReservaComCliente, close: () => void) => {
     if ((r.status !== "pending" && r.status !== "confirmed") || r.released_at) return null;
     const occupant: OccupantRef = { kind: "reservation", id: r.id };
+    const hasTable = currentTables(occupant).length > 0;
     const actions: Array<["move" | "join" | "adjust", string]> = [["move", "Trocar mesa"]];
-    if (currentTables(occupant).length) actions.push(["join", "Juntar mesas"], ["adjust", "Ajustar pessoas"]);
+    if (hasTable) actions.push(["join", "Juntar mesas"], ["adjust", "Ajustar pessoas"]);
+    const busy = presence.isPending && presence.variables?.reservationId === r.id;
+    const presenceButton = (action: PresenceAction, label: string, variant?: "outline") => (
+      <Button
+        key={action}
+        type="button"
+        size="sm"
+        variant={variant}
+        className="coarse:min-h-[44px]"
+        disabled={busy}
+        onClick={() => presence.mutate({ reservationId: r.id, action })}
+      >
+        {label}
+      </Button>
+    );
+    const customerId = r.customer_id ?? r.customer?.id;
     return (
       <div className="mt-3 flex flex-wrap gap-2">
+        {/* Mesmas ações de presença do painel da mesa; reserva sem mesa primeiro ganha mesa. */}
+        {hasTable &&
+          (r.arrived_at
+            ? [presenceButton("release", "Liberar mesa"), presenceButton("undo_arrive", "Desfazer chegada", "outline")]
+            : presenceButton("arrive", "Marcar chegada"))}
         {actions.map(([action, label]) => (
           <Button
             key={action}
@@ -313,6 +337,11 @@ export default function SalaoAoVivo() {
             {label}
           </Button>
         ))}
+        {customerId && unit?.unit_slug && (
+          <Button asChild variant="outline" size="sm" className="coarse:min-h-[44px]">
+            <Link to={conversationHref(`/o/${unit.unit_slug}`, customerId)}>Abrir conversa</Link>
+          </Button>
+        )}
       </div>
     );
   };

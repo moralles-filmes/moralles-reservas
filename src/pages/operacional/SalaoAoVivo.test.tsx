@@ -498,6 +498,54 @@ it("reserva sem mesa abre o card e inicia a seleção", () => {
   expect(screen.getByRole("region", { name: "Seleção de mesas" })).toBeInTheDocument();
 });
 
+describe("card da lista do dia: presença e conversa", () => {
+  const openCard = (name: string) => {
+    renderPage();
+    const list = screen.getByTestId("reservas-do-dia");
+    fireEvent.click(within(list).getByText(name).closest("button")!);
+    return screen.getByRole("dialog");
+  };
+
+  beforeEach(() => {
+    current = hookData;
+    currentSlug = "moralles";
+    presenceMutate.mockClear();
+  });
+
+  it("reserva que não chegou oferece Marcar chegada e Abrir conversa", () => {
+    const card = openCard("Cliente r2");
+    fireEvent.click(within(card).getByRole("button", { name: "Marcar chegada" }));
+    expect(presenceMutate).toHaveBeenCalledWith({ reservationId: "r2", action: "arrive" });
+    expect(within(card).getByRole("link", { name: "Abrir conversa" })).toHaveAttribute(
+      "href",
+      "/o/moralles/conversas?cliente=cr2",
+    );
+    expect(within(card).queryByRole("button", { name: "Liberar mesa" })).toBeNull();
+  });
+
+  it("reserva que chegou oferece Liberar mesa e Desfazer chegada", () => {
+    const card = openCard("Cliente r3");
+    expect(within(card).queryByRole("button", { name: "Marcar chegada" })).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: "Desfazer chegada" }));
+    expect(presenceMutate).toHaveBeenCalledWith({ reservationId: "r3", action: "undo_arrive" });
+    fireEvent.click(within(card).getByRole("button", { name: "Liberar mesa" }));
+    expect(presenceMutate).toHaveBeenCalledWith({ reservationId: "r3", action: "release" });
+  });
+
+  it("reserva sem mesa não marca chegada (só Trocar mesa)", () => {
+    current = { ...hookData, reservations: [...hookData.reservations, res("sem-mesa", null, "18:00")] };
+    const card = openCard("Cliente sem-mesa");
+    expect(within(card).queryByRole("button", { name: "Marcar chegada" })).toBeNull();
+    expect(within(card).getByRole("button", { name: "Trocar mesa" })).toBeInTheDocument();
+  });
+
+  it("sem slug da unidade, Abrir conversa some", () => {
+    currentSlug = undefined;
+    const card = openCard("Cliente r2");
+    expect(within(card).queryByRole("link", { name: "Abrir conversa" })).toBeNull();
+  });
+});
+
 it("cancelada aparece só na lista sem mudar a situação das mesas", () => {
   current = { ...hookData, dayReservations: [...hookData.reservations, res("cancelada", "t5", "15:00", { status: "cancelled" })] };
   renderPage();
