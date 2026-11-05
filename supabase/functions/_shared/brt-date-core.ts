@@ -45,3 +45,26 @@ export function daysUntilBirthdayBrt(birthdayIso: string, nowMs: number = Date.n
 function isLeapYear(y: number): boolean {
   return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
 }
+
+/**
+ * Instante (ISO UTC) de 1º de janeiro, 00:00 BRT, do ano civil BRT corrente.
+ * Corte da idempotência do voucher de aniversário: no máximo 1 por regra e
+ * cliente por ano civil. "Últimos 365 dias" pulava o aniversário quando a
+ * rodada do ano anterior emitiu alguns minutos mais tarde (ou em ano bissexto).
+ */
+export function brtYearStartInstantIso(nowMs: number = Date.now()): string {
+  const year = todayBrtIso(nowMs).slice(0, 4);
+  return `${year}-01-01T03:00:00.000Z`;
+}
+
+/** YYYY-MM-DD do dia civil BRT `days` dias depois de hoje (negativo = antes). */
+export function addDaysBrtIso(days: number, nowMs: number = Date.now()): string {
+  const d = new Date(nowMs - BRT_OFFSET_MS);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Dia civil BRT (YYYY-MM-DD) de um instante em segundos Unix (ex.: `due_date` do Stripe). */
+export function unixSecondsToBrtDate(seconds: number): string {
+  return todayBrtIso(seconds * 1000);
+}

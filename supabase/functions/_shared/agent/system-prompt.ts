@@ -221,9 +221,29 @@ export interface AgentPromptParts {
   specialLines: string[];
   blockedLines: string[];
   giftbackLines: string[];
+  /**
+   * Leitura de `voucher_rules` falhou. Falha fechado: em vez de "esta unidade
+   * NÃO tem regra" (que levava o agente a negar desconto existente), o bloco
+   * diz que não deu para consultar e manda não confirmar nem negar.
+   */
+  giftbackRulesReadFailed?: boolean;
+  /** Leitura dos vouchers ativos do cliente falhou (mesma polaridade). */
+  customerVouchersReadFailed?: boolean;
   prefsLines: string[];
   customPrompt: string;
   settingsMap: Record<string, unknown>;
+}
+
+/** Bloco do Programa Giftback, com falha de leitura tratada como "não sei", nunca como "não há". */
+function giftbackSection(lines: string[], rulesReadFailed: boolean, vouchersReadFailed: boolean): string {
+  if (rulesReadFailed) {
+    return `\n\nPrograma Giftback: NÃO foi possível consultar agora as regras de desconto desta unidade${vouchersReadFailed ? " nem os vouchers deste cliente" : ""}. Se o cliente perguntar sobre desconto, promoção, cupom, voucher ou benefício de aniversário, NÃO afirme que não existe e NÃO invente nenhum: diga que no momento não consegue confirmar e que a equipe do restaurante confirma. Isto prevalece sobre a orientação da Regra 7 de dizer que não há promoção.`;
+  }
+  const base = lines.length
+    ? `\n\nPrograma Giftback (regras automáticas ativas):\n${lines.join("\n")}`
+    : `\n\nPrograma Giftback: esta unidade NÃO tem nenhuma regra automática de promoção, desconto, cupom ou benefício de aniversário ativa no momento. Se o cliente perguntar sobre desconto ou promoção e ele NÃO tiver voucher ativo listado em "O que sabemos sobre este cliente", deixe claro que no momento não há nenhuma promoção ou desconto — NÃO invente percentual, condição nem regra.`;
+  if (!vouchersReadFailed) return base;
+  return base + `\n\nVouchers deste cliente: NÃO foi possível consultar agora. Se ele perguntar se tem voucher ou desconto, NÃO diga que não tem e NÃO invente código: diga que no momento não consegue confirmar e que a equipe do restaurante confirma.`;
 }
 
 /**
@@ -251,7 +271,7 @@ export function composeAgentSystemPrompt(p: AgentPromptParts): string {
     includeFaq, agentName, restaurantName, globalPromptBody, identityLine, todayBR, weekdayName,
     upcomingDaysLines, customerFirstName, formattingRules, channelLabel, channelRules, unitAddress,
     restaurantInfoLines, hallScheduleBlock, hoursLines, specialLines, blockedLines,
-    giftbackLines, prefsLines, customPrompt, settingsMap,
+    giftbackLines, giftbackRulesReadFailed, customerVouchersReadFailed, prefsLines, customPrompt, settingsMap,
   } = p;
   const contextExtra = typeof settingsMap["ai_context_extra"] === "string"
     ? truncateChars(settingsMap["ai_context_extra"], STORE_TEXT_LIMITS.ai_context_extra)
@@ -313,9 +333,7 @@ export function composeAgentSystemPrompt(p: AgentPromptParts): string {
         : "") +
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
       (blockedLines.length ? `\n\nDatas com bloqueio de reservas nos próximos 60 dias (agenda indisponível, mas o restaurante pode estar funcionando):\n${blockedLines.join("\n")}` : "") +
-      (giftbackLines.length
-        ? `\n\nPrograma Giftback (regras automáticas ativas):\n${giftbackLines.join("\n")}`
-        : `\n\nPrograma Giftback: esta unidade NÃO tem nenhuma regra automática de promoção, desconto, cupom ou benefício de aniversário ativa no momento. Se o cliente perguntar sobre desconto ou promoção e ele NÃO tiver voucher ativo listado em "O que sabemos sobre este cliente", deixe claro que no momento não há nenhuma promoção ou desconto — NÃO invente percentual, condição nem regra.`) +
+      giftbackSection(giftbackLines, giftbackRulesReadFailed === true, customerVouchersReadFailed === true) +
       ((() => {
         const parts: string[] = [];
         const bwd = positiveInt(settingsMap["booking_window_days"]);
@@ -551,11 +569,14 @@ export async function loadAgentSystemPrompt(
   }
 
   // ── Regras Giftback ativas (resumo pro LLM saber o que existe sem inventar)
-  const { data: voucherRules } = await supabase
+  // Erro de leitura NÃO vira "sem regras": o prompt passa a dizer "não sei".
+  const { data: voucherRules, error: voucherRulesErr } = await supabase
     .from("voucher_rules")
     .select("trigger_type, discount_percent, validity_days, min_rating, visits_required, days_window")
     .eq("unit_id", unitId)
     .eq("active", true);
+  const giftbackRulesReadFailed = !!voucherRulesErr;
+  if (voucherRulesErr) args.log("warn", { evt: "agent_voucher_rules_read_failed", unit_id: unitId, reqId: args.requestId });
 
   const giftbackLines: string[] = [];
   for (const r of (voucherRules ?? []) as {
@@ -583,11 +604,12 @@ export async function loadAgentSystemPrompt(
   // Sem cadastro privado, NENHUMA consulta (nem o relógio é lido): o contato
   // declarado não pode descobrir vouchers de quem é dono do telefone.
   let customerVouchers: unknown[] | null = null;
+  let customerVouchersReadFailed = false;
   if (privateCustomer) {
     // expires_at é timestamptz (fim do dia BRT); o status só vira `expired` no cron
     // das 09h BRT, então o corte é "ainda não venceu agora", não uma data UTC crua.
     const nowIso = new Date().toISOString();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("vouchers")
       .select("code, discount_percent, expires_at")
       .eq("unit_id", unitId)
@@ -596,6 +618,8 @@ export async function loadAgentSystemPrompt(
       .gt("expires_at", nowIso)
       .order("expires_at", { ascending: true });
     customerVouchers = data;
+    customerVouchersReadFailed = !!error;
+    if (error) args.log("warn", { evt: "agent_customer_vouchers_read_failed", unit_id: unitId, reqId: args.requestId });
   }
 
   const customerVoucherLines: string[] = ((customerVouchers ?? []) as {
@@ -705,6 +729,8 @@ export async function loadAgentSystemPrompt(
     specialLines,
     blockedLines,
     giftbackLines,
+    giftbackRulesReadFailed,
+    customerVouchersReadFailed,
     prefsLines,
     customPrompt,
     settingsMap,

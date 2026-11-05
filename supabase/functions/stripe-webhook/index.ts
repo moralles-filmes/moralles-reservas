@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { genRequestId, jsonLog } from "../_shared/security.ts";
 import { getStripeWebhookSecret } from "../_shared/stripe-config.ts";
+import { unixSecondsToBrtDate } from "../_shared/brt-date-core.ts";
 
 // Billing event types — roteados para billing_events (idempotencia separada de stripe_webhook_events)
 const BILLING_EVENT_TYPES = new Set([
@@ -260,8 +261,9 @@ async function handleBillingEvent(
     const amountDue = (obj.amount_due as number) ?? 0;
     const hostedUrl = obj.hosted_invoice_url as string | null;
     const pdfUrl = obj.invoice_pdf as string | null;
-    const dueDate = obj.due_date
-      ? new Date((obj.due_date as number) * 1000).toISOString().slice(0, 10)
+    // Dia civil BRT do instante de vencimento (em UTC, 21h–24h BRT caía no dia seguinte).
+    const dueDate = typeof obj.due_date === "number" && Number.isFinite(obj.due_date)
+      ? unixSecondsToBrtDate(obj.due_date)
       : null;
     const invNumber = obj.number as string | null;
 

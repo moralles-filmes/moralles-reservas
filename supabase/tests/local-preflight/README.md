@@ -3615,3 +3615,49 @@ migration em LF e em CRLF, cada uma aplicada e reaplicada.
 O que NÃO prova: concorrência real entre duas sessões (a ordem vem do
 `for update`, sem caso de duas conexões) nem PostgREST/JWT. O `scripts/function-acl-allowlist.json`
 não precisa de entrada: as funções nascem só para `service_role`.
+
+### 84 — Lease do worker de giftback
+
+Pré-voo da migration `20261106120000_giftback_worker_lease.sql`: trava do
+`process-voucher-triggers` como lease em `app_private.giftback_worker_lease`
+(FORCE RLS sem policy) com `acquire_giftback_lease(uuid, integer)` e
+`release_giftback_lease(uuid)` só para `service_role`. Contêiner próprio, sem
+rede; roda **da raiz do repo**.
+
+```bash
+docker run -d --name lease84-pg --network none -e POSTGRES_PASSWORD=x \
+  public.ecr.aws/supabase/postgres:17.11.0.004
+P() { docker exec -i lease84-pg psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1 "$@"; }
+P < supabase/tests/local-preflight/84a-giftback-worker-lease-bootstrap.sql
+P < supabase/tests/local-preflight/84-giftback-worker-lease.sql          # RED (recusa: sem migration)
+P < supabase/migrations/20261106120000_giftback_worker_lease.sql
+P < supabase/tests/local-preflight/84-giftback-worker-lease.sql          # GREEN
+P < supabase/migrations/20261106120000_giftback_worker_lease.sql         # reaplicar
+P < supabase/tests/local-preflight/84-giftback-worker-lease.sql          # GREEN de novo
+# Duas sessões: A adquire e segura 3 s; B tenta no meio, espera e perde.
+P -c "delete from app_private.giftback_worker_lease"
+(echo "begin; select public.acquire_giftback_lease('00000000-0000-4000-8000-0000000000aa',900); select pg_sleep(3); commit;" | P -At) &
+sleep 1; echo "select public.acquire_giftback_lease('00000000-0000-4000-8000-0000000000bb',900);" | P -At; wait
+docker rm -f lease84-pg
+```
+
+- **LEASE-1…LEASE-6:** primeira aquisição vence; segundo dono com lease vivo
+  perde; dono renova; soltura por outro dono não vale; dono solta e outro
+  adquire; lease vencido (EF morta no meio) é retomado sem soltura.
+- **LEASE-7…LEASE-9:** TTL fora de 60–3600 s ou holder nulo → `22023`;
+  `anon`/`authenticated` sem EXECUTE, `service_role` com; nenhum papel de API
+  com privilégio na tabela; FORCE RLS ligada.
+- **LEASE-10:** caminho real da EF como `service_role` (adquire, concorrente
+  perde, solta).
+- **LEASE-CP1, controle:** sem o `where` do upsert o segundo dono rouba a trava
+  viva; o corpo real é restaurado por rollback de subtransação (CP1b).
+- **LEASE-CP2:** o dono da tabela tem BYPASSRLS — é o que deixa as funções
+  DEFINER passarem pela FORCE RLS sem policy.
+
+**Resultados observados em 05/11/2026** (imagem `supabase/postgres:17.11.0.004`,
+sem rede): recusa antes da migration, **23/23** depois e 23/23 reaplicada.
+Duas sessões: com a tabela vazia, A = `t` e B = `f` depois de esperar 3 s; com
+lease vencido, duas retomadas simultâneas → só a primeira vence.
+
+O que NÃO prova: o cron de repescagem (`20261106120100`, sem pg_cron no
+harness) nem o PostgREST.

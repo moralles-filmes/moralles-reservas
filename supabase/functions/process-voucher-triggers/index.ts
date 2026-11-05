@@ -1,11 +1,13 @@
 // Processador diário dos gatilhos automáticos de Giftback.
 //
-// Chamado via pg_cron 1x ao dia (12:00 UTC = 09:00 BRT). Faz 3 etapas:
+// Chamado via pg_cron 2x ao dia: 12:00 UTC (09:00 BRT) e repescagem às 18:00
+// UTC (15:00 BRT), para o que a primeira não alcançou dentro do orçamento de
+// tempo. Faz 3 etapas:
 //   1. Expira vouchers vencidos (chama RPC expire_vouchers).
 //   2. Aniversário: pra cada rule trigger_type='birthday', emite voucher pra
 //      customers da org cuja data de nascimento é hoje E que já visitaram a
-//      unit dona da rule. Idempotente (skip se voucher dessa rule emitido nos
-//      últimos 365 dias).
+//      unit dona da rule. Idempotente: no máximo 1 voucher por regra e cliente
+//      por ano civil BRT (skip se já emitiu desde 1º/jan 00:00 BRT).
 //   3. Frequência: pra cada rule trigger_type='frequency', emite voucher pra
 //      customers que tiveram >= visits_required reservations confirmed/no_show
 //      nos últimos days_window dias E até ontem (não conta reservas futuras).
@@ -30,6 +32,7 @@ import {
   clearWhatsAppGateCache,
 } from "../_shared/whatsapp-service-gate.ts";
 import { chunk, fetchAllByIdKeyset, IN_BATCH_SIZE } from "../_shared/paginate-core.ts";
+import { brtYearStartInstantIso } from "../_shared/brt-date-core.ts";
 
 /** Mensagem curta de erro (PostgrestError não é Error; String(obj) vira "[object Object]"). */
 function errMessage(err: unknown): string {
@@ -46,6 +49,31 @@ const INTERNAL_API_KEY = Deno.env.get("INTERNAL_API_KEY") ?? "";
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
 const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+// Orçamento de emissão por invocação. A EF tem limite de wall-clock (150 s no
+// plano gratuito, 400 s no pago); morrer no meio deixa aniversários sem
+// processar e, antes do lease, a trava presa. O orçamento é checado entre
+// clientes, então o pior caso é 100 s + um cliente em voo (consultas + envio de
+// até 25 s), com folga no menor limite. Estourou: para de emitir, registra
+// `voucher_triggers_budget_exhausted` e a repescagem das 15:00 BRT continua.
+const RUN_BUDGET_MS = 100_000;
+const SEND_TIMEOUT_MS = 25_000;
+// Validade do lease: maior que qualquer execução possível, para nunca vencer
+// com a EF viva; se ela morrer, a trava volta sozinha antes da repescagem.
+const LEASE_TTL_SECONDS = 900;
+
+// Por invocação (zerados no handler, depois do lease). `budgetSkipped` conta
+// clientes elegíveis não processados da regra em curso; `budgetHit` diz se o
+// orçamento de fato interrompeu trabalho (regras seguintes inteiras puladas não
+// entram na contagem, que exigiria lê-las). A repescagem pega os dois.
+let runDeadlineMs = Number.POSITIVE_INFINITY;
+let budgetSkipped = 0;
+let budgetHit = false;
+function budgetExhausted(): boolean {
+  const hit = Date.now() >= runDeadlineMs;
+  if (hit) budgetHit = true;
+  return hit;
+}
 
 interface UnitContext {
   unit_id: string;
@@ -162,7 +190,7 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
       try {
         const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': INTERNAL_API_KEY },
-          body: JSON.stringify({ action: 'dispatch_existing', job_id: row.job_id }), signal: AbortSignal.timeout(25_000),
+          body: JSON.stringify({ action: 'dispatch_existing', job_id: row.job_id }), signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
         });
         const outcome = response.ok ? decodeAutomationDispatch(await response.json()) : null;
         const accepted = outcome !== null && outcome.jobId === row.job_id && (outcome.state === 'accepted' || outcome.state === 'reconciled');
@@ -238,6 +266,10 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
         // Fato = emissão, que é agora: o voucher nasce neste disparo.
         fact_at: new Date().toISOString(),
       }),
+      // Sem timeout um send-whatsapp pendurado consumia o wall-clock da EF
+      // inteira. Estourou: o voucher já existe; o catch abaixo registra o envio
+      // como erro (mesmo tratamento de falha de rede).
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
 
     if (!sendRes.ok) {
@@ -303,8 +335,13 @@ async function processBirthday(): Promise<{ issued: number; errors: string[]; se
   // B11: em ano não-bissexto, clientes nascidos 29/02 recebem em 28/02
   // (regra civil brasileira).
   const acceptLeapBirthday = !today.isLeapYear && todayMmdd === "02-28";
+  const yearStartIso = brtYearStartInstantIso();
 
   for (const rule of rules) {
+    if (budgetExhausted()) {
+      jsonLog("warn", { evt: "voucher_triggers_budget_exhausted", step: "birthday", rule_id: rule.id });
+      break;
+    }
     // Gate resolvido UMA vez por unidade (rule.unit_id), antes do laço de
     // clientes — não move pra dentro do laço, seria I/O por cliente. Decisão
     // do dono: aniversário SEMPRE cria o voucher, mesmo com a organização
@@ -351,7 +388,11 @@ async function processBirthday(): Promise<{ issued: number; errors: string[]; se
       return false;
     });
 
-    for (const customer of matching) {
+    for (const [i, customer] of matching.entries()) {
+      if (budgetExhausted()) {
+        budgetSkipped += matching.length - i;
+        break;
+      }
       // B8: filtro defensivo de phone antes do issueAndSend.
       const phoneDigits = (customer.phone ?? "").replace(/\D/g, "");
       if (phoneDigits.length < 10) {
@@ -373,9 +414,9 @@ async function processBirthday(): Promise<{ issued: number; errors: string[]; se
       }
       if (!visits || visits === 0) continue;
 
-      // Idempotência: já emitiu voucher dessa rule pra esse customer no último ano?
-      const oneYearAgo = new Date();
-      oneYearAgo.setDate(oneYearAgo.getDate() - 365);
+      // Idempotência: já emitiu voucher dessa rule pra esse customer neste ano
+      // civil BRT? (Regra do dono: 1 por ano civil. "Últimos 365 dias" pulava o
+      // aniversário quando a rodada do ano anterior emitiu minutos mais tarde.)
       // Falha fechado: erro de leitura não pode virar "sem voucher anterior" — o
       // índice único só protege voucher `active`, não o usado/expirado no ano.
       const { data: existing, error: existingErr } = await supabase
@@ -383,7 +424,7 @@ async function processBirthday(): Promise<{ issued: number; errors: string[]; se
         .select("id")
         .eq("rule_id", rule.id)
         .eq("customer_id", customer.id)
-        .gt("issued_at", oneYearAgo.toISOString())
+        .gte("issued_at", yearStartIso)
         .limit(1)
         .maybeSingle();
       if (existingErr) {
@@ -450,6 +491,10 @@ async function processFrequency(): Promise<{ issued: number; errors: string[]; s
 
   for (const rule of rules) {
     if (!rule.visits_required || !rule.days_window) continue;
+    if (budgetExhausted()) {
+      jsonLog("warn", { evt: "voucher_triggers_budget_exhausted", step: "frequency", rule_id: rule.id });
+      break;
+    }
 
     // Gate resolvido UMA vez por unidade (rule.unit_id), antes de qualquer
     // trabalho de emissão — pula a regra inteira SEM criar voucher e SEM
@@ -543,7 +588,11 @@ async function processFrequency(): Promise<{ issued: number; errors: string[]; s
         customers.push(...((data ?? []) as { id: string; phone: string | null }[]));
       }
 
-      for (const c of customers) {
+      for (const [i, c] of customers.entries()) {
+        if (budgetExhausted()) {
+          budgetSkipped += customers.length - i;
+          break;
+        }
         const phoneDigits = String(c.phone ?? "").replace(/\D/g, "");
         if (phoneDigits.length < 10) {
           jsonLog("info", { evt: "frequency_skipped_no_phone", customer_id: c.id });
@@ -594,22 +643,22 @@ serve(async (req) => {
     });
   }
 
-  // B10: invalida cache de unit settings no início de cada invocação.
-  unitCache.clear();
-  // Cache do gate de WhatsApp segue o mesmo padrão — por invocação, senão um
-  // isolate quente serve estado de suspensão velho pra um cliente que acabou
-  // de pagar.
-  clearWhatsAppGateCache();
-
-  // B12: advisory lock — evita duas execuções concorrentes (cron + chamada
-  // manual de debug) duplicarem trabalho. Wrappers em migration 20260517110000.
-  // Fallback: se RPC indisponível, prossegue (UNIQUE PARTIAL em vouchers
-  // protege contra duplicar (rule, customer) ativos).
+  // B12: lease com validade (migration 20261106120000) — evita duas execuções
+  // concorrentes (cron das 09h, repescagem das 15h, chamada manual). Substitui
+  // o advisory lock de sessão, que via pool do PostgREST podia ficar preso.
+  // Polaridade (decisão do dono, mantida): erro ao LER a trava → prossegue,
+  // porque o aniversário não volta; o índice único de voucher ativo e a
+  // idempotência por ano civil protegem contra duplicar. `false` → outra
+  // execução está viva, sai sem trabalho.
+  const leaseHolder = crypto.randomUUID();
   let hasLock = false;
   try {
-    const { data: lockData, error: lockErr } = await supabase.rpc("try_giftback_lock");
+    const { data: lockData, error: lockErr } = await supabase.rpc("acquire_giftback_lease", {
+      p_holder: leaseHolder,
+      p_ttl_seconds: LEASE_TTL_SECONDS,
+    });
     if (lockErr) {
-      jsonLog("info", { evt: "advisory_lock_unavailable", err: lockErr.message });
+      jsonLog("warn", { evt: "giftback_lease_unavailable", err: errMessage(lockErr) });
     } else {
       hasLock = lockData === true;
       if (!hasLock) {
@@ -621,10 +670,21 @@ serve(async (req) => {
       }
     }
   } catch (err) {
-    jsonLog("info", { evt: "advisory_lock_error", err: String(err).slice(0, 200) });
+    jsonLog("warn", { evt: "giftback_lease_error", err: errMessage(err) });
   }
 
+  // Estado por invocação só DEPOIS do lease: uma chamada recusada com
+  // `already_running` não mexe nos caches nem no orçamento da execução viva.
+  // B10: invalida cache de unit settings no início de cada invocação.
+  unitCache.clear();
+  // Cache do gate de WhatsApp segue o mesmo padrão — por invocação, senão um
+  // isolate quente serve estado de suspensão velho pra um cliente que acabou
+  // de pagar.
+  clearWhatsAppGateCache();
   const t0 = Date.now();
+  runDeadlineMs = t0 + RUN_BUDGET_MS;
+  budgetSkipped = 0;
+  budgetHit = false;
   const errors: string[] = [];
 
   try {
@@ -667,6 +727,8 @@ serve(async (req) => {
       frequency_issued: frequency.issued,
       skipped_suspended: skippedSuspended,
       send_suppressed: sendSuppressed,
+      budget_exhausted: budgetHit,
+      budget_skipped: budgetSkipped,
       errors_count: errors.length,
       duration_ms: Date.now() - t0,
     });
@@ -678,6 +740,8 @@ serve(async (req) => {
         frequency_issued: frequency.issued,
         skipped_suspended: skippedSuspended,
         send_suppressed: sendSuppressed,
+        budget_exhausted: budgetHit,
+        budget_skipped: budgetSkipped,
         errors,
       }),
       {
@@ -687,10 +751,12 @@ serve(async (req) => {
     );
   } finally {
     if (hasLock) {
+      // Falha ao soltar não prende nada: o lease vence sozinho em LEASE_TTL_SECONDS.
       try {
-        await supabase.rpc("release_giftback_lock");
+        const { error } = await supabase.rpc("release_giftback_lease", { p_holder: leaseHolder });
+        if (error) jsonLog("warn", { evt: "giftback_lease_release_failed", err: errMessage(error) });
       } catch (err) {
-        jsonLog("warn", { evt: "advisory_unlock_failed", err: String(err).slice(0, 200) });
+        jsonLog("warn", { evt: "giftback_lease_release_failed", err: errMessage(err) });
       }
     }
   }

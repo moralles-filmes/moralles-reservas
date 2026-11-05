@@ -20,6 +20,7 @@ import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
 import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
 import { isSystemSubscription, SYSTEM_CATEGORY } from "../_shared/billing-category.ts";
 import { getBillingProvider } from "../_shared/billing-provider.ts";
+import { addDaysBrtIso } from "../_shared/brt-date-core.ts";
 import { decideCancelTarget, localCancelPatch, type CancelEffective } from "../_shared/billing-cancel-core.ts";
 import { enqueueBillingNotification, resolvePlatformAdminRecipients } from "../_shared/billing-notify.ts";
 
@@ -1253,7 +1254,9 @@ serve(async (req) => {
         hostedUrl = stripeRes.hostedUrl ?? null;
       }
 
-      const dueDate = new Date(Date.now() + (days_until_due ?? 7) * 86400000);
+      // Dia civil BRT + N (igual ao Asaas em billing-provider). Em UTC, fatura
+      // gerada entre 21h e meia-noite BRT vencia 1 dia depois.
+      const dueDate = addDaysBrtIso(days_until_due ?? 7);
 
       const { data: invoice, error: invErr } = await supabase
         .from("billing_invoices")
@@ -1265,7 +1268,7 @@ serve(async (req) => {
           amount_cents: Number(amount_cents),
           payment_method,
           hosted_invoice_url: hostedUrl,
-          due_date: dueDate.toISOString().slice(0, 10),
+          due_date: dueDate,
         })
         .select()
         .single();
