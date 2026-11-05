@@ -42,6 +42,7 @@ Caminhos repo-relativos. Plano, fases e decisões do Asaas: [docs/billing-asaas/
 - **O único cliente ativo é Ren Sushi, vitalício grátis; Moralles é a própria plataforma** — ambos com `LIFETIME` em system+whatsapp+ai (não remover). Não há cliente pagante: todo fluxo de cobrança, bloqueio, notificação e débito de IA respeita o override ANTES de escalar, e plano cobrável ativo no catálogo é risco sem contrapartida.
 - **Billing é por organização** (`billing_customers` 1:1 com `organizations`; 5 units pagam 1 mensalidade). Mensalidade usa a conta principal (sem Connect/`transfer_data`), separada da caução.
 - **Trial 5d, grace 5d, bloqueio D+6.** `GRACE_PERIOD_DAYS`/`BLOCK_AFTER_DAYS`/`REMINDER_OFFSETS` vivem no núcleo [billing-delinquency-core.ts](supabase/functions/_shared/billing-delinquency-core.ts) (datas BRT). **A duração do trial vem de `billing_plans.trial_days` do único plano `is_trial AND active`**, e `trial_ends_at` é calculado na criação da org e nunca recalculado; tempo extra só por override `extend_trial`. UNIQUE PARTIAL garante um único plano trial ativo. Trial é one-shot: cancelou → `canceled`.
+- **`due_date` de fatura é dia civil BRT: `addDaysBrtIso(N)` na criação e `unixSecondsToBrtDate` para o `due_date` do Stripe ([brt-date-core.ts](supabase/functions/_shared/brt-date-core.ts)); nunca `Date.now()+N*86400000` com `toISOString().slice(0,10)`.** Em UTC, a fatura gerada entre 21h e meia-noite BRT ganhava 1 dia de prazo e deslocava lembretes, graça e bloqueio.
 
 ## Caução de reserva (Stripe Connect Standard, por unidade)
 

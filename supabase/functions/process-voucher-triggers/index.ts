@@ -52,21 +52,27 @@ const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
 
 // Orçamento de emissão por invocação. A EF tem limite de wall-clock (150 s no
 // plano gratuito, 400 s no pago); morrer no meio deixa aniversários sem
-// processar e, antes do lease, a trava presa. 120 s + o maior timeout de I/O
-// abaixo (25 s) cabe no menor limite. Estourou: para de emitir, registra
+// processar e, antes do lease, a trava presa. O orçamento é checado entre
+// clientes, então o pior caso é 100 s + um cliente em voo (consultas + envio de
+// até 25 s), com folga no menor limite. Estourou: para de emitir, registra
 // `voucher_triggers_budget_exhausted` e a repescagem das 15:00 BRT continua.
-const RUN_BUDGET_MS = 120_000;
+const RUN_BUDGET_MS = 100_000;
 const SEND_TIMEOUT_MS = 25_000;
 // Validade do lease: maior que qualquer execução possível, para nunca vencer
 // com a EF viva; se ela morrer, a trava volta sozinha antes da repescagem.
 const LEASE_TTL_SECONDS = 900;
 
-// Por invocação (zerados no handler). `budgetSkipped` conta clientes elegíveis
-// não processados porque o orçamento acabou — a repescagem os pega.
+// Por invocação (zerados no handler, depois do lease). `budgetSkipped` conta
+// clientes elegíveis não processados da regra em curso; `budgetHit` diz se o
+// orçamento de fato interrompeu trabalho (regras seguintes inteiras puladas não
+// entram na contagem, que exigiria lê-las). A repescagem pega os dois.
 let runDeadlineMs = Number.POSITIVE_INFINITY;
 let budgetSkipped = 0;
+let budgetHit = false;
 function budgetExhausted(): boolean {
-  return Date.now() >= runDeadlineMs;
+  const hit = Date.now() >= runDeadlineMs;
+  if (hit) budgetHit = true;
+  return hit;
 }
 
 interface UnitContext {
@@ -637,13 +643,6 @@ serve(async (req) => {
     });
   }
 
-  // B10: invalida cache de unit settings no início de cada invocação.
-  unitCache.clear();
-  // Cache do gate de WhatsApp segue o mesmo padrão — por invocação, senão um
-  // isolate quente serve estado de suspensão velho pra um cliente que acabou
-  // de pagar.
-  clearWhatsAppGateCache();
-
   // B12: lease com validade (migration 20261106120000) — evita duas execuções
   // concorrentes (cron das 09h, repescagem das 15h, chamada manual). Substitui
   // o advisory lock de sessão, que via pool do PostgREST podia ficar preso.
@@ -674,9 +673,18 @@ serve(async (req) => {
     jsonLog("warn", { evt: "giftback_lease_error", err: errMessage(err) });
   }
 
+  // Estado por invocação só DEPOIS do lease: uma chamada recusada com
+  // `already_running` não mexe nos caches nem no orçamento da execução viva.
+  // B10: invalida cache de unit settings no início de cada invocação.
+  unitCache.clear();
+  // Cache do gate de WhatsApp segue o mesmo padrão — por invocação, senão um
+  // isolate quente serve estado de suspensão velho pra um cliente que acabou
+  // de pagar.
+  clearWhatsAppGateCache();
   const t0 = Date.now();
   runDeadlineMs = t0 + RUN_BUDGET_MS;
   budgetSkipped = 0;
+  budgetHit = false;
   const errors: string[] = [];
 
   try {
@@ -719,7 +727,7 @@ serve(async (req) => {
       frequency_issued: frequency.issued,
       skipped_suspended: skippedSuspended,
       send_suppressed: sendSuppressed,
-      budget_exhausted: budgetExhausted(),
+      budget_exhausted: budgetHit,
       budget_skipped: budgetSkipped,
       errors_count: errors.length,
       duration_ms: Date.now() - t0,
@@ -732,7 +740,7 @@ serve(async (req) => {
         frequency_issued: frequency.issued,
         skipped_suspended: skippedSuspended,
         send_suppressed: sendSuppressed,
-        budget_exhausted: budgetExhausted(),
+        budget_exhausted: budgetHit,
         budget_skipped: budgetSkipped,
         errors,
       }),
