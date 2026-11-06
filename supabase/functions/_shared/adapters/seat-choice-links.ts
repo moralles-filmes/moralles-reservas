@@ -1,4 +1,4 @@
-// Adapter de `seat_choice_links` (links de escolha de mesa do WhatsApp).
+// Adapter de `seat_choice_links` (links de escolha de mesa do WhatsApp e do Instagram).
 // Também a lista de salões ativos usada para achar a mesa escolhida.
 // FORCE RLS sem policy: só service role, e toda escrita leva o `unit_id` do turno.
 
@@ -7,7 +7,10 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 export interface SeatChoiceLinkRow {
   unit_id: string;
   hall_id: string;
-  channel_id: string;
+  /** Canal do WhatsApp; nulo no link do Instagram (um canal só por link). */
+  channel_id: string | null;
+  /** Conta do Instagram (`instagram_accounts.id`); nula no link do WhatsApp. */
+  instagram_account_id: string | null;
   date: string;
   time: string;
   party_size: number;

@@ -1,8 +1,10 @@
 /**
- * Página do link de escolha de mesa enviado pelo agente no WhatsApp (/mesa/:token).
+ * Página do link de escolha de mesa enviado pelo agente no WhatsApp ou no
+ * Direct do Instagram (/mesa/:token).
  *
  * Só leitura: mostra o salão do link (public-seat-map no modo token), o cliente
- * toca numa mesa livre e volta ao WhatsApp com "Quero a mesa 12" pronto. Quem
+ * toca numa mesa livre e volta à conversa: no WhatsApp com "Quero a mesa 12"
+ * pronto; no Instagram (ig.me não aceita texto) copiando a mensagem. Quem
  * cria a reserva é o agente, ao receber a mensagem. Nenhuma chamada desta
  * página escreve nada.
  */
@@ -16,12 +18,24 @@ import { CenaEscolha } from "@/components/planta/escolha/CenaEscolha";
 import { useSeatMap } from "@/components/planta/escolha/useSeatMap";
 import { buildChoiceMessage } from "@/components/planta/escolha/seat-label";
 import { formatDateBR } from "@/lib/utils";
-import type { SeatChoice } from "@/types/reserva";
+import type { SeatChoice, SeatMapResponse } from "@/types/reserva";
 
 function whatsappHref(phone: string, message: string | null): string {
   const base = `https://wa.me/${phone}`;
   return message ? `${base}?text=${encodeURIComponent(message)}` : base;
 }
+
+type Canal = "whatsapp" | "instagram" | null;
+type MapaOk = Extract<SeatMapResponse, { ok: true }>;
+
+/** Canal do link; resposta antiga (sem `channel`) só sabia do WhatsApp. */
+function canalDe(ok: MapaOk): Canal {
+  if (ok.channel !== undefined) return ok.channel;
+  return ok.whatsapp_phone ? "whatsapp" : null;
+}
+
+const NOME_CANAL = { whatsapp: "WhatsApp", instagram: "Instagram" } as const;
+const destino = (canal: Canal) => (canal ? `ao ${NOME_CANAL[canal]}` : "à conversa");
 
 type Escolha = { choice: SeatChoice; label: string };
 
@@ -36,14 +50,14 @@ export default function EscolherMesa() {
 
   let body: React.ReactNode;
   if (!token || reason === "link_invalid") {
-    body = <Aviso titulo="Este link expirou." texto="Peça outro link no WhatsApp." />;
+    body = <Aviso titulo="Este link expirou." texto="Peça outro link na conversa." />;
   } else if (query.isLoading) {
     body = <Carregando />;
   } else if (reason === "choice_disabled") {
     body = (
       <Aviso
         titulo="A escolha de mesa não está disponível agora."
-        texto="Volte ao WhatsApp para seguir com a sua reserva."
+        texto="Volte à conversa para seguir com a sua reserva."
       />
     );
   } else if (!ok) {
@@ -75,7 +89,7 @@ export default function EscolherMesa() {
         {semMesa ? (
           <Aviso
             titulo="Não há mesa livre para escolher nesse horário."
-            texto="Volte ao WhatsApp para seguir com a sua reserva."
+            texto={`Volte ${destino(canalDe(ok))} para seguir com a sua reserva.`}
           />
         ) : (
           <>
@@ -97,7 +111,9 @@ export default function EscolherMesa() {
       <main className="w-full max-w-3xl">{body}</main>
       {ok && (
         <BarraVoltar
+          canal={canalDe(ok)}
           phone={ok.whatsapp_phone}
+          username={ok.instagram_username ?? null}
           escolha={escolha}
           semMesa={!ok.map.hall.plan || !ok.map.options.some(option => option.available)}
         />
@@ -106,8 +122,22 @@ export default function EscolherMesa() {
   );
 }
 
-function BarraVoltar({ phone, escolha, semMesa }: { phone: string | null; escolha: Escolha | null; semMesa: boolean }) {
+function BarraVoltar({ canal, phone, username, escolha, semMesa }: {
+  canal: Canal;
+  phone: string | null;
+  username: string | null;
+  escolha: Escolha | null;
+  semMesa: boolean;
+}) {
   const message = escolha ? buildChoiceMessage(escolha.label) : null;
+  // Só o WhatsApp leva a mensagem pronta no link; o Instagram pede para copiar.
+  const prefill = canal === "whatsapp" && !!phone;
+  const href = prefill
+    ? whatsappHref(phone!, message)
+    : canal === "instagram" && username
+      ? `https://ig.me/m/${encodeURIComponent(username)}`
+      : null;
+  const dest = destino(canal);
 
   const copiar = async () => {
     if (!message) return;
@@ -115,42 +145,46 @@ function BarraVoltar({ phone, escolha, semMesa }: { phone: string | null; escolh
       await navigator.clipboard.writeText(message);
       toast.success("Mensagem copiada.");
     } catch {
-      toast.error("Não foi possível copiar. Escreva a mensagem no WhatsApp.");
+      toast.error(`Não foi possível copiar. Escreva a mensagem ${canal ? `no ${NOME_CANAL[canal]}` : "na conversa"}.`);
     }
   };
+
+  let texto: string;
+  if (escolha) {
+    texto = prefill
+      ? `${escolha.label} escolhida`
+      : href
+        ? `Copie e envie no Instagram: ${message}`
+        : `Volte ${dest} e envie: ${message}`;
+  } else if (semMesa) {
+    texto = `Volte ${dest} para seguir com a sua reserva.`;
+  } else {
+    texto = href ? "Escolha a mesa ou volte quando quiser." : `Escolha uma mesa e depois volte ${dest}.`;
+  }
 
   return (
     <div
       role="region"
-      aria-label="Voltar para o WhatsApp"
+      aria-label="Voltar para a conversa"
       className="surface fixed inset-x-0 bottom-0 z-40 border-t border-border"
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
       <div className="mx-auto flex min-h-14 w-full max-w-3xl flex-wrap items-center justify-between gap-2 px-4 py-2">
-        <p className="text-sm" aria-live="polite">
-          {escolha
-            ? phone
-              ? `${escolha.label} escolhida`
-              : `Volte ao WhatsApp e envie: ${message}`
-            : semMesa
-              ? "Volte ao WhatsApp para seguir com a sua reserva."
-              : phone
-                ? "Escolha a mesa ou volte quando quiser."
-                : "Escolha uma mesa e depois volte ao WhatsApp."}
-        </p>
-        {phone ? (
-          <Button asChild className="min-h-11">
-            <a href={whatsappHref(phone, message)} rel="noopener noreferrer">
-              Voltar para o WhatsApp
-            </a>
-          </Button>
-        ) : (
-          escolha && (
-            <Button type="button" className="min-h-11" onClick={copiar}>
+        <p className="text-sm" aria-live="polite">{texto}</p>
+        <div className="flex flex-wrap gap-2">
+          {escolha && !prefill && (
+            <Button type="button" variant={href ? "outline" : "default"} className="min-h-11" onClick={copiar}>
               Copiar mensagem
             </Button>
-          )
-        )}
+          )}
+          {href && canal && (
+            <Button asChild className="min-h-11">
+              <a href={href} rel="noopener noreferrer">
+                {`Voltar para o ${NOME_CANAL[canal]}`}
+              </a>
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   );

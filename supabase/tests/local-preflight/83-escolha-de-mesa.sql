@@ -934,6 +934,101 @@ select pg_temp.caso(8669, 'IG-M-16 teto de 3 ativas vale com mesas juntas: a 4ª
   || pg_temp.ig('IG4', '18:00', $x$, 'table_id', '{T13}', 'table_choice', 'system'$x$),
   'P0001 instagram_contact_reservation_limit');
 
+-- ═══ K-IG-*: link de escolha pelo Direct do Instagram (E6b, 20261107130000) ═══
+-- Contas do Instagram de A e B (desfeitas no ROLLBACK final).
+insert into t_ids values
+  ('IGA', 'a0d81000-0000-4000-8000-000000000da1'), ('IGB', 'a0d81000-0000-4000-8000-000000000db1');
+insert into public.instagram_accounts (id, unit_id, username) values
+  ('a0d81000-0000-4000-8000-000000000da1', 'a0d81000-0000-4000-8000-0000000000aa', 'loja_a'),
+  ('a0d81000-0000-4000-8000-000000000db1', 'a0d81000-0000-4000-8000-0000000000bb', 'loja_b');
+
+-- INSERT de link do Instagram (SQL a rodar como o ator do caso).
+create function pg_temp.link_ig(p_ig text, p_channel text default null, p_unit text default '{A}')
+returns text language sql as $f$
+  select format($q$insert into public.seat_choice_links
+      (unit_id, hall_id, channel_id, instagram_account_id, date, time, party_size, token_hash, expires_at)
+    values ('%s', '{S1}', %s, %s, current_date, '19:00', 4, repeat('cd', 32), now() + interval '6 hours')
+    returning id::text$q$,
+    p_unit,
+    case when p_channel is null then 'null' else quote_literal(p_channel) || '::uuid' end,
+    case when p_ig is null then 'null' else quote_literal(p_ig) || '::uuid' end)
+$f$;
+
+select pg_temp.caso(8670, 'K-IG-1 service_role grava link com a conta do Instagram de A', 'service_role',
+  pg_temp.link_ig('{IGA}') || $s$; select count(*)::text from public.seat_choice_links
+    where token_hash = repeat('cd', 32) and instagram_account_id = '{IGA}' and channel_id is null$s$,
+  'ok', $c$$1 = '1'$c$);
+select pg_temp.caso(8671, 'K-IG-2 conta do Instagram de B num link de A', 'service_role',
+  pg_temp.link_ig('{IGB}'), '42501 seat_link_invalid');
+select pg_temp.caso(8672, 'K-IG-3 conta inexistente dá a mesma recusa', 'service_role',
+  pg_temp.link_ig('a0d81000-0000-4000-8000-000000000dff'), '42501 seat_link_invalid');
+select pg_temp.caso(8673, 'K-IG-4 canal do WhatsApp e conta do Instagram no mesmo link', 'service_role',
+  pg_temp.link_ig('{IGA}', '{CA}'), '23514%seat_choice_links_one_channel_check%');
+select pg_temp.caso(8674, 'K-IG-5 conta apagada: o link fica, sem a conta', 'postgres',
+  pg_temp.link_ig('{IGA}') || $s$; delete from public.instagram_accounts where id = '{IGA}';
+  select coalesce(instagram_account_id::text, 'null') from public.seat_choice_links
+   where token_hash = repeat('cd', 32)$s$,
+  'ok', $c$$1 = 'null'$c$);
+select pg_temp.caso(8675, 'K-IG-6 link do WhatsApp segue gravando (conta nula)', 'service_role',
+  pg_temp.link() || $s$; select count(*)::text from public.seat_choice_links
+    where token_hash = repeat('ab', 32) and channel_id = '{CA}' and instagram_account_id is null$s$,
+  'ok', $c$$1 = '1'$c$);
+select pg_temp.caso(8676, 'K-IG-7 anon e authenticated não leem a coluna nova', 'postgres',
+  $s$select has_column_privilege('anon', 'public.seat_choice_links', 'instagram_account_id', 'SELECT')::text
+     || '/' || has_column_privilege('authenticated', 'public.seat_choice_links', 'instagram_account_id', 'SELECT')::text$s$,
+  'ok', $c$$1 = 'false/false'$c$);
+-- Cascata da unidade: salão (link em cascade) e conta (link set null) somem no
+-- mesmo comando; as ações de FK rodam no fim do comando, em ordem qualquer.
+select pg_temp.caso(8678, 'K-IG-8 salão e conta apagados no mesmo comando: a cascata não esbarra no guard', 'postgres',
+  pg_temp.link_ig('{IGA}') || $s$;
+  with a as (delete from public.instagram_accounts where id = '{IGA}' returning 1),
+       h as (delete from public.halls where id = '{S1}' returning 1)
+  select (select count(*) from a)::text || (select count(*) from h)::text;
+  select (select count(*) from public.seat_choice_links where token_hash = repeat('cd', 32))::text$s$,
+  'ok', $c$$1 = '0'$c$);
+select pg_temp.caso(8679, 'K-IG-9 o mesmo com o canal do WhatsApp (defeito anterior à E6b)', 'postgres',
+  pg_temp.link() || $s$;
+  with c as (delete from public.whatsapp_channels where id = '{CA}' returning 1),
+       h as (delete from public.halls where id = '{S1}' returning 1)
+  select (select count(*) from c)::text || (select count(*) from h)::text;
+  select (select count(*) from public.seat_choice_links where token_hash = repeat('ab', 32))::text$s$,
+  'ok', $c$$1 = '0'$c$);
+select pg_temp.caso(8680, 'K-IG-10 UPDATE que troca o salão por um de B segue recusado', 'postgres',
+  pg_temp.link_ig('{IGA}') || $s$;
+  update public.seat_choice_links set hall_id = '{SB}' where token_hash = repeat('cd', 32) returning id::text$s$,
+  '42501 seat_link_invalid');
+select pg_temp.caso(8681, 'K-IG-11 UPDATE que troca a conta por uma de B segue recusado', 'postgres',
+  pg_temp.link_ig('{IGA}') || $s$;
+  update public.seat_choice_links set instagram_account_id = '{IGB}' where token_hash = repeat('cd', 32) returning id::text$s$,
+  '42501 seat_link_invalid');
+-- Controle: com o corpo da 20261105130200 (confere o salão em todo UPDATE), a cascata esbarra.
+select pg_temp.caso(8682, 'K-IG-CP2 controle: guard que confere tudo no UPDATE derruba a cascata', 'postgres',
+  $s$create or replace function app_private.guard_seat_choice_link()
+     returns trigger language plpgsql security definer set search_path = '' as $g$
+     begin
+       perform 1 from public.halls h where h.id = new.hall_id and h.unit_id = new.unit_id;
+       if not found then raise exception 'seat_link_invalid' using errcode = '42501'; end if;
+       return new;
+     end $g$; $s$ || pg_temp.link() || $s$;
+  with c as (delete from public.whatsapp_channels where id = '{CA}' returning 1),
+       h as (delete from public.halls where id = '{S1}' returning 1)
+  select (select count(*) from c)::text || (select count(*) from h)::text$s$,
+  '42501 seat_link_invalid');
+-- Controle: com o corpo anterior do guard (sem a perna do Instagram), a conta de B entra.
+select pg_temp.caso(8677, 'K-IG-CP controle: guard sem a perna do Instagram aceita conta de B', 'postgres',
+  $s$create or replace function app_private.guard_seat_choice_link()
+     returns trigger language plpgsql security definer set search_path = '' as $g$
+     begin
+       perform 1 from public.halls h where h.id = new.hall_id and h.unit_id = new.unit_id;
+       if not found then raise exception 'seat_link_invalid' using errcode = '42501'; end if;
+       if new.channel_id is not null then
+         perform 1 from public.whatsapp_channels c where c.id = new.channel_id and c.unit_id = new.unit_id;
+         if not found then raise exception 'seat_link_invalid' using errcode = '42501'; end if;
+       end if;
+       return new;
+     end $g$; $s$ || pg_temp.link_ig('{IGB}'),
+  'ok');
+
 -- ═══ Resultado ═══════════════════════════════════════════════════════════════
 \o
 \pset footer off

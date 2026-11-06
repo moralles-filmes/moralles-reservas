@@ -257,7 +257,7 @@ async function hallForChoice(
 
 /**
  * `get_table_choice_link`: grava um link de escolha (só o hash do token) e
- * devolve a URL `/mesa/:token`. Só WhatsApp e só com `seat_choice_enabled`;
+ * devolve a URL `/mesa/:token`. WhatsApp (canal) ou Instagram (conta), só com `seat_choice_enabled`;
  * salão sem planta ou sem mesa livre não ganha link. Unidade e canal vêm do
  * turno, nunca do LLM.
  */
@@ -274,7 +274,10 @@ export async function getTableChoiceLink(
   },
   // deno-lint-ignore no-explicit-any
 ): Promise<any> {
-  if (scope.channel !== "whatsapp" || !scope.channelId) return { available: false, reason: "channel_unsupported" };
+  // No Instagram o `channelId` do turno é a conta (`instagram_accounts.id`); o guard do banco confere a unidade.
+  if ((scope.channel !== "whatsapp" && scope.channel !== "instagram") || !scope.channelId) {
+    return { available: false, reason: "channel_unsupported" };
+  }
   const partySize = input?.party_size;
   if (
     !validDate(input?.date) || typeof input?.time !== "string" || !TIME_RE.test(input.time) ||
@@ -304,7 +307,8 @@ export async function getTableChoiceLink(
   const inserted = await insertSeatLink(supabase, {
     unit_id: scope.unitId,
     hall_id: hallId,
-    channel_id: scope.channelId,
+    channel_id: scope.channel === "whatsapp" ? scope.channelId : null,
+    instagram_account_id: scope.channel === "instagram" ? scope.channelId : null,
     date,
     time,
     party_size: partySize,

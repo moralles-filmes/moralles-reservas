@@ -30,9 +30,13 @@ const map: SeatMap = {
   options: [{ choice: { kind: "table", id: "t12" }, tableIds: ["t12"], available: true, minCapacity: 1, maxCapacity: 4 }],
 };
 
-function okResponse(phone: string | null): SeatMapResponse {
-  return { ok: true, unit: { name: "Moralles Centro" }, hall_id: "h1", date: "2026-11-07", time: "20:00:00", party_size: 4, map, whatsapp_phone: phone };
+function okResponse(phone: string | null, over: Partial<Extract<SeatMapResponse, { ok: true }>> = {}): SeatMapResponse {
+  return {
+    ok: true, unit: { name: "Moralles Centro" }, hall_id: "h1", date: "2026-11-07", time: "20:00:00", party_size: 4, map,
+    channel: "whatsapp", whatsapp_phone: phone, instagram_username: null, ...over,
+  };
 }
+const instagram = (username: string | null) => okResponse(null, { channel: "instagram", instagram_username: username });
 
 function setQuery(data: SeatMapResponse | undefined, extra: Record<string, unknown> = {}) {
   useSeatMapMock.mockReturnValue({ data, isLoading: false, isFetching: false, isError: false, refetch: vi.fn(), ...extra });
@@ -110,7 +114,7 @@ describe("EscolherMesa", () => {
     setQuery({ ok: false, reason: "link_invalid" });
     renderPage();
     expect(screen.getByText("Este link expirou.")).toBeInTheDocument();
-    expect(screen.getByText("Peça outro link no WhatsApp.")).toBeInTheDocument();
+    expect(screen.getByText("Peça outro link na conversa.")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Voltar para o WhatsApp" })).toBeNull();
   });
 
@@ -136,6 +140,44 @@ describe("EscolherMesa", () => {
     // A barra não pede para escolher quando não há o que escolher.
     expect(screen.queryByText("Escolha a mesa ou volte quando quiser.")).toBeNull();
     expect(screen.getAllByText("Volte ao WhatsApp para seguir com a sua reserva.").length).toBeGreaterThan(0);
+  });
+
+  it("link do Instagram volta para o Direct da loja, sem texto pronto", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    setQuery(instagram("loja_moralles"));
+    renderPage();
+    const ig = () => screen.getByRole("link", { name: "Voltar para o Instagram" });
+    expect(ig()).toHaveAttribute("href", "https://ig.me/m/loja_moralles");
+    expect(screen.queryByRole("link", { name: "Voltar para o WhatsApp" })).toBeNull();
+    fireEvent.click(screen.getByText("escolher 12"));
+    expect(screen.getByText("Copie e envie no Instagram: Quero a mesa 12")).toBeInTheDocument();
+    expect(ig()).toHaveAttribute("href", "https://ig.me/m/loja_moralles");
+    fireEvent.click(screen.getByRole("button", { name: "Copiar mensagem" }));
+    expect(writeText).toHaveBeenCalledWith("Quero a mesa 12");
+  });
+
+  it("Instagram sem @ (conta desconectada): sem botão de voltar, pede para enviar no Instagram", () => {
+    setQuery(instagram(null));
+    renderPage();
+    expect(screen.queryByRole("link", { name: "Voltar para o Instagram" })).toBeNull();
+    expect(screen.getByText("Escolha uma mesa e depois volte ao Instagram.")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("escolher 12"));
+    expect(screen.getByText("Volte ao Instagram e envie: Quero a mesa 12")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copiar mensagem" })).toBeInTheDocument();
+  });
+
+  it("Instagram sem mesa livre manda voltar ao Instagram", () => {
+    setQuery({ ...instagram("loja_moralles"), map: { ...map, options: [{ ...map.options[0], available: false }] } } as SeatMapResponse);
+    renderPage();
+    expect(screen.getAllByText("Volte ao Instagram para seguir com a sua reserva.").length).toBeGreaterThan(0);
+  });
+
+  it("sem canal conhecido, fala em voltar à conversa", () => {
+    setQuery(okResponse(null, { channel: null }));
+    renderPage();
+    fireEvent.click(screen.getByText("escolher 12"));
+    expect(screen.getByText("Volte à conversa e envie: Quero a mesa 12")).toBeInTheDocument();
   });
 
   it("carregando mostra o esqueleto", () => {

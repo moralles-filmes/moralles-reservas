@@ -26,7 +26,14 @@ export interface SeatMap {
 }
 
 export type SeatMapResponse =
-  | { ok: true; unit: { name: string }; hall_id: string; date: string; time: string; party_size: number; map: SeatMap; whatsapp_phone: string | null }
+  | {
+      ok: true; unit: { name: string }; hall_id: string; date: string; time: string; party_size: number; map: SeatMap;
+      /** Canal do link (modo token); nulo no modo parâmetros ou sem canal. Ausente em resposta antiga. */
+      channel?: "whatsapp" | "instagram" | null;
+      whatsapp_phone: string | null;
+      /** @ da loja no Instagram (link do Direct); ausente em resposta antiga. */
+      instagram_username?: string | null;
+    }
   | { ok: false; reason: string };
 
 // ── Multi-tenant entities ──────────────────────────────────────────────────

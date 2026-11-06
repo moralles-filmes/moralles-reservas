@@ -182,6 +182,24 @@ describe("SalaoPlanta", () => {
     expect((screen.getByRole("button", { name: "Salvar" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("Colocar todas na planta posiciona as mesas sem posição nos lugares sugeridos e libera o Salvar", () => {
+    state.tables = [mesa("t1", 1, 200), mesa("t5", 5, null), mesa("t6", 6, null)];
+    renderPage();
+    expect(screen.getByText(/tracejadas ainda não têm lugar no salão/)).toBeTruthy();
+    const antes = (n: number) => screen.getByRole("button", { name: `Mesa ${n}, 4 lugares, sem posição` });
+    const x5 = antes(5).getAttribute("data-x");
+    const x6 = antes(6).getAttribute("data-x");
+    fireEvent.click(screen.getByRole("button", { name: "Colocar todas na planta" }));
+    const depois = (n: number) => screen.getByRole("button", { name: `Mesa ${n}, 4 lugares` });
+    expect(depois(5).getAttribute("data-positioned")).toBe("true");
+    expect(depois(6).getAttribute("data-positioned")).toBe("true");
+    expect(depois(5).getAttribute("data-x")).toBe(x5);
+    expect(depois(6).getAttribute("data-x")).toBe(x6);
+    expect(screen.getByText("Todas as mesas estão na planta.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Colocar todas na planta" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Salvar" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("R gira 15° e Delete manda a mesa para a bandeja", () => {
     renderPage();
     const mesa3 = () => screen.getByRole("button", { name: /^Mesa 3, 4 lugares/ });
