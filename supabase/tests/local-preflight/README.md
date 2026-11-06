@@ -2693,6 +2693,8 @@ P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN de novo (i
 
 **Plano B, Task 2** (migration `20261104130000_instagram_page_login.sql`, faixa 79101–79199): IG-9.1 (79101) `p_page_id` nulo, vazio, só espaços, com letra, com sinal e com 65 dígitos dão `22023 invalid_instagram_account_argument` sem gravar, a Página entra aparada, e direto na coluna `12a` esbarra no `instagram_accounts_page_id_chk` (23514) e nulo passa; IG-9.2 (79102) conectar com `111` (argumentos nomeados como a EF, `p_account_type` e `p_expires_at` nulos) grava a Página, e reconectar a mesma conta na mesma unidade com `222` reaproveita a linha com o contato intacto e o token novo; IG-9.3 (79103) a assinatura de 7 argumentos não existe, a de 8 tem os nomes da EF, é DEFINER com `search_path` vazio e EXECUTE só para `service_role`, e a coluna é `text` anulável com o CHECK validado e o comentário. Controles C-IG-9.1..C-IG-9.3 (79111–79113): store sem validar/sem aparar e coluna sem o CHECK; UPDATE e INSERT sem gravar `page_id`; EXECUTE para `authenticated`, a de 7 argumentos de volta, `search_path = public` e CHECK só `NOT VALID`. Todos os casos antigos conectam pela assinatura de 8 argumentos (`pg_temp.ig79_store_raw`, Página fixa `7900000001`). O desagendamento de `instagram-token-refresh` não roda aqui (sem `pg_cron`; o 79 prova só que a migration aplica, duas vezes, sem o schema `cron`): o gêmeo `src/lib/instagram-queue-migration-twin.test.ts` confere que ela desagenda só esse job, por `jobid`, dentro da guarda do schema, e que nenhuma migration posterior à 120500 volta a agendá-lo.
 
+**Conta imutável** (mudança instagram-account-unit-imutavel, sem migration: o guard já existia na 20261103120100): IG-9.4 (79104), gravando como `postgres`, mover a conta para outra unidade da mesma organização, para a unidade e a organização de B e só de organização dá `23514 instagram_accounts: organizacao e unidade sao imutaveis` sem gravar; UPDATE de outra coluna segue; excluir a unidade (cascata) apaga a conta dela. C-IG-9.4 (79114): sem o trigger `instagram_accounts_tenant_guard_trg` e com ele recriado sem `unit_id` na lista do UPDATE, o IG-9.4 reprova; restaurado (rollback), passa e a definição do trigger confere com o catálogo. A conta da UA2 nasce desconectada para o controle sem guard não esbarrar no índice de uma conta ativa por unidade.
+
 O 79a não muda na Task 1.2: o stub do Vault do 00-bootstrap já tem
 `vault.secrets`, `vault.decrypted_secrets`, `vault.create_secret` e
 `vault.update_secret` na forma que as RPCs usam, e `customers`/`reservations`
@@ -2714,10 +2716,11 @@ controles 7970–7976, e no fix round 1 o IG-4.8 (7967) e o C-IG-4.8 (7978);
 7949, controles 7968, 7969 e 7977; livre 7979. Task plano B (Task 2 do
 login pela Página): a faixa 7901–7999 esgotou, então a Task abre a faixa
 nova **79101–79199**, que todo filtro de `t_res` do arquivo conta junto com
-a antiga; casos 79101–79103, controles 79111–79113; 79104–79110 e
-79114–79199 livres. O 79 imprime os
-ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **104 e
-104**); quem acrescenta
+a antiga; casos 79101–79103, controles 79111–79113. Mudança
+instagram-account-unit-imutavel: caso 79104, controle 79114; 79105–79110 e
+79115–79199 livres. O 79 imprime os
+ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **106 e
+106**); quem acrescenta
 casos atualiza o número na última instrução do arquivo.
 
 **Task 1.1** (migration `20261103120000_instagram_module_grants.sql`):
