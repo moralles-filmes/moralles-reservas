@@ -11,6 +11,8 @@ import { reserveSlot } from "../_shared/availability.ts";
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
 import { recordPublicReservationConsent } from "./public-marketing-consent.ts";
 import { initialNoDepositReservationState, type InitialReservationState } from "./initial-reservation-state.ts";
+import { findRecentSameRequest, type ExistingReservation } from "../_shared/reservation-replay.ts";
+import { isReplayableAsConfirmed, publicReservationSuccessBody, type TypedCustomer } from "./public-response.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -205,6 +207,44 @@ serve(async (req) => {
       return jsonResponse({ success: false, reason: "customer_failed", message: "Falha ao registrar cliente." }, 500);
     }
 
+    // F-004: a resposta devolve o que foi digitado, nunca o cadastro achado pelo telefone.
+    const typed: TypedCustomer = {
+      name: body.customer!.name!.trim(),
+      phone,
+      email: typeof body.customer!.email === "string" && body.customer!.email.trim() ? body.customer!.email.trim() : null,
+    };
+
+    // F-002B: mesmo pedido reenviado (erro de rede, estado não confirmado)
+    // devolve a reserva que já existe em vez de criar outra. Unidade e cliente
+    // já validados acima; a busca filtra os dois.
+    const replayParams = {
+      unitId,
+      customerId: customer.id,
+      date: body.date!,
+      time: body.time!,
+      partySize: body.party_size!,
+    };
+    const replay = (existing: ExistingReservation, when: "before_insert" | "after_failure") => {
+      jsonLog("info", { requestId, evt: "create_reservation_replayed", unitId, when,
+        reservationId: existing.id, phone: sanitizePhone(phone) });
+      // Pendente ou com pagamento: não afirmar confirmação nem criar outra.
+      if (!isReplayableAsConfirmed(existing.status, existing.paymentStatus)) {
+        return jsonResponse({ success: false, reason: "state_unverified",
+          message: "Já existe uma reserva sua para este horário. Consulte o restaurante antes de tentar novamente." }, 409);
+      }
+      return jsonResponse(publicReservationSuccessBody({
+        reservationId: existing.id,
+        reservationCode: existing.reservationCode,
+        tableId: existing.tableId,
+        tableIds: existing.tableIds,
+        reservationStatus: existing.status,
+        customerId: customer.id,
+        alreadyExisted: true,
+      }, typed), 200);
+    };
+    const existingBefore = await findRecentSameRequest(supabase, replayParams);
+    if (existingBefore) return replay(existingBefore, "before_insert");
+
     // Só reservas sem caução entram neste rollout. Conferimos a configuração
     // para o hall selecionado antes do INSERT; o trigger observa confirmed.
     let initialState: InitialReservationState | null = null;
@@ -252,6 +292,13 @@ serve(async (req) => {
           message: "Reservas com caução não estão disponíveis agora. Fale com o restaurante." }, 409);
       }
       throw err;
+    }
+
+    // Corrida com o próprio envio anterior: com mesa escolhida, a reserva que
+    // acabou de nascer ocupa a mesa e a re-checagem diz seat_unavailable.
+    if (result.success === false && (result.reason === "seat_unavailable" || result.reason === "insert_failed")) {
+      const existingAfter = await findRecentSameRequest(supabase, replayParams);
+      if (existingAfter) return replay(existingAfter, "after_failure");
     }
 
     if (result.success && (initialState === null || result.reservationStatus !== "confirmed"
@@ -305,23 +352,15 @@ serve(async (req) => {
       }, 200);
     }
 
-    return jsonResponse({
-      success: true,
-      reservation_id: result.reservationId,
-      reservation_code: result.reservationCode,
-      table_id: result.tableId,
-      table_ids: result.tableIds,
-      reservation_status: result.reservationStatus,
-      requires_payment: false,
-      payment_amount_cents: null,
-      customer: {
-        id: customer.id,
-        name: customer.name,
-        phone: customer.phone,
-        email: customer.email,
-      },
-      message: "Reserva confirmada.",
-    }, 200);
+    return jsonResponse(publicReservationSuccessBody({
+      reservationId: result.reservationId,
+      reservationCode: result.reservationCode,
+      tableId: result.tableId,
+      tableIds: result.tableIds,
+      reservationStatus: result.reservationStatus,
+      customerId: customer.id,
+      alreadyExisted: false,
+    }, typed), 200);
   } catch (err) {
     jsonLog("error", { requestId, evt: "create_reservation_error", err: String(err) });
     return jsonResponse({ success: false, reason: "internal_error", message: "Erro interno." }, 500);
