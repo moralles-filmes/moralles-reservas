@@ -28,23 +28,20 @@ const stored = (over: Record<string, unknown> = {}) => ({
 describe('resolveOrCreateCustomer com telefone não verificado (portal)', () => {
   it('cadastro sem e-mail não recebe o digitado nem o aniversário', async () => {
     const { db, updates } = fakeDb(stored());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const out = await resolveOrCreateCustomer(db as any, { ...base, email: 'x@ex.com', birthday: '1990-01-01', unverifiedIdentity: true });
+    const out = await resolveOrCreateCustomer(db as never, { ...base, email: 'x@ex.com', birthday: '1990-01-01', unverifiedIdentity: true });
     expect(updates).toEqual([]);
     expect(out).toMatchObject({ id: 'c1', name: 'Ana', email: null, emails: [], birthday: null });
   });
 
   it('cadastro com e-mail ganha o digitado no fim da lista, sem trocar o principal', async () => {
     const { db, updates } = fakeDb(stored({ email: 'ana@ex.com', emails: ['ana@ex.com'] }));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await resolveOrCreateCustomer(db as any, { ...base, email: 'X@ex.com', birthday: '1990-01-01', unverifiedIdentity: true });
+    await resolveOrCreateCustomer(db as never, { ...base, email: 'X@ex.com', birthday: '1990-01-01', unverifiedIdentity: true });
     expect(updates).toEqual([{ emails: ['ana@ex.com', 'x@ex.com'] }]);
   });
 
   it('sem a flag (WhatsApp, recepção) o comportamento de sempre continua', async () => {
     const { db, updates } = fakeDb(stored());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await resolveOrCreateCustomer(db as any, { ...base, email: 'x@ex.com', birthday: '1990-01-01' });
+    await resolveOrCreateCustomer(db as never, { ...base, email: 'x@ex.com', birthday: '1990-01-01' });
     expect(updates).toEqual([{ emails: ['x@ex.com'], birthday: '1990-01-01' }]);
   });
 });
