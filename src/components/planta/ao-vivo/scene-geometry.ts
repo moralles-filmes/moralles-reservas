@@ -30,7 +30,8 @@ export function entranceRect(plan: HallPlan, scale: number, thickness: number): 
 }
 
 export function mesaAriaLabel(box: TableBox, state: TableState, now: Date): string {
-  const head = `Mesa ${box.number}, ${box.capacity} lugares`;
+  // Capacidade 0 = desconhecida (mesa sem opção no mapa público): não anuncia "0 lugares".
+  const head = box.capacity > 0 ? `Mesa ${box.number}, ${box.capacity} lugares` : `Mesa ${box.number}`;
   if (state.situation === "occupied" && state.occupant) {
     const tempo = elapsedLabel(state.occupant.since, now);
     return `${head}, ${SITUATION_LABEL.occupied} ${tempo === "agora" ? "agora" : `há ${tempo}`}${state.overtime ? ", passou do tempo" : ""}`;
