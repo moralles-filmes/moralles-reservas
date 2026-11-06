@@ -7,6 +7,8 @@
 //        - Faz APPEND no array `emails` se vier e-mail novo (dedup case-insensitive).
 //        - Preenche birthday só se hoje é null.
 //   3. Se NÃO existe: insere customer novo com name/phone/email/birthday.
+//   4. `unverifiedIdentity` (portal público): no cadastro existente, e-mail só
+//      entra em lista que já tem e-mail e aniversário não é preenchido.
 //
 // Usado por:
 //   - supabase/functions/create-reservation/index.ts
@@ -21,6 +23,13 @@ export interface ResolveCustomerInput {
   name: string;
   email?: string | null;
   birthday?: string | null;   // YYYY-MM-DD
+  /**
+   * Telefone digitado e não verificado (portal público). Em cadastro EXISTENTE:
+   * o e-mail só entra se o cadastro já tem e-mail (vai ao fim da lista, nunca
+   * vira o principal — emails[0], espelhado em customers.email, recebe as
+   * confirmações) e o aniversário não é preenchido. Cadastro novo segue igual.
+   */
+  unverifiedIdentity?: boolean;
 }
 
 export interface ResolvedCustomer {
@@ -61,13 +70,16 @@ export async function resolveOrCreateCustomer(
     // PRESERVA nome. Append email novo (dedup case-insensitive). Birthday só se null.
     const currentEmails: string[] = Array.isArray(existing.emails) ? existing.emails : [];
     let emailsNext = currentEmails;
-    if (normEmail && !currentEmails.some((e) => e.toLowerCase() === normEmail)) {
+    // Sem identidade verificada, lista vazia não recebe e-mail: o primeiro item
+    // viraria o principal de um cadastro que pode ser de outra pessoa.
+    const mayAppendEmail = !input.unverifiedIdentity || currentEmails.length > 0;
+    if (mayAppendEmail && normEmail && !currentEmails.some((e) => e.toLowerCase() === normEmail)) {
       emailsNext = [...currentEmails, normEmail];
     }
 
     const updates: Record<string, unknown> = {};
     if (emailsNext !== currentEmails) updates.emails = emailsNext;
-    if (input.birthday && !existing.birthday) updates.birthday = input.birthday;
+    if (!input.unverifiedIdentity && input.birthday && !existing.birthday) updates.birthday = input.birthday;
 
     if (Object.keys(updates).length === 0) {
       return {

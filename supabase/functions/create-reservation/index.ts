@@ -204,7 +204,8 @@ serve(async (req) => {
 
     // Resolve customer com merge preservando dados:
     //   - lookup por (organization_id, phone)
-    //   - se existe: PRESERVA nome cadastrado, append em emails[], birthday só se null
+    //   - se existe: PRESERVA nome; e-mail só ao fim de lista que já tem e-mail
+    //     (nunca vira o principal); aniversário não é preenchido (telefone não verificado)
     //   - se não existe: cria
     let customer;
     try {
@@ -214,6 +215,8 @@ serve(async (req) => {
         name: body.customer!.name!.trim(),
         email: body.customer!.email ?? null,
         birthday: body.customer!.birthday ?? null,
+        // Portal anônimo: telefone digitado, não verificado.
+        unverifiedIdentity: true,
       });
     } catch (err) {
       jsonLog("error", { requestId, evt: "create_reservation_customer_failed", ...errorLogFields(err) });
