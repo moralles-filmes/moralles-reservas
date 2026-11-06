@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/lib/supabase";
-import type { SeatMapResponse } from "@/types/reserva";
+import { fetchPublicSeatMap } from "@/features/planta/api";
 
 type SeatMapInput = { unitId: string; hallId: string; date: string; time: string; partySize: number } | { token: string };
 
@@ -10,12 +9,8 @@ export function useSeatMap(input: SeatMapInput | null) {
   };
   return useQuery({
     queryKey: ["seat-map", ...(body ? Object.values(body) : [])],
-    enabled: input !== null,
+    enabled: body !== null,
     staleTime: 30_000,
-    queryFn: async (): Promise<SeatMapResponse> => {
-      const { data, error } = await supabase.functions.invoke<SeatMapResponse>("public-seat-map", { body });
-      if (error) throw error;
-      return data;
-    },
+    queryFn: () => fetchPublicSeatMap(body!),
   });
 }
