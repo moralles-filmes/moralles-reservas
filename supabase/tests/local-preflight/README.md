@@ -3710,3 +3710,47 @@ harness) nem o PostgREST.
 Base do 80 (00 → 01 → 09a → 106 → 75a → `20261019180000` → 80a → `20261029120100`). RED: o 85 aborta com "seat_choice_enabled fora da classe manager" sem a `20261106140000`. GREEN: aplique a migration e rode o 85 (ordinais 8501–8510, **esperado 10 e 10**); rode o 80 em seguida (31/31: o guard recriado não muda o resto). O 85 reaplica a própria migration no início, então pode rodar depois do 75/80. Casos: gerente e owner gravam booleano; operador e gerente de outra unidade recebem `42501`; valor não booleano (`"true"`, 1, 0, null, objeto, array) recebe `22023` para gerente, `service_role` e `postgres`; anon recusado; classes de `booking_window_days` e `ai_system_prompt` intactas; ACL das duas funções; C1 (sem a migration o gerente recebe `42501` e o postgres grava `"sim"`); idempotência (S9).
 
 Medido em 2026-11-05 (container `postgres:18` descartável, `--network none`): RED como acima; 10/10; 80 em seguida 31/31.
+
+### 86 — Canal do WhatsApp não muda de unidade
+
+Pré-voo da migration `20261107140000_whatsapp_channel_unit_immutable.sql`: o trigger
+`whatsapp_channels_unit_immutable` (`before update of unit_id`) chama
+`app_private.guard_whatsapp_channel_unit()` e recusa qualquer mudança de `unit_id`
+com `42501 whatsapp_channel_unit_immutable`. O `86a` cria só `organizations`,
+`units` e `whatsapp_channels` (FK `on delete cascade`, FORCE RLS sem policy,
+grant de tabela ao `service_role`) e recusa rodar depois da migration.
+Contêiner novo, `--network none`; roda **da raiz do repo**.
+
+```bash
+docker run -d --name chunit86-pg --network none -e POSTGRES_PASSWORD=x \
+  public.ecr.aws/supabase/postgres:17.11.0.004
+docker exec chunit86-pg psql -U supabase_admin -d postgres -Atc "alter database postgres set lc_messages='C'"
+P() { docker exec -i chunit86-pg psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1; }
+P < supabase/tests/local-preflight/86a-whatsapp-channel-unit-bootstrap.sql
+P < supabase/tests/local-preflight/86-whatsapp-channel-unit-immutable.sql        # RED (recusa: sem migration)
+P < supabase/migrations/20261107140000_whatsapp_channel_unit_immutable.sql
+P < supabase/tests/local-preflight/86-whatsapp-channel-unit-immutable.sql        # GREEN86 14/14
+P < supabase/migrations/20261107140000_whatsapp_channel_unit_immutable.sql       # reaplicar (também em CRLF)
+P < supabase/tests/local-preflight/86-whatsapp-channel-unit-immutable.sql        # GREEN86 14/14
+docker rm -f chunit86-pg
+```
+
+- **8601–8606:** `service_role` move canal `zapi`/`uazapi`/`official`/`datafy`,
+  `postgres` move canal e `unit_id → null`: todos `42501 whatsapp_channel_unit_immutable`.
+- **8607–8608:** `set unit_id` com o mesmo valor passa (PATCH que reenvia a coluna);
+  os canais seguem na unidade original.
+- **8609–8610:** UPDATE de outras colunas segue; excluir a unidade apaga o canal pela FK.
+- **8611–8612:** `SECURITY DEFINER`, `search_path=""`, sem EXECUTE para PUBLIC/anon/
+  authenticated/service_role; trigger único, por linha, `BEFORE UPDATE OF unit_id`, habilitado.
+- **C-86-1 (8699/8698):** sem o trigger o mesmo move do 8601 passa; o trigger volta
+  habilitado depois do rollback.
+
+Também rodadas com a migration aplicada (mesma imagem, sem rede): a 65
+(`65a` sem as linhas `create role`, mais `create schema app_private`) e a sequência
+base até 07/08 (migration aplicada logo após `20260901225539`), todas verdes.
+
+**Resultados observados em 06/11/2026** (imagem `supabase/postgres:17.11.0.004`):
+RED pela recusa; **14/14** com a migration em LF, reaplicada e em CRLF; 65, 07 e 08 verdes.
+
+O que NÃO prova: PostgREST/JWT. O `scripts/function-acl-allowlist.json` não precisa
+de entrada: a função não tem EXECUTE para nenhum papel de API.
