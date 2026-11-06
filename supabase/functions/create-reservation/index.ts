@@ -235,8 +235,10 @@ serve(async (req) => {
       return jsonResponse(publicReservationSuccessBody({
         reservationId: existing.id,
         reservationCode: existing.reservationCode,
-        tableId: existing.tableId,
-        tableIds: existing.tableIds,
+        // Portal anônimo, telefone não verificado: as mesas da reserva existente
+        // não voltam (menos dado a quem só sabe o telefone; a tela não as usa).
+        tableId: null,
+        tableIds: [],
         reservationStatus: existing.status,
         customerId: customer.id,
         alreadyExisted: true,
