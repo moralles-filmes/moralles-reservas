@@ -133,6 +133,9 @@ describe("EscolherMesa", () => {
     renderPage();
     expect(screen.getByText("Não há mesa livre para escolher nesse horário.")).toBeInTheDocument();
     expect(screen.queryByText("escolher 12")).toBeNull();
+    // A barra não pede para escolher quando não há o que escolher.
+    expect(screen.queryByText("Escolha a mesa ou volte quando quiser.")).toBeNull();
+    expect(screen.getAllByText("Volte ao WhatsApp para seguir com a sua reserva.").length).toBeGreaterThan(0);
   });
 
   it("carregando mostra o esqueleto", () => {

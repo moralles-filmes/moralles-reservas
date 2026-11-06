@@ -156,7 +156,7 @@ export const TABLE_CHOICE_LINK_TOOL: AgentToolDefinition = {
 
 export const TABLE_CHOICE_PARAM = {
   type: "string",
-  description: "Mesa ou mesas que o cliente escolheu no link, como ele escreveu, ex.: \"12\" ou \"3+4+5\". Omita se ele não tem preferência.",
+  description: "Só o número da mesa ou das mesas que o cliente escolheu no link, ex.: \"12\" ou \"3+4+5\" (sem horário, pessoas ou outros números). Omita se ele não tem preferência.",
 } as const;
 
 // ─── Tool implementations (all unit-scoped) ───────────────────────────────────
@@ -382,7 +382,8 @@ async function resolveCustomerTableChoice(
       success: false,
       reason: "seat_unavailable",
       message: "A mesa escolhida não está livre (ou não existe) para esse horário e número de pessoas. Ofereça as opções abaixo ou envie um novo link.",
-      options: firstOptions,
+      // Com vários salões e nenhum nomeado, não há salão certo para sugerir.
+      options: hallIds.length === 1 ? firstOptions : [],
     },
   };
 }

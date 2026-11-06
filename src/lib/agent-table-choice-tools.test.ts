@@ -269,6 +269,15 @@ describe("create_reservation com table_choice", () => {
     expect(h.reserveSlot).not.toHaveBeenCalled();
   });
 
+  it("vários salões sem salão nomeado e mesa não achada → sem opções de um salão qualquer", async () => {
+    const s = seed();
+    s.halls.push({ id: "hall-b", unit_id: UNIT, name: "Varanda", active: true, allow_empty_seat: false });
+    const { db } = fakeDb(s);
+    const r = await createReservation(db as never, { ...base, table_choice: "77" });
+    expect(r).toMatchObject({ success: false, reason: "seat_unavailable", options: [] });
+    expect(h.loadSeatMap).toHaveBeenCalledTimes(2);
+  });
+
   it("texto sem número → seat_unavailable pedindo o número", async () => {
     const { db } = fakeDb(seed());
     const r = await createReservation(db as never, { ...base, table_choice: "mesa doze" });
@@ -332,13 +341,24 @@ describe("ferramentas oferecidas", () => {
     expect(JSON.parse(await off("get_table_choice_link", input)).error).toMatch(/desconhecida/);
   });
 
-  it("table_choice só chega à reserva com a escolha oferecida no turno", async () => {
+  it("mesa pedida sem a escolha no turno: recusa sem reservar nem desligar o retry", async () => {
+    const { createToolDispatcher } = await load();
+    const { db } = fakeDb(seed());
+    const st = state();
+    const off = createToolDispatcher({ supabase: db, requestId: "r", ctx, conv: { id: "conv" }, state: st });
+    const r = JSON.parse(await off("create_reservation", { customer_name: "Ana", date: "2026-11-07", time: "20:00", party_size: 4, table_choice: "12" }));
+    expect(r).toMatchObject({ success: false, reason: "seat_choice_disabled" });
+    expect(h.reserveSlot).not.toHaveBeenCalled();
+    expect(st.mutatingToolUsed).toBe(false);
+  });
+
+  it("table_choice chega à reserva com a escolha oferecida; sem ele, a reserva sai sem choice", async () => {
     h.resolveOrCreateCustomer.mockResolvedValue({ id: "cust-1" });
     h.reserveSlot.mockResolvedValue({ success: true, reservationCode: "ABC123", reservationId: "res-1" });
     const { createToolDispatcher } = await load();
     const { db } = fakeDb(seed());
     const off = createToolDispatcher({ supabase: db, requestId: "r", ctx, conv: { id: "conv" }, state: state() });
-    await off("create_reservation", { customer_name: "Ana", date: "2026-11-07", time: "20:00", party_size: 4, table_choice: "12" });
+    await off("create_reservation", { customer_name: "Ana", date: "2026-11-07", time: "20:00", party_size: 4 });
     expect(h.reserveSlot.mock.calls[0][1]).not.toHaveProperty("choice");
     const on = createToolDispatcher({ supabase: db, requestId: "r", ctx, conv: { id: "conv" }, state: state(), tableChoice: true });
     await on("create_reservation", { customer_name: "Ana", date: "2026-11-07", time: "20:00", party_size: 4, table_choice: "12" });

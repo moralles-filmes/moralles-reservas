@@ -95,12 +95,18 @@ export default function EscolherMesa() {
   return (
     <div className="min-h-screen ambient bg-background text-foreground flex flex-col items-center px-4 pt-6 sm:pt-10 pb-36">
       <main className="w-full max-w-3xl">{body}</main>
-      {ok && <BarraVoltar phone={ok.whatsapp_phone} escolha={escolha} />}
+      {ok && (
+        <BarraVoltar
+          phone={ok.whatsapp_phone}
+          escolha={escolha}
+          semMesa={!ok.map.hall.plan || !ok.map.options.some(option => option.available)}
+        />
+      )}
     </div>
   );
 }
 
-function BarraVoltar({ phone, escolha }: { phone: string | null; escolha: Escolha | null }) {
+function BarraVoltar({ phone, escolha, semMesa }: { phone: string | null; escolha: Escolha | null; semMesa: boolean }) {
   const message = escolha ? buildChoiceMessage(escolha.label) : null;
 
   const copiar = async () => {
@@ -126,9 +132,11 @@ function BarraVoltar({ phone, escolha }: { phone: string | null; escolha: Escolh
             ? phone
               ? `${escolha.label} escolhida`
               : `Volte ao WhatsApp e envie: ${message}`
-            : phone
-              ? "Escolha a mesa ou volte quando quiser."
-              : "Escolha uma mesa e depois volte ao WhatsApp."}
+            : semMesa
+              ? "Volte ao WhatsApp para seguir com a sua reserva."
+              : phone
+                ? "Escolha a mesa ou volte quando quiser."
+                : "Escolha uma mesa e depois volte ao WhatsApp."}
         </p>
         {phone ? (
           <Button asChild className="min-h-11">
