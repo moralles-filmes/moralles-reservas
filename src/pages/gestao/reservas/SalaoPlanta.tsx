@@ -122,6 +122,18 @@ export default function SalaoPlanta() {
     );
   };
 
+  // Os lugares sugeridos já saem sem sobreposição (resolveTableBoxes): só confirma.
+  const placeAllPending = () => {
+    if (readOnly || !plan) return;
+    setBoxes((prev) =>
+      relayout(
+        plan,
+        prev.map((b) => (b.positioned ? b : clampBox({ ...b, positioned: true }, plan))),
+        tables,
+      ),
+    );
+  };
+
   const moveBox = (id: string, x: number, y: number) =>
     editBoxes(id, (b) => ({ ...b, x, y, positioned: true }));
 
@@ -336,6 +348,7 @@ export default function SalaoPlanta() {
             boxes={boxes}
             readOnly={readOnly}
             onPlace={(id) => editBoxes(id, (b) => ({ ...b, positioned: true }))}
+            onPlaceAll={placeAllPending}
           />
           {plan && <SalaoPropriedades plan={plan} readOnly={readOnly} onChange={changePlan} />}
         </div>
