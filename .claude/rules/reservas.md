@@ -78,5 +78,4 @@ paths:
 - **Sob suspensão de WhatsApp, aniversário cria o voucher e só suprime o envio; frequência pula a regra inteira.** Assimetria deliberada: a data de aniversário não volta (perda permanente se pular), a janela de frequência é recalculada a cada execução (adiado, sem perda). `suppressSend` em `IssueArgs`. [process-voucher-triggers/index.ts](supabase/functions/process-voucher-triggers/index.ts).
 - **Phone vazio = skip.** Workers filtram `phoneDigits.length >= 10` antes do `issueAndSend`.
 - **29/02 em ano não-bissexto → dispara em 28/02** (regra civil BR). Lógica em `getTodayBrtParts` + flag `acceptLeapBirthday`.
-- **Advisory lock no worker:** `try_giftback_lock()` no início, `release_giftback_lock()` no `finally`. Falha aberta é OK — UNIQUE PARTIAL pega o resto.
 - **Mensagem do voucher é appendada em `conversations.messages`** (rating intercept + comment intercept chamam `appendToConversation` pro incoming "5" E pro outgoing). Sem isso, operador vê buraco na thread.
