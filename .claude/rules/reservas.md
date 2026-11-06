@@ -5,6 +5,10 @@ paths:
   - "supabase/functions/_shared/resolve-customer.ts"
   - "supabase/functions/_shared/phone.ts"
   - "supabase/functions/_shared/public-br-phone.ts"
+  - "supabase/functions/_shared/adapters/hall-seating.ts"
+  - "supabase/functions/_shared/adapters/seat-choice-links.ts"
+  - "supabase/functions/_shared/seat-link-core.ts"
+  - "supabase/functions/public-seat-map/**"
   - "supabase/functions/create-reservation/**"
   - "supabase/functions/create-manual-reservation/**"
   - "supabase/functions/update-reservation/**"
@@ -39,6 +43,18 @@ paths:
 - **Alterar reserva existente chama `checkAvailability` com `excludeReservationId` (a própria reserva) e `preferTableId` (mesa atual), no salão da mesa atual, e grava `table_id = suggestedTableId ?? null`, salvo mesa ou salão escolhidos pelo gerente no painel — que só valem se forem da unidade da reserva.** Sem a exclusão a reserva colide consigo mesma; sem gravar a mesa ela fica numa mesa ocupada no novo horário; sem conferir a unidade do id vindo do body, o service role grava mesa de outro tenant. Reserva nova não passa os dois. [agent-reservation-tools.ts](supabase/functions/_shared/agent-reservation-tools.ts), [update-reservation](supabase/functions/update-reservation/index.ts).
 - **Escolha de mesa pelo cliente só vale com `settings.seat_choice_enabled = true` (JSON booleano) da unidade; ausente, outro valor ou erro de leitura = desligada (falha FECHADA).** O gate fica em `reserveSlot` (`choice` + `tableChoice "customer"` → `seat_choice_disabled`, antes de qualquer leitura) e em `public-seat-map` (`choice_disabled`); caminho novo do cliente com escolha (agente, Instagram, link) passa por esses dois, nunca lê a chave por conta própria. A recepção não é afetada. [loadSeatChoiceEnabled](supabase/functions/_shared/adapters/hall-seating.ts), [spec](docs/superpowers/specs/2026-11-05-escolha-de-mesa-chave-design.md).
 - **Timestamps em `availability.ts` SEMPRE com offset BRT explícito (`-03:00`).** Deno runtime é UTC; sem offset, comparação contra `table_blocks.blocked_from/to` (BRT no banco) fica 3h fora e bloqueios parciais (ex.: 19h-22h) deixam reservas escaparem na borda. Replicar em qualquer query nova nesse arquivo.
+
+## Mesas, ocupação e escolha de mesa
+
+- **`occupant_tables` é a fonte de ocupação de mesa (reserva, passante e fila); `table_id` dessas três tabelas é só a mesa principal.** O trigger `sync_occupant_tables` mantém os caminhos legados: gravar um `table_id` fora das linhas atuais troca a junção inteira só pela principal (as outras mesas se soltam). Trocar, juntar ou gravar várias mesas passa por `set_occupant_tables` ou `insert_reservation_with_tables`, nunca por UPDATE de `table_id`. [migration](supabase/migrations/20261105130100_ocupacao_multi_mesa.sql).
+- **Duas ocupações da mesma mesa com janelas cruzadas são barradas pela exclusão `gist` de `occupant_tables` (`23P01`); só a recepção grava sobreposição (`overlap_ok`, via `set_occupant_tables(p_allow_overlap => true)`).** Mudar data ou hora da reserva desfaz o `overlap_ok`. `reserveSlot` repete a checagem em `23505` e em `23P01`; caminho novo que grava mesa trata `23P01` como corrida de mesa, nunca como 500. [availability.ts](supabase/functions/_shared/availability.ts).
+- **A escolha do cliente (`choice`) é atendida com a mesa escolhida ou recusada com `seat_unavailable`, e nunca vira outra mesa nem reserva flutuante, mesmo com overbooking.** O cliente viu aquela mesa na tela; trocar em silêncio quebra a promessa. Reservas flutuantes são alocadas depois e não recusam a escolha.
+- **Mesa com `bookable = false` fica fora da reserva automática, da escolha do cliente e das combinações (`42501 combination_invalid`); a recepção ainda senta nela.** `insert_reservation_with_tables` e a reserva do Instagram exigem mesa `active` e `bookable`.
+- **Passante e fila sentados (`status = 'seated'`, desde ontem BRT) ocupam a mesa no cálculo de disponibilidade e no mapa público.** Sem isso o sistema oferece mesa com gente sentada. [hall-seating.ts](supabase/functions/_shared/adapters/hall-seating.ts).
+- **Leitura que decide disponibilidade falha FECHADA (`readFailed` lança `availability_read_failed`; a `public-seat-map` responde 503, as demais respondem erro).** Erro descartado vira "sem bloqueio" ou "sem reserva" e vende mesa ocupada.
+- **`table_choice` registra quem escolheu a mesa: `customer` (página ou link), `system` (automático) ou `staff` (recepção trocou ou juntou); `original_party_size` guarda as pessoas antes do primeiro ajuste e não entra nos totais** (relatórios contam `party_size`). O histórico confiável das trocas é `occupancy_events`.
+- **O link de escolha (`/mesa/:token`) só existe no banco como SHA-256 (`seat_choice_links.token_hash`), vale 6 h, e `public-seat-map` responde `link_invalid` igual para token malformado, inexistente, vencido ou de unidade/organização não pública.** Respostas diferentes viram oráculo de link. A resposta não leva dado pessoal (só salão, mesas, situação e o telefone do canal do restaurante). [core.ts](supabase/functions/public-seat-map/core.ts), [seat-link-core.ts](supabase/functions/_shared/seat-link-core.ts).
+- **A RPC grava a reserva com mesas e a releitura falha → a EF devolve `409 state_unverified` ("criada, estado não confirmado"), nunca `insert_failed`.** O cliente que tenta de novo esbarra na própria reserva.
 
 ## Reservas, clientes e telefone
 
