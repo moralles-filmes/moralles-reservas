@@ -34,6 +34,18 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+/**
+ * Log de erro só com classe e code: o texto do PostgREST/rede pode trazer host,
+ * coluna ou dado do cliente.
+ */
+function errorLogFields(err: unknown) {
+  const code = (err as { code?: unknown } | null)?.code;
+  return {
+    errorClass: err instanceof Error ? err.name : typeof err,
+    code: typeof code === "string" ? code.slice(0, 16) : null,
+  };
+}
+
 const RATE_LIMIT_WINDOW_SECONDS = 60;
 const RATE_LIMIT_MAX = 5;
 
@@ -192,7 +204,8 @@ serve(async (req) => {
 
     // Resolve customer com merge preservando dados:
     //   - lookup por (organization_id, phone)
-    //   - se existe: PRESERVA nome cadastrado, append em emails[], birthday só se null
+    //   - se existe: PRESERVA nome; e-mail só ao fim de lista que já tem e-mail
+    //     (nunca vira o principal); aniversário não é preenchido (telefone não verificado)
     //   - se não existe: cria
     let customer;
     try {
@@ -202,9 +215,11 @@ serve(async (req) => {
         name: body.customer!.name!.trim(),
         email: body.customer!.email ?? null,
         birthday: body.customer!.birthday ?? null,
+        // Portal anônimo: telefone digitado, não verificado.
+        unverifiedIdentity: true,
       });
     } catch (err) {
-      jsonLog("error", { requestId, evt: "create_reservation_customer_failed", err: String(err) });
+      jsonLog("error", { requestId, evt: "create_reservation_customer_failed", ...errorLogFields(err) });
       return jsonResponse({ success: false, reason: "customer_failed", message: "Falha ao registrar cliente." }, 500);
     }
 
@@ -329,12 +344,22 @@ serve(async (req) => {
       }),
     );
 
-    // Persiste extras (custom_field_values) na reserva criada
+    // Persiste extras (custom_field_values) na reserva criada. A reserva já
+    // existe: falha aqui não desfaz nem muda a resposta, só fica no log. O
+    // predicado leva a unidade e o .select() confere a linha (UPDATE que casa
+    // zero linhas devolve error: null).
     if (result.success && body.custom_field_values && Object.keys(body.custom_field_values).length) {
-      await supabase
+      const { data: cfRows, error: cfError } = await supabase
         .from("reservations")
         .update({ custom_field_values: body.custom_field_values })
-        .eq("id", result.reservationId);
+        .eq("id", result.reservationId)
+        .eq("unit_id", unitId)
+        .select("id");
+      if (cfError || !Array.isArray(cfRows) || cfRows.length !== 1) {
+        jsonLog("error", { requestId, evt: "create_reservation_custom_fields_failed", unitId,
+          reservationId: result.reservationId, code: cfError?.code ?? null,
+          rows: Array.isArray(cfRows) ? cfRows.length : null });
+      }
     }
 
     jsonLog("info", {
@@ -365,7 +390,7 @@ serve(async (req) => {
       alreadyExisted: false,
     }, typed), 200);
   } catch (err) {
-    jsonLog("error", { requestId, evt: "create_reservation_error", err: String(err) });
+    jsonLog("error", { requestId, evt: "create_reservation_error", ...errorLogFields(err) });
     return jsonResponse({ success: false, reason: "internal_error", message: "Erro interno." }, 500);
   }
 });
