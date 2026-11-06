@@ -35,6 +35,7 @@ export function WizardSuccess() {
         <Row label="Data" value={formatDateBR(reserva.date)} />
         <Row label="Horário" value={reserva.time} />
         <Row label="Pessoas" value={String(reserva.party_size)} />
+        {state.seat && <Row label="Mesa" value={state.seat.label} />}
       </div>
       <p className="text-xs text-muted-foreground">
         Guarde seu código para consultar ou alterar a reserva.

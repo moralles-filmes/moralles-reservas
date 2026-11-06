@@ -75,6 +75,7 @@ export interface CreateReservaParams extends ReservaFormData {
   unit_id: string;
   organization_id: string;
   hall_id?: string | null;
+  seat?: { kind: "table" | "combination"; id: string } | null;
   widget_id?: string;
   custom_field_values?: Record<string, string>;
   birthday?: string | null;
@@ -99,6 +100,13 @@ interface CreateReservationFnResponse {
   };
 }
 
+export class CreateReservaError extends Error {
+  constructor(message: string, public reason: string | null = null) {
+    super(message);
+    this.name = "CreateReservaError";
+  }
+}
+
 const REASON_MESSAGES: Record<string, string> = {
   closed_day: "Estamos fechados nesta data.",
   outside_hours: "Este horário está fora do nosso atendimento.",
@@ -107,6 +115,7 @@ const REASON_MESSAGES: Record<string, string> = {
   rate_limited: "Muitas tentativas. Aguarde um instante e tente novamente.",
   invalid_input: "Dados da reserva inválidos.",
   unit_invalid: "Unidade inválida.",
+  seat_choice_disabled: "A escolha de mesa não está disponível agora. Siga sem preferência.",
   seat_unavailable: "Essa mesa acabou de ser reservada. Escolha outra.",
 };
 
@@ -122,6 +131,7 @@ export function useCreateReserva() {
             organization_id: data.organization_id,
             hall_id: data.hall_id ?? null,
             widget_id: data.widget_id ?? null,
+            seat: data.seat ?? null,
             custom_field_values: data.custom_field_values ?? null,
             customer: {
               name: data.name,
@@ -143,12 +153,13 @@ export function useCreateReserva() {
         type WithContext = { context?: { body?: string } };
         const ctx = (error as WithContext).context;
         if (ctx?.body) {
+          let parsed: CreateReservationFnResponse | undefined;
           try {
-            const parsed = JSON.parse(ctx.body) as CreateReservationFnResponse;
+            parsed = JSON.parse(ctx.body) as CreateReservationFnResponse;
+          } catch { /* Corpo não JSON: preservar o erro original. */ }
+          if (parsed) {
             const fallback = parsed.reason ? REASON_MESSAGES[parsed.reason] : undefined;
-            throw new Error(parsed.message || fallback || error.message);
-          } catch (parseErr) {
-            if (parseErr instanceof Error && parseErr.message !== error.message) throw parseErr;
+            throw new CreateReservaError(parsed.message || fallback || error.message, parsed.reason ?? null);
           }
         }
         throw error;
@@ -156,7 +167,7 @@ export function useCreateReserva() {
 
       if (!response || !response.success) {
         const reasonMsg = response?.reason ? REASON_MESSAGES[response.reason] : undefined;
-        throw new Error(response?.message || reasonMsg || "Não foi possível criar a reserva.");
+        throw new CreateReservaError(response?.message || reasonMsg || "Não foi possível criar a reserva.", response?.reason ?? null);
       }
 
       if (!response.reservation_id || !response.reservation_code || !response.customer?.id
@@ -193,6 +204,11 @@ export function useCreateReserva() {
       };
 
       return reserva;
+    },
+    onError: (error) => {
+      if (error instanceof CreateReservaError && error.reason === "seat_unavailable") {
+        queryClient.invalidateQueries({ queryKey: ["seat-map"] });
+      }
     },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["reservas", vars.unit_id] });
