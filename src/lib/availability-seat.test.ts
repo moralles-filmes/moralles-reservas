@@ -55,9 +55,13 @@ function table(id: string, number: number, min: number, max: number, extra: Row 
   return { id, unit_id: UNIT, hall_id: "hall-1", number, active: true, bookable: true, min_capacity: min, max_capacity: max, ...extra };
 }
 
-function base(opts: { overbooking?: boolean; reservations?: Row[]; occupants?: Row[]; walkIns?: Row[]; plan?: boolean } = {}) {
+function base(opts: { overbooking?: boolean; reservations?: Row[]; occupants?: Row[]; walkIns?: Row[]; plan?: boolean; seatChoice?: boolean | null } = {}) {
   return {
-    settings: opts.overbooking ? [{ unit_id: UNIT, key: "allow_overbooking", value: true }] : [],
+    settings: [
+      ...(opts.overbooking ? [{ unit_id: UNIT, key: "allow_overbooking", value: true }] : []),
+      // Chave da escolha do cliente ligada por padrão nos testes; `seatChoice: null` = sem linha.
+      ...(opts.seatChoice === null ? [] : [{ unit_id: UNIT, key: "seat_choice_enabled", value: opts.seatChoice ?? true }]),
+    ],
     special_dates: [],
     table_blocks: [],
     halls: [
@@ -446,5 +450,72 @@ describe("loadSeatMap", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const map = await loadSeatMap(db as any, { unitId: UNIT, hallId: "hall-1", date: DATE, time: "23:30", partySize: 2 });
     expect(map).toEqual({ error: "outside_hours" });
+  });
+});
+
+describe("reserveSlot: chave seat_choice_enabled", () => {
+  const params = { unitId: UNIT, hallId: "hall-1", date: DATE, time: "21:00", partySize: 2, customerId: "c1", status: "confirmed", source: "web" };
+
+  it.each([
+    ["desligada (false)", false],
+    ["ausente (sem linha)", null],
+  ] as const)("chave %s: escolha do cliente recusada com seat_choice_disabled, nada gravado", async (_label, seatChoice) => {
+    const db = memoryDb(base({ seatChoice }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await reserveSlot(db as any, { ...params, choice: { kind: "table", id: "t-a" } } as any);
+    expect(out).toMatchObject({ success: false, reason: "seat_choice_disabled" });
+    expect(db.inserts).toEqual([]);
+    expect(db.calls).toEqual([]);
+  });
+
+  it("chave ligada: a mesa escolhida é gravada como escolha do cliente", async () => {
+    const db = memoryDb(base({ seatChoice: true }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await reserveSlot(db as any, { ...params, choice: { kind: "table", id: "t-b" } } as any);
+    expect(out).toMatchObject({ success: true, tableId: "t-b" });
+    expect(db.inserts[0]).toMatchObject({ table_id: "t-b", table_choice: "customer" });
+  });
+
+  it("chave desligada não afeta reserva sem escolha (o sistema escolhe a mesa)", async () => {
+    const db = memoryDb(base({ seatChoice: false }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await reserveSlot(db as any, params as any);
+    expect(out).toMatchObject({ success: true });
+    expect(db.inserts[0]).toMatchObject({ table_choice: "system" });
+  });
+
+  it("valor não booleano (\"true\") conta como desligada", async () => {
+    const tables = base({ seatChoice: null });
+    (tables.settings as Row[]).push({ unit_id: UNIT, key: "seat_choice_enabled", value: "true" });
+    const db = memoryDb(tables);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await reserveSlot(db as any, { ...params, choice: { kind: "table", id: "t-a" } } as any);
+    expect(out).toMatchObject({ success: false, reason: "seat_choice_disabled" });
+  });
+
+  it("chave ligada em OUTRA unidade não libera esta", async () => {
+    const tables = base({ seatChoice: null });
+    tables.settings.push({ unit_id: OTHER_UNIT, key: "seat_choice_enabled", value: true });
+    const db = memoryDb(tables);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await reserveSlot(db as any, { ...params, choice: { kind: "table", id: "t-a" } } as any);
+    expect(out).toMatchObject({ success: false, reason: "seat_choice_disabled" });
+  });
+
+  it("erro ao ler a chave = desligada (falha fechada), sem lançar", async () => {
+    const db = memoryDb(base({ seatChoice: true }));
+    const from = db.from.bind(db);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (db as any).from = (t: string) => {
+      const b = from(t);
+      if (t !== "settings") return b;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const failing: any = { ...b, eq: () => failing, select: () => failing, maybeSingle: () => Promise.resolve({ data: null, error: { code: "XX000" } }) };
+      return failing;
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await reserveSlot(db as any, { ...params, choice: { kind: "table", id: "t-a" } } as any);
+    expect(out).toMatchObject({ success: false, reason: "seat_choice_disabled" });
+    expect(db.inserts).toEqual([]);
   });
 });

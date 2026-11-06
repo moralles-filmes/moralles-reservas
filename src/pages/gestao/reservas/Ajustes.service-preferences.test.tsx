@@ -57,7 +57,7 @@ it('shows platform pause instead of active delivery for enabled notices and keep
   expect(await screen.findByText(/Lembrete de reserva: Pausado pela plataforma/)).toBeInTheDocument();
   expect(screen.getByText(/Pesquisa da reserva: Pausado pela plataforma/)).toBeInTheDocument();
   expect(screen.queryByText(/Ativo para novos avisos/)).toBeNull();
-  expect(screen.queryByRole('switch')).toBeNull();
+  expect(screen.queryByRole('switch', { name: /Lembrete na véspera|Pesquisa de satisfação/ })).toBeNull();
 });
 
 it('shows the global dispatch pause instead of an active state', async () => {
@@ -72,7 +72,7 @@ it('shows the global dispatch pause instead of an active state', async () => {
   show();
   expect(await screen.findByText(/Lembrete de reserva: Envio pausado pela plataforma/)).toBeInTheDocument();
   expect(screen.queryByText(/Ativo para novos avisos/)).toBeNull();
-  expect(screen.queryByRole('switch')).toBeNull();
+  expect(screen.queryByRole('switch', { name: /Lembrete na véspera|Pesquisa de satisfação/ })).toBeNull();
 });
 
 it('preserves legacy switches and writes for a manual cohort', async () => {
@@ -98,7 +98,7 @@ it('hides legacy switches before auto-v2 enrollment becomes eligible', async () 
   } };
   show();
   expect(await screen.findByText(/Lembrete de reserva: Aguardando preparação dos modelos/)).toBeInTheDocument();
-  expect(screen.queryByRole('switch')).toBeNull();
+  expect(screen.queryByRole('switch', { name: /Lembrete na véspera|Pesquisa de satisfação/ })).toBeNull();
   await waitFor(() => expect(screen.getAllByRole('spinbutton')[0]).toHaveValue(60));
   fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
   await waitFor(() => expect(mocks.upsert).toHaveBeenCalledTimes(1));
@@ -110,5 +110,5 @@ it('hides legacy automation switches when the new authority cannot be read', asy
   mocks.service.query = { isPending: false, isError: true, data: undefined };
   show();
   expect(await screen.findByText(/controles antigos estão indisponíveis/)).toBeInTheDocument();
-  expect(screen.queryByRole('switch')).toBeNull();
+  expect(screen.queryByRole('switch', { name: /Lembrete na véspera|Pesquisa de satisfação/ })).toBeNull();
 });

@@ -17,6 +17,7 @@ function deps(over: Partial<SeatMapDeps> = {}): SeatMapDeps {
     publicUnit: vi.fn(async () => ({ name: "Moralles", billingStatus: "active" })),
     rateLimit: vi.fn(async () => true),
     link: vi.fn(async () => null),
+    seatChoiceEnabled: vi.fn(async () => true),
     seatMap: vi.fn(async () => MAP),
     channelPhone: vi.fn(async () => "5511999998888"),
     now: () => NOW,
@@ -158,5 +159,38 @@ describe("public-seat-map: sem PII", () => {
     expect(Object.keys(out.json.unit)).toEqual(["name"]);
     expect(Object.keys(out.json.map).sort()).toEqual(["hall", "options", "tables"]);
     expect(JSON.stringify(out.json)).not.toContain("Fulano");
+  });
+});
+
+describe("public-seat-map: chave seat_choice_enabled", () => {
+  it("chave desligada no modo parâmetros → choice_disabled, sem ler o mapa", async () => {
+    const d = deps({ seatChoiceEnabled: vi.fn(async () => false) });
+    const out = await handleSeatMap(params, d);
+    expect(out).toEqual({ status: 200, json: { ok: false, reason: "choice_disabled" } });
+    expect(d.seatChoiceEnabled).toHaveBeenCalledWith(UNIT);
+    expect(d.seatMap).not.toHaveBeenCalled();
+  });
+
+  it("chave desligada no modo token → choice_disabled pela unidade do link", async () => {
+    const token = createSeatLinkToken();
+    const hash = await hashSeatLinkToken(token);
+    const d = deps({
+      seatChoiceEnabled: vi.fn(async () => false),
+      link: vi.fn(async (h: string) => (h === hash ? {
+        unitId: UNIT, hallId: HALL, channelId: null, date: "2030-03-16", time: "19:30:00", partySize: 6,
+        expiresAt: "2030-03-15T23:30:00.000Z",
+      } : null)),
+    });
+    const out = await handleSeatMap({ token }, d);
+    expect(out.json).toEqual({ ok: false, reason: "choice_disabled" });
+    expect(d.seatChoiceEnabled).toHaveBeenCalledWith(UNIT);
+    expect(d.seatMap).not.toHaveBeenCalled();
+  });
+
+  it("unidade não pública responde unit_invalid antes de consultar a chave", async () => {
+    const d = deps({ publicUnit: vi.fn(async () => null) });
+    const out = await handleSeatMap(params, d);
+    expect(out.json).toEqual({ ok: false, reason: "unit_invalid" });
+    expect(d.seatChoiceEnabled).not.toHaveBeenCalled();
   });
 });

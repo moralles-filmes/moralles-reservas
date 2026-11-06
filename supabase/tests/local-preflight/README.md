@@ -3661,3 +3661,9 @@ lease vencido, duas retomadas simultâneas → só a primeira vence.
 
 O que NÃO prova: o cron de repescagem (`20261106120100`, sem pg_cron no
 harness) nem o PostgREST.
+
+### 85 — Chave seat_choice_enabled (escolha de mesa pelo cliente)
+
+Base do 80 (00 → 01 → 09a → 106 → 75a → `20261019180000` → 80a → `20261029120100`). RED: o 85 aborta com "seat_choice_enabled fora da classe manager" sem a `20261106140000`. GREEN: aplique a migration e rode o 85 (ordinais 8501–8510, **esperado 10 e 10**); rode o 80 em seguida (31/31: o guard recriado não muda o resto). O 85 reaplica a própria migration no início, então pode rodar depois do 75/80. Casos: gerente e owner gravam booleano; operador e gerente de outra unidade recebem `42501`; valor não booleano (`"true"`, 1, 0, null, objeto, array) recebe `22023` para gerente, `service_role` e `postgres`; anon recusado; classes de `booking_window_days` e `ai_system_prompt` intactas; ACL das duas funções; C1 (sem a migration o gerente recebe `42501` e o postgres grava `"sim"`); idempotência (S9).
+
+Medido em 2026-11-05 (container `postgres:18` descartável, `--network none`): RED como acima; 10/10; 80 em seguida 31/31.
