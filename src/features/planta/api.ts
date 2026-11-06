@@ -1,5 +1,5 @@
 import type { OccupantRef } from "@/lib/seat-pick-core";
-import type { SeatActionResult } from "@/types/reserva";
+import type { SeatActionResult, SeatMapResponse } from "@/types/reserva";
 import { supabase } from "@/lib/supabase";
 import type { Hall, Mesa, OccupantTable, TableCombination, PlanWall, Reserva, WaitlistEntry, WalkIn } from "@/types/reserva";
 import type { BlockWindow } from "@/lib/table-situation-core";
@@ -257,4 +257,13 @@ export async function fetchSalaoCombinations(unitId: string): Promise<TableCombi
  const { data, error } = await supabase.from("table_combinations").select("id, unit_id, hall_id, min_capacity, max_capacity, active, table_combination_members(table_id)").eq("unit_id", unitId).eq("active", true);
  if (error) throw error;
  return (data ?? []).map(({ table_combination_members, ...c }) => ({ ...c, table_ids: table_combination_members.map(m => m.table_id) })) as TableCombination[];
+}
+
+/** Mapa público de mesas (EF public-seat-map, sem login). Recusa de negócio volta como dado (`ok: false`). */
+export async function fetchPublicSeatMap(
+  body: { token: string } | { unit_id: string; hall_id: string; date: string; time: string; party_size: number },
+): Promise<SeatMapResponse> {
+  const { data, error } = await supabase.functions.invoke<SeatMapResponse>("public-seat-map", { body });
+  if (error) throw error;
+  return data;
 }

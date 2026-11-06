@@ -1,5 +1,9 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { ChevronDown, SquareStack, Banknote } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { useSeatMap } from "@/components/planta/escolha/useSeatMap";
+import { EscolherMesaDialog } from "./EscolherMesaDialog";
 import { cn } from "@/lib/utils";
 import { useReservaWizardContext } from "./useReservaWizard";
 import { WizardSummary } from "./WizardSummary";
@@ -16,11 +20,27 @@ import type { PublicHall } from "@/types/reserva";
  *     escolher outro horário)
  */
 export function StepHall() {
-  const { state, computed, actions } = useReservaWizardContext();
+  const { state, input, computed, actions } = useReservaWizardContext();
   const { compatible, alternative } = computed.partition;
   const hasAlternatives = alternative.length > 0;
   const noCompatible = compatible.length === 0;
   const selectedHall = compatible.find((hall) => hall.id === state.hall_id);
+  const [chooseOpen, setChooseOpen] = useState(false);
+  const seatMap = useSeatMap(input.unit && selectedHall && state.date && state.time ? {
+    unitId: input.unit.id, hallId: selectedHall.id, date: state.date,
+    time: state.time, partySize: state.party_size,
+  } : null);
+  const map = !seatMap.isLoading && !seatMap.isError && seatMap.data?.ok === true
+    && seatMap.data.map.hall.plan != null ? seatMap.data.map : null;
+  // Mapa refeito sem a mesa escolhida (pega por outra pessoa, chave desligada, sem planta,
+  // EF fora): solta a escolha aqui, antes do submit. Só com a consulta parada.
+  const seatGone = !!state.seat && !seatMap.isFetching && seatMap.fetchStatus === "idle"
+    && (map === null || !map.options.some(o => o.available && o.choice.kind === state.seat!.kind && o.choice.id === state.seat!.id));
+  useEffect(() => {
+    if (!seatGone) return;
+    actions.set("seat", null);
+    toast.error("A mesa escolhida não está mais disponível. Escolha outra ou siga sem preferência.");
+  }, [seatGone, actions]);
   const tabStopHallId = selectedHall?.id ?? compatible[0]?.id;
   const onHallsKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
@@ -105,6 +125,18 @@ export function StepHall() {
                 time={state.time}
                 date={state.date}
               />
+            )}
+            {map && (
+              <div role="group" aria-label="Preferência de mesa" className="space-y-3">
+                {state.seat && <p className="text-sm text-foreground">{state.seat.label} · até {state.seat.maxCapacity} pessoas</p>}
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" className="min-h-11" onClick={() => setChooseOpen(true)}>
+                    {state.seat ? "Trocar mesa" : "Ver o salão e escolher minha mesa"}
+                  </Button>
+                  <Button type="button" variant="outline" className="min-h-11 aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:font-semibold" aria-pressed={state.seat === null} onClick={() => actions.set("seat", null)}>Não tenho preferência</Button>
+                </div>
+                {chooseOpen && <EscolherMesaDialog open={chooseOpen} onOpenChange={setChooseOpen} map={map} partySize={state.party_size} initial={state.seat} onConfirm={seat => actions.set("seat", seat)} />}
+              </div>
             )}
           </>
         )}

@@ -1,5 +1,34 @@
 export type ReservaStatus = "pending" | "confirmed" | "cancelled" | "no_show";
 
+export type SeatChoice = { kind: "table" | "combination"; id: string };
+
+/** Contrato público de public-seat-map, sem dados de ocupantes. */
+export interface SeatMap {
+  hall: {
+    id: string;
+    name: string;
+    plan: { widthCm: number; depthCm: number; entranceWall: string | null; entranceOffsetCm: number | null; windowWalls: string[] } | null;
+  };
+  tables: Array<{
+    id: string;
+    number: number;
+    plan: { x: number; y: number; w: number; h: number; rotation: number; shape: string } | null;
+    bookable: boolean;
+    available: boolean;
+  }>;
+  options: Array<{
+    choice: SeatChoice;
+    tableIds: string[];
+    available: boolean;
+    minCapacity: number;
+    maxCapacity: number;
+  }>;
+}
+
+export type SeatMapResponse =
+  | { ok: true; unit: { name: string }; hall_id: string; date: string; time: string; party_size: number; map: SeatMap; whatsapp_phone: string | null }
+  | { ok: false; reason: string };
+
 // ── Multi-tenant entities ──────────────────────────────────────────────────
 
 export interface Organization {

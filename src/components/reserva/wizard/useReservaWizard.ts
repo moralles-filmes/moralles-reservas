@@ -39,6 +39,7 @@ export interface WizardState {
   party_size: number;
   // Step 2
   hall_id: string;
+  seat: { kind: "table" | "combination"; id: string; label: string; maxCapacity: number } | null;
   // Step 3
   name: string;
   email: string;
@@ -58,6 +59,7 @@ const INITIAL_STATE: WizardState = {
   time: "",
   party_size: 2,
   hall_id: "",
+  seat: null,
   name: "",
   email: "",
   phone: "",
@@ -205,7 +207,9 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
   }, [input.unit?.id]);
 
   const set = useCallback(<K extends keyof WizardState>(key: K, value: WizardState[K]) => {
-    setState((prev) => ({ ...prev, [key]: value }));
+    setState((prev) => ({ ...prev, [key]: value,
+      ...(["date", "time", "party_size", "hall_id"].includes(key) && prev[key] !== value ? { seat: null } : {}),
+    }));
   }, []);
 
   const setExtra = useCallback((key: WidgetFieldKey, value: string) => {
@@ -446,6 +450,7 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
         unit_id: input.unit.id,
         organization_id: input.unit.organization_id,
         hall_id: state.hall_id || null,
+        seat: state.seat ? { kind: state.seat.kind, id: state.seat.id } : null,
         widget_id: input.widgetId,
         custom_field_values: Object.keys(customPayload).length ? customPayload : undefined,
         birthday,
@@ -464,7 +469,12 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
     } catch (err) {
       if (currentUnitId.current !== input.unit.id) return;
       const msg = err instanceof Error ? err.message : "Erro ao criar reserva. Tente novamente.";
-      toast.error(msg);
+      const reason = (err as { reason?: string } | null)?.reason;
+      if (reason === "seat_unavailable" || reason === "seat_choice_disabled") {
+        setState((prev) => ({ ...prev, seat: null, step: 2 }));
+      }
+      toast.error(reason === "seat_choice_disabled"
+        ? "A escolha de mesa não está disponível agora. Siga sem preferência." : msg);
     }
   }, [
     input, state, computed.enabledExtras, computed.customFieldsSorted,

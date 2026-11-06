@@ -22,6 +22,7 @@ export function WizardSummary({ includeHall = false }: WizardSummaryProps) {
           <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
             <SquareStack className="h-3.5 w-3.5 text-primary shrink-0" />
             <span className="truncate">{hall.name}</span>
+            {state.seat && <span className="shrink-0 font-normal text-foreground/80">· {state.seat.label} · até {state.seat.maxCapacity} pessoas</span>}
           </div>
         )}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-foreground/80">

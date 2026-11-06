@@ -1033,6 +1033,8 @@ export function createAgentTurn(io: AgentTurnIO) {
       channelLabel: ctx.channelLabel,
       channelRules: ctx.channelRules,
       appBaseUrl: ctx.appBaseUrl,
+      // Link de escolha de mesa: só WhatsApp (o Instagram fica para a E6b).
+      tableChoiceChannel: ctx.channel === "whatsapp" && ctx.channelId !== null,
       requestId,
       log: jsonLog,
     });
@@ -1189,8 +1191,10 @@ export function createAgentTurn(io: AgentTurnIO) {
       lastMutationOutcome: null,
       customer: ctx.customer,
     };
-    const dispatchTool = createToolDispatcher({ supabase, requestId, ctx, conv, state: toolState });
-    const turnTools = agentToolsFor(ctx);
+    // Escolha de mesa: a mesma decisão do prompt (Regra 14) liga a ferramenta e o despacho.
+    const tableChoice = agentPrompt.tableChoiceOffered;
+    const dispatchTool = createToolDispatcher({ supabase, requestId, ctx, conv, state: toolState, tableChoice });
+    const turnTools = agentToolsFor(ctx, { tableChoice });
     // Alvo da PRÓXIMA tentativa. Nasce no principal e só muda por
     // `switchToFallback`, entre a tentativa 0 e a 1 do retry silencioso. O
     // turno recomeça limpo no reserva (histórico em texto é neutro entre

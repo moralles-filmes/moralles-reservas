@@ -4,7 +4,7 @@
  * O script anti-flash do index.html repete esta lista; theme-routes.test.ts
  * confere que os dois concordam.
  */
-const LIGHT_PREFIXES = ["/r/", "/w/", "/m/", "/acompanhar/", "/preferencias/", "/privacidade/"] as const;
+const LIGHT_PREFIXES = ["/r/", "/w/", "/m/", "/acompanhar/", "/mesa/", "/preferencias/", "/privacidade/"] as const;
 
 const LIGHT_EXACT = new Set<string>(["/", "/admin/login", "/reset-password"]);
 
