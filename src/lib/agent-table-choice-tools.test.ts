@@ -178,10 +178,26 @@ describe("get_table_choice_link", () => {
     expect(h.loadSeatMap).not.toHaveBeenCalled();
   });
 
-  it("Instagram (ou sem canal) → channel_unsupported", async () => {
+  it("Instagram grava o link com a conta da conversa, sem canal do WhatsApp", async () => {
+    const { db, tables } = fakeDb(seed());
+    const r = await getTableChoiceLink(db as never, input, scope({ channel: "instagram", channelId: "ig-acc-1" }));
+    expect(r.available).toBe(true);
+    const link = tables.seat_choice_links.find((l) => l.token_hash);
+    expect(link).toMatchObject({ unit_id: UNIT, hall_id: "hall-a", channel_id: null, instagram_account_id: "ig-acc-1" });
+  });
+
+  it("WhatsApp não grava conta do Instagram", async () => {
+    const { db, tables } = fakeDb(seed());
+    await getTableChoiceLink(db as never, input, scope());
+    const link = tables.seat_choice_links.find((l) => l.token_hash);
+    expect(link).toMatchObject({ channel_id: "chan-1", instagram_account_id: null });
+  });
+
+  it("sem canal (WhatsApp ou Instagram) ou canal desconhecido → channel_unsupported", async () => {
     const { db } = fakeDb(seed());
-    expect(await getTableChoiceLink(db as never, input, scope({ channel: "instagram" }))).toEqual({ available: false, reason: "channel_unsupported" });
     expect(await getTableChoiceLink(db as never, input, scope({ channelId: null }))).toEqual({ available: false, reason: "channel_unsupported" });
+    expect(await getTableChoiceLink(db as never, input, scope({ channel: "instagram", channelId: null }))).toEqual({ available: false, reason: "channel_unsupported" });
+    expect(await getTableChoiceLink(db as never, input, scope({ channel: "sms" }))).toEqual({ available: false, reason: "channel_unsupported" });
     expect(h.loadSeatChoiceEnabled).not.toHaveBeenCalled();
   });
 

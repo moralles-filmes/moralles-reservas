@@ -7,11 +7,16 @@ import { hashSeatLinkToken, isSeatLinkToken } from "../_shared/seat-link-core.ts
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
+// @ do Instagram (vai para https://ig.me/m/<username> na página): letras, números, ponto e _,
+// com ao menos uma letra ou número ("." e ".." viram caminho na URL).
+const IG_USERNAME = /^(?=.*[A-Za-z0-9])[A-Za-z0-9._]{1,30}$/;
 
 export interface SeatMapLink {
   unitId: string;
   hallId: string;
   channelId: string | null;
+  /** Conta do Instagram do link (`instagram_accounts.id`); nula no link do WhatsApp. */
+  instagramAccountId: string | null;
   date: string;
   time: string;
   partySize: number;
@@ -30,6 +35,8 @@ export interface SeatMapDeps {
   seatMap: (args: { unitId: string; hallId: string; date: string; time: string; partySize: number }) => Promise<SeatMap | { error: AvailabilityReason }>;
   /** Número do canal do link, já em E.164, filtrado pela unidade; null sem número. */
   channelPhone: (channelId: string, unitId: string) => Promise<string | null>;
+  /** @ da conta do Instagram do link, filtrada pela unidade e conectada; null sem @. Lança em erro. */
+  instagramUsername: (accountId: string, unitId: string) => Promise<string | null>;
   now: () => Date;
   /** Diagnóstico do 503 (só código/etapa no log, nunca o texto do Postgres). */
   onError?: (err: unknown) => void;
@@ -44,7 +51,10 @@ export type SeatMapResponse =
       time: string;
       party_size: number;
       map: SeatMap;
+      /** Canal do link (modo token): a página diz para onde voltar mesmo sem número/@. */
+      channel: "whatsapp" | "instagram" | null;
       whatsapp_phone: string | null;
+      instagram_username: string | null;
     }
   | { ok: false; reason: string };
 
@@ -76,7 +86,10 @@ async function unitOk(deps: SeatMapDeps, unitId: string): Promise<{ name: string
   return { name: unit.name };
 }
 
-async function respond(deps: SeatMapDeps, req: Request, unitName: string, whatsappPhone: string | null): Promise<Out> {
+type Back = { channel: "whatsapp" | "instagram" | null; whatsappPhone: string | null; instagramUsername: string | null };
+const NO_BACK: Back = { channel: null, whatsappPhone: null, instagramUsername: null };
+
+async function respond(deps: SeatMapDeps, req: Request, unitName: string, back: Back): Promise<Out> {
   // Chave da unidade desligada (ou ilegível): sem mapa. A página e o agente
   // seguem sem a opção de escolher a mesa.
   if ((await deps.seatChoiceEnabled(req.unitId)) !== true) return fail(200, "choice_disabled");
@@ -92,7 +105,9 @@ async function respond(deps: SeatMapDeps, req: Request, unitName: string, whatsa
       time: req.time,
       party_size: req.partySize,
       map: { hall: map.hall, tables: map.tables, options: map.options },
-      whatsapp_phone: whatsappPhone,
+      channel: back.channel,
+      whatsapp_phone: back.whatsappPhone,
+      instagram_username: back.instagramUsername,
     },
   };
 }
@@ -102,7 +117,7 @@ export async function handleSeatMap(body: unknown, deps: SeatMapDeps): Promise<O
   const b = body as Record<string, unknown>;
 
   try {
-    // ── Modo token (link do WhatsApp) ──────────────────────────────────────
+    // ── Modo token (link do WhatsApp ou do Instagram) ──────────────────────
     if ("token" in b) {
       if (typeof b.token !== "string") return fail(400, "invalid_input");
       // Rate-limit antes de qualquer leitura: tentativa de token conta igual.
@@ -113,10 +128,18 @@ export async function handleSeatMap(body: unknown, deps: SeatMapDeps): Promise<O
       if (!link || !(new Date(link.expiresAt).getTime() > deps.now().getTime())) return fail(200, "link_invalid");
       const unit = await unitOk(deps, link.unitId);
       if (!unit) return fail(200, "link_invalid");
-      let phone: string | null = null;
+      // Botão de volta pelo canal do link; falha de leitura = sem botão (o mapa segue).
+      const back: Back = { ...NO_BACK };
       if (link.channelId) {
-        try { phone = await deps.channelPhone(link.channelId, link.unitId); }
-        catch { phone = null; }
+        back.channel = "whatsapp";
+        try { back.whatsappPhone = await deps.channelPhone(link.channelId, link.unitId); }
+        catch { back.whatsappPhone = null; }
+      } else if (link.instagramAccountId) {
+        back.channel = "instagram";
+        try {
+          const username = await deps.instagramUsername(link.instagramAccountId, link.unitId);
+          back.instagramUsername = typeof username === "string" && IG_USERNAME.test(username) ? username : null;
+        } catch { back.instagramUsername = null; }
       }
       return await respond(deps, {
         unitId: link.unitId,
@@ -124,7 +147,7 @@ export async function handleSeatMap(body: unknown, deps: SeatMapDeps): Promise<O
         date: link.date,
         time: link.time.slice(0, 5),
         partySize: link.partySize,
-      }, unit.name, phone);
+      }, unit.name, back);
     }
 
     // ── Modo parâmetros (página online) ────────────────────────────────────
@@ -137,7 +160,7 @@ export async function handleSeatMap(body: unknown, deps: SeatMapDeps): Promise<O
     const unit = await unitOk(deps, req.unitId);
     if (!unit) return fail(200, "unit_invalid");
     if ((await deps.rateLimit(req.unitId)) !== true) return fail(429, "rate_limited");
-    return await respond(deps, req, unit.name, null);
+    return await respond(deps, req, unit.name, NO_BACK);
   } catch (err) {
     deps.onError?.(err);
     return fail(503, "dependency_unavailable");

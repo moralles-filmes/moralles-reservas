@@ -68,7 +68,7 @@ serve(async (req) => {
     },
     link: async (tokenHash) => {
       const { data, error } = await supabase.from("seat_choice_links")
-        .select("unit_id, hall_id, channel_id, date, time, party_size, expires_at")
+        .select("unit_id, hall_id, channel_id, instagram_account_id, date, time, party_size, expires_at")
         .eq("token_hash", tokenHash)
         .maybeSingle();
       if (error) throw error;
@@ -77,6 +77,7 @@ serve(async (req) => {
         unitId: data.unit_id,
         hallId: data.hall_id,
         channelId: data.channel_id,
+        instagramAccountId: data.instagram_account_id,
         date: data.date,
         time: data.time,
         partySize: data.party_size,
@@ -93,6 +94,13 @@ serve(async (req) => {
       if (!raw) return null;
       const e164 = toE164BrPhone(raw);
       return /^\d{12,13}$/.test(e164) ? e164 : null;
+    },
+    // Conta da unidade do link e ainda conectada (desconectada = sem botão de volta).
+    instagramUsername: async (accountId, unitId) => {
+      const { data, error } = await supabase.from("instagram_accounts")
+        .select("username").eq("id", accountId).eq("unit_id", unitId).eq("status", "connected").maybeSingle();
+      if (error) throw error;
+      return typeof data?.username === "string" && data.username ? data.username : null;
     },
     now: () => new Date(),
     onError: (err) => {

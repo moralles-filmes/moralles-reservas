@@ -20,6 +20,7 @@ function deps(over: Partial<SeatMapDeps> = {}): SeatMapDeps {
     seatChoiceEnabled: vi.fn(async () => true),
     seatMap: vi.fn(async () => MAP),
     channelPhone: vi.fn(async () => "5511999998888"),
+    instagramUsername: vi.fn(async () => "loja_moralles"),
     now: () => NOW,
     ...over,
   };
@@ -34,7 +35,7 @@ describe("public-seat-map: modo parâmetros", () => {
     expect(out.status).toBe(200);
     expect(out.json).toEqual({
       ok: true, unit: { name: "Moralles" }, hall_id: HALL, date: "2030-03-15", time: "21:00", party_size: 4,
-      map: MAP, whatsapp_phone: null,
+      map: MAP, channel: null, whatsapp_phone: null, instagram_username: null,
     });
     expect(d.seatMap).toHaveBeenCalledWith({ unitId: UNIT, hallId: HALL, date: "2030-03-15", time: "21:00", partySize: 4 });
     // Balde global do IP e depois o da unidade (só para unidade pública real).
@@ -102,7 +103,7 @@ describe("public-seat-map: modo token", () => {
   async function linkFor(token: string, over: Record<string, unknown> = {}) {
     const hash = await hashSeatLinkToken(token);
     return vi.fn(async (h: string) => (h === hash ? {
-      unitId: UNIT, hallId: HALL, channelId: "ch-1", date: "2030-03-16", time: "19:30:00", partySize: 6,
+      unitId: UNIT, hallId: HALL, channelId: "ch-1", instagramAccountId: null, date: "2030-03-16", time: "19:30:00", partySize: 6,
       expiresAt: "2030-03-15T23:30:00.000Z", ...over,
     } : null));
   }
@@ -114,6 +115,8 @@ describe("public-seat-map: modo token", () => {
     expect(out.json).toMatchObject({ ok: true, hall_id: HALL, date: "2030-03-16", time: "19:30", party_size: 6, whatsapp_phone: "5511999998888" });
     expect(d.seatMap).toHaveBeenCalledWith({ unitId: UNIT, hallId: HALL, date: "2030-03-16", time: "19:30", partySize: 6 });
     expect(d.channelPhone).toHaveBeenCalledWith("ch-1", UNIT);
+    expect(d.instagramUsername).not.toHaveBeenCalled();
+    expect(out.json).toMatchObject({ channel: "whatsapp", instagram_username: null });
     // Balde do modo token: antes de ler o link, sem unidade.
     expect(d.rateLimit).toHaveBeenCalledWith(null);
   });
@@ -137,6 +140,39 @@ describe("public-seat-map: modo token", () => {
     for (const out of [semNumero, falha, semCanal]) expect(out.json).toMatchObject({ ok: true, whatsapp_phone: null });
   });
 
+  it("link do Instagram devolve o @ da conta do link, sem número de WhatsApp", async () => {
+    const token = createSeatLinkToken();
+    const d = deps({ link: await linkFor(token, { channelId: null, instagramAccountId: "ig-1" }) });
+    const out = await handleSeatMap({ token }, d);
+    expect(out.json).toMatchObject({ ok: true, channel: "instagram", whatsapp_phone: null, instagram_username: "loja_moralles" });
+    expect(d.instagramUsername).toHaveBeenCalledWith("ig-1", UNIT);
+    expect(d.channelPhone).not.toHaveBeenCalled();
+  });
+
+  it("instagram_username nulo sem @, com falha de leitura ou com @ fora do formato", async () => {
+    const token = createSeatLinkToken();
+    const link = () => linkFor(token, { channelId: null, instagramAccountId: "ig-1" });
+    const casos = [
+      vi.fn(async () => null),
+      vi.fn(async () => { throw new Error("x"); }),
+      vi.fn(async () => "loja/../outra"),
+      vi.fn(async () => "a".repeat(31)),
+      vi.fn(async () => ""),
+      vi.fn(async () => ".."),
+      vi.fn(async () => "a b"),
+    ];
+    for (const instagramUsername of casos) {
+      const out = await handleSeatMap({ token }, deps({ link: await link(), instagramUsername }));
+      expect(out.json).toMatchObject({ ok: true, channel: "instagram", whatsapp_phone: null, instagram_username: null });
+    }
+  });
+
+  it("link sem canal (canal ou conta apagados) → channel null", async () => {
+    const token = createSeatLinkToken();
+    const out = await handleSeatMap({ token }, deps({ link: await linkFor(token, { channelId: null }) }));
+    expect(out.json).toMatchObject({ ok: true, channel: null, whatsapp_phone: null, instagram_username: null });
+  });
+
   it("rate-limit vale antes de procurar o token", async () => {
     const d = deps({ rateLimit: vi.fn(async () => false) });
     const out = await handleSeatMap({ token: createSeatLinkToken() }, d);
@@ -155,7 +191,7 @@ describe("public-seat-map: sem PII", () => {
     const leaky = { ...MAP, reservations: [{ customer_name: "Fulano" }] } as unknown as typeof MAP;
     const out = await handleSeatMap(params, deps({ seatMap: vi.fn(async () => leaky) }));
     if (out.json.ok !== true) throw new Error("esperava mapa");
-    expect(Object.keys(out.json).sort()).toEqual(["date", "hall_id", "map", "ok", "party_size", "time", "unit", "whatsapp_phone"]);
+    expect(Object.keys(out.json).sort()).toEqual(["channel", "date", "hall_id", "instagram_username", "map", "ok", "party_size", "time", "unit", "whatsapp_phone"]);
     expect(Object.keys(out.json.unit)).toEqual(["name"]);
     expect(Object.keys(out.json.map).sort()).toEqual(["hall", "options", "tables"]);
     expect(JSON.stringify(out.json)).not.toContain("Fulano");
@@ -177,7 +213,7 @@ describe("public-seat-map: chave seat_choice_enabled", () => {
     const d = deps({
       seatChoiceEnabled: vi.fn(async () => false),
       link: vi.fn(async (h: string) => (h === hash ? {
-        unitId: UNIT, hallId: HALL, channelId: null, date: "2030-03-16", time: "19:30:00", partySize: 6,
+        unitId: UNIT, hallId: HALL, channelId: null, instagramAccountId: null, date: "2030-03-16", time: "19:30:00", partySize: 6,
         expiresAt: "2030-03-15T23:30:00.000Z",
       } : null)),
     });

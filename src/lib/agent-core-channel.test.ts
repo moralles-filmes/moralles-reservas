@@ -269,7 +269,7 @@ describe('escolha de mesa oferecida pelo loader', () => {
 
   it('o turno usa a mesma decisão no prompt, nas ferramentas e no despacho', () => {
     const turn = read('supabase/functions/_shared/agent/turn.ts');
-    expect(turn).toContain('tableChoiceChannel: ctx.channel === "whatsapp" && ctx.channelId !== null,');
+    expect(turn).toContain('tableChoiceChannel: (ctx.channel === "whatsapp" || ctx.channel === "instagram") && ctx.channelId !== null,');
     expect(turn).toContain('const tableChoice = agentPrompt.tableChoiceOffered;');
     expect(turn).toContain('createToolDispatcher({ supabase, requestId, ctx, conv, state: toolState, tableChoice })');
     expect(turn).toContain('agentToolsFor(ctx, { tableChoice })');

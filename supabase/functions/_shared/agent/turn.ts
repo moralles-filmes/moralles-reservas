@@ -1033,8 +1033,8 @@ export function createAgentTurn(io: AgentTurnIO) {
       channelLabel: ctx.channelLabel,
       channelRules: ctx.channelRules,
       appBaseUrl: ctx.appBaseUrl,
-      // Link de escolha de mesa: só WhatsApp (o Instagram fica para a E6b).
-      tableChoiceChannel: ctx.channel === "whatsapp" && ctx.channelId !== null,
+      // Link de escolha de mesa: WhatsApp (canal) e Instagram (conta) com id no turno.
+      tableChoiceChannel: (ctx.channel === "whatsapp" || ctx.channel === "instagram") && ctx.channelId !== null,
       requestId,
       log: jsonLog,
     });
