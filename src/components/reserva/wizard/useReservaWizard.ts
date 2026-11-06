@@ -9,7 +9,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { z } from "zod";
 import { toast } from "sonner";
 import { canonicalBrPhone, normalizeBrPhone, validateBrPhone } from "@/lib/phone";
-import { useCreateReserva } from "@/hooks/useReservas";
+import { type CreatedReserva, useCreateReserva } from "@/hooks/useReservas";
 import type {
   PublicBlockedDate,
   PublicCustomField,
@@ -50,7 +50,7 @@ export interface WizardState {
   extras: Partial<Record<WidgetFieldKey, string>>;
   custom_values: Record<string, string>;
   // Success
-  confirmed: Reserva | null;
+  confirmed: CreatedReserva | null;
 }
 
 const INITIAL_STATE: WizardState = {

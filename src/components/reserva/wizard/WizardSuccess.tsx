@@ -21,13 +21,20 @@ export function WizardSuccess() {
       </div>
     );
   }
+  // Reenvio do mesmo pedido: nada foi criado agora; a mesa que vale é a da
+  // reserva existente, então a escolhida nesta tentativa não aparece.
+  const alreadyExisted = reserva.already_existed === true;
   return (
     <div className="text-center space-y-5 py-2">
       <CheckCircle role="img" aria-label="Reserva confirmada" className="h-14 w-14 text-success mx-auto" />
       <div className="space-y-1.5">
-        <h2 className="text-2xl font-semibold">Reserva confirmada!</h2>
+        <h2 className="text-2xl font-semibold">
+          {alreadyExisted ? "Sua reserva já estava feita" : "Reserva confirmada!"}
+        </h2>
         <p className="text-sm text-muted-foreground">
-          Sua reserva está confirmada. A mensagem por WhatsApp ou e-mail, quando habilitada, é enviada separadamente.
+          {alreadyExisted
+            ? "Recebemos o mesmo pedido de novo e não criamos outra reserva. Esta é a que está confirmada."
+            : "Sua reserva está confirmada. A mensagem por WhatsApp ou e-mail, quando habilitada, é enviada separadamente."}
         </p>
       </div>
       <div className="surface rounded-card p-4 text-left space-y-2">
@@ -35,7 +42,7 @@ export function WizardSuccess() {
         <Row label="Data" value={formatDateBR(reserva.date)} />
         <Row label="Horário" value={reserva.time} />
         <Row label="Pessoas" value={String(reserva.party_size)} />
-        {state.seat && <Row label="Mesa" value={state.seat.label} />}
+        {state.seat && !alreadyExisted && <Row label="Mesa" value={state.seat.label} />}
       </div>
       <p className="text-xs text-muted-foreground">
         Guarde seu código para consultar ou alterar a reserva.

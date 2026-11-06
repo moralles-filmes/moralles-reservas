@@ -21,6 +21,8 @@ import {
 import { loadSeatChoiceEnabled } from "../adapters/hall-seating.ts";
 import { activeHallIds, insertSeatLink, purgeExpiredSeatLinks } from "../adapters/seat-choice-links.ts";
 import { resolveOrCreateCustomer } from "../resolve-customer.ts";
+import type { ExistingReservation } from "../reservation-replay.ts";
+import { findRecentSameRequest } from "../adapters/reservation-replay.ts";
 import { createSeatLinkToken, hashSeatLinkToken, SEAT_LINK_TTL_HOURS } from "../seat-link-core.ts";
 import type { AgentChannel, AgentReservationSource } from "./channel-context.ts";
 import { choiceLabelsFromMap, parseTableChoice, resolveTableChoice } from "./table-choice-core.ts";
@@ -410,6 +412,29 @@ export const CLAIMED_RESERVATION_LIMIT_RESULT = {
   message: "Este contato já tem o número máximo de reservas ativas. Ofereça alterar ou cancelar uma reserva existente.",
 } as const;
 
+/**
+ * Resultado ao LLM quando o pedido já virou reserva (F-002B). Confirmada:
+ * sucesso com o código (o despacho conta como COMPLETED). Outro estado: não
+ * afirmar confirmação nem criar outra.
+ */
+export function replayedReservationResult(existing: ExistingReservation, date: string, partySize: number) {
+  if (existing.status !== "confirmed") {
+    return {
+      success: false,
+      reason: "reservation_already_exists",
+      message: "Já existe uma reserva deste cliente para esse dia, horário e número de pessoas, ainda não confirmada. Não crie outra; chame request_human_handoff.",
+    };
+  }
+  const [y, m, d] = date.split("-");
+  return {
+    success: true,
+    already_existed: true,
+    reservation_code: existing.reservationCode,
+    message: `Essa reserva já estava criada (não crie outra). Código: #${existing.reservationCode}. Data: ${d}/${m}/${y} às ${existing.time} para ${partySize} pessoas.`,
+    reservationId: existing.id,
+  };
+}
+
 export async function createReservation(supabase: SupabaseClient, params: {
   customer_name: string;
   customer_email?: string;
@@ -437,12 +462,36 @@ export async function createReservation(supabase: SupabaseClient, params: {
    * declarada; sem ele, a identidade declarada falha fechado.
    */
   insertReservation?: ReserveSlotParams["insertReservation"];
+  /**
+   * Ledger do contato para o reenvio (F-002B), só com identidade declarada.
+   * `null`/ausente com identidade declarada = ledger ilegível: não procura
+   * (sem ledger a busca não pode ficar restrita ao contato).
+   */
+  replayReservationIds?: readonly string[] | null;
   unit_id: string;
   organization_id: string;
   source: AgentReservationSource;
 // deno-lint-ignore no-explicit-any
 }): Promise<any> {
   const GENERIC_FAIL = { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
+
+  // F-002B: o mesmo pedido (cliente, data, hora, pessoas, 15 min) devolve a
+  // reserva que já existe. Antes da mesa: num reenvio com mesa escolhida, a
+  // própria reserva já ocupa a mesa e a resolução diria seat_unavailable.
+  const replayFor = async (customerId: string) => {
+    if (params.claimedIdentity && !Array.isArray(params.replayReservationIds)) return null;
+    const existing = await findRecentSameRequest(supabase, {
+      unitId: params.unit_id,
+      customerId,
+      date: params.date,
+      time: params.time,
+      partySize: params.party_size,
+      ...(params.claimedIdentity ? { reservationIds: params.replayReservationIds! } : {}),
+    });
+    return existing ? replayedReservationResult(existing, params.date, params.party_size) : null;
+  };
+  const replayedBefore = await replayFor(params.customer.id);
+  if (replayedBefore) return replayedBefore;
 
   // Mesa escolhida antes do cadastro: escolha que não existe não cria cliente.
   // Sem escolha, a ordem das leituras fica a de sempre (salão depois do cliente).
@@ -549,6 +598,10 @@ export async function createReservation(supabase: SupabaseClient, params: {
 
   // `=== false`, não `!`: com `strict: false` o `!` não estreita a união.
   if (result.success === false) {
+    if (result.reason === "seat_unavailable" || result.reason === "insert_failed") {
+      const replayedAfter = await replayFor(customerId);
+      if (replayedAfter) return replayedAfter;
+    }
     if (params.claimedIdentity && reservationLimitHit) return { ...CLAIMED_RESERVATION_LIMIT_RESULT };
     if (choice && hallId && result.reason === "seat_unavailable") {
       const options = await freeSeatLabels(supabase, {

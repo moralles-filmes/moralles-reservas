@@ -237,6 +237,16 @@ export function createToolDispatcher(a: {
           case "create_reservation": {
             // A recusa de `table_choice` sem a escolha oferecida fica na guarda acima.
             state.mutatingToolUsed = true; // desliga o retry silencioso (evita reserva duplicada)
+            // Reenvio (F-002B) com identidade declarada: só o ledger do contato.
+            // Ledger ilegível = null, e o núcleo não procura.
+            let replayReservationIds: readonly string[] | null | undefined;
+            if (port) {
+              try {
+                replayReservationIds = await ledgerIds();
+              } catch {
+                replayReservationIds = null;
+              }
+            }
             const created = await createReservation(supabase, {
               ...input,
               // Só quando a escolha foi oferecida no turno; senão nunca chega à reserva.
@@ -248,6 +258,7 @@ export function createToolDispatcher(a: {
               // Com porta, o INSERT vai à RPC atômica (reserva + ledger). Sempre
               // explícito: nada do `input` do LLM chega como hook.
               insertReservation: port ? (row) => port.insertReservation(row) : undefined,
+              replayReservationIds,
               unit_id: unitId,
               organization_id: organizationId,
               source: ctx.reservationSource,

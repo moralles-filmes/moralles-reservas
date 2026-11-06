@@ -92,6 +92,8 @@ interface CreateReservationFnResponse {
   table_id?: string;
   requires_payment?: boolean;
   payment_amount_cents?: number | null;
+  /** true = mesmo pedido reenviado; a reserva já existia (F-002B). */
+  already_existed?: boolean;
   customer?: {
     id: string;
     name: string;
@@ -99,6 +101,9 @@ interface CreateReservationFnResponse {
     email: string | null;
   };
 }
+
+/** Reserva do portal; `already_existed` = reenvio devolveu a que já existia. */
+export type CreatedReserva = Reserva & { already_existed?: boolean };
 
 export class CreateReservaError extends Error {
   constructor(message: string, public reason: string | null = null) {
@@ -178,7 +183,7 @@ export function useCreateReserva() {
       }
 
       const now = new Date().toISOString();
-      const reserva: Reserva = {
+      const reserva: CreatedReserva = {
         id: response.reservation_id!,
         unit_id: data.unit_id,
         customer_id: response.customer!.id,
@@ -201,6 +206,7 @@ export function useCreateReserva() {
           email: response.customer!.email,
           created_at: now,
         },
+        already_existed: response.already_existed === true,
       };
 
       return reserva;

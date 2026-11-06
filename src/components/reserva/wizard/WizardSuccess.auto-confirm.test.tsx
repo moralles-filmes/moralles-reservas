@@ -30,3 +30,12 @@ it("never labels an unexpected pending state as confirmed", () => {
   expect(screen.getByRole("alert")).toHaveTextContent("Estado da reserva não confirmado");
   expect(screen.queryByRole("heading", { name: "Reserva confirmada!" })).not.toBeInTheDocument();
 });
+
+it("a resent request says the reservation already existed, without claiming a new one", () => {
+  context.reservation = { ...reservation, already_existed: true } as Reserva;
+  render(<WizardSuccess />);
+  expect(screen.getByRole("heading", { name: "Sua reserva já estava feita" })).toBeInTheDocument();
+  expect(screen.getByText(/não criamos outra reserva/i)).toBeInTheDocument();
+  expect(screen.getByText("#ABC123")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Reserva confirmada!" })).not.toBeInTheDocument();
+});
