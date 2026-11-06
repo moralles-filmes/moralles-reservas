@@ -44,7 +44,12 @@ describe("create_reservation: falha ao resolver o cliente", () => {
     });
     expect(out).toEqual({ success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." });
     expect(JSON.stringify(out)).not.toContain("password");
-    expect(logged).toEqual([JSON.stringify({ evt: "agent_resolve_customer_failed", code: "XX000" })]);
+    // A busca do reenvio (F-002B) também falha neste banco falso: loga só o code e segue.
+    expect(logged).toEqual([
+      JSON.stringify({ evt: "reservation_replay_lookup_failed", code: "XX000" }),
+      JSON.stringify({ evt: "agent_resolve_customer_failed", code: "XX000" }),
+    ]);
+    expect(logged.join(" ")).not.toContain("password");
   });
 });
 
