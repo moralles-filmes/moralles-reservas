@@ -60,8 +60,11 @@
 --   (pg_temp.ig79_store_raw). O desagendamento do `instagram-token-refresh`
 --   não roda aqui (sem pg_cron; o 79 prova só que a migration aplica sem o
 --   schema `cron`) e é conferido como texto pelo gêmeo
---   src/lib/instagram-queue-migration-twin.test.ts. Livre: 79104–79110,
---   79114–79199.
+--   src/lib/instagram-queue-migration-twin.test.ts.
+-- Mudança instagram-account-unit-imutavel (sem migration): caso IG-9.4
+--   (79104) e controle C-IG-9.4 (79114) — `instagram_accounts` não muda de
+--   unidade nem de organização (trigger instagram_accounts_tenant_guard_trg).
+--   Livre: 79105–79110, 79115–79199.
 --
 -- BASE (banco próprio `ig79`, README seção 79):
 --   00 -> 01 -> 09a -> 106 -> 79a -> 20260905143453 -> 20261017160000
@@ -6206,6 +6209,70 @@ begin
     pg_temp.ig79_case_93());
 end $$;
 
+-- ─── IG-9.4: a conta não muda de unidade nem de organização ─────────────────
+-- Mudança instagram-account-unit-imutavel (.tasks/instagram-account-unit-imutavel).
+-- `seat_choice_links`, contatos, fila de inbound, ledger e conversas gravam a
+-- conta junto com a unidade; mover a conta deixaria essas linhas incoerentes.
+-- Gravando como postgres (sem RLS), o guard é a única barreira: UPDATE de
+-- `unit_id` (para outra unidade da MESMA organização), de `unit_id` +
+-- `organization_id` (para B) e só de `organization_id` dão 23514 sem gravar;
+-- UPDATE de outra coluna segue; excluir a unidade (DELETE em cascata, não
+-- UPDATE) continua apagando a conta dela.
+create or replace function pg_temp.ig79_case_94() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  ub constant uuid := 'a0d79000-0000-4000-8000-0000000000bb';
+  ua2 constant uuid := 'a0d79000-0000-4000-8000-000000009402';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  org_b constant uuid := 'a0d79000-0000-4000-8000-00000000000b';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  acc uuid; acc2 uuid; x_unit text; x_unit_org text; x_org text; ok_user text; dono text; apagada text;
+begin
+  begin
+    insert into public.units (id, organization_id, name) values (ua2, org_a, 'ig79 UA2 94');
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79940001', 'conta_94', 'tok-94-A-000001', owner_a)));
+    -- Desconectada: com o guard fora (C-IG-9.4), mover a conta ativa para a UA2
+    -- não pode esbarrar no índice de uma conta ativa por unidade.
+    insert into public.instagram_accounts (organization_id, unit_id, ig_user_id, connected_by, status, disconnected_at)
+      values (org_a, ua2, '79940002', owner_a, 'disconnected', now()) returning id into acc2;
+
+    x_unit := pg_temp.ig79_q(null, null, format(
+      'with u as (update public.instagram_accounts set unit_id = %L where id = %L returning 1) select count(*)::text from u', ua2, acc));
+    x_unit_org := pg_temp.ig79_q(null, null, format(
+      'with u as (update public.instagram_accounts set unit_id = %L, organization_id = %L where id = %L returning 1) select count(*)::text from u', ub, org_b, acc));
+    x_org := pg_temp.ig79_q(null, null, format(
+      'with u as (update public.instagram_accounts set organization_id = %L where id = %L returning 1) select count(*)::text from u', org_b, acc));
+    ok_user := pg_temp.ig79_q(null, null, format(
+      'with u as (update public.instagram_accounts set username = ''conta_94_nova'' where id = %L returning 1) select count(*)::text from u', acc));
+    select a.unit_id || '|' || a.organization_id || '|' || a.username into dono from public.instagram_accounts a where a.id = acc;
+
+    delete from public.units where id = ua2;
+    select count(*)::text into apagada from public.instagram_accounts a where a.id = acc2;
+
+    raise exception using errcode = 'P0R79', message =
+      case when acc is not null and acc2 is not null
+            and x_unit = 'ERR 23514:instagram_accounts: organizacao e unidade sao imutaveis'
+            and x_unit_org = 'ERR 23514:instagram_accounts: organizacao e unidade sao imutaveis'
+            and x_org = 'ERR 23514:instagram_accounts: organizacao e unidade sao imutaveis'
+            and ok_user = '1'
+            and dono = ua || '|' || org_a || '|conta_94_nova'
+            and apagada = '0' then 'PASSOU'
+           else 'FALHOU conta=' || coalesce(acc::text, '<null>') || ' conta_ua2=' || coalesce(acc2::text, '<null>')
+                || ' mover_unidade=' || x_unit || ' mover_unidade_org=' || x_unit_org || ' mover_org=' || x_org
+                || ' outra_coluna=' || ok_user || ' dono=' || coalesce(dono, '<null>')
+                || ' apos_excluir_unidade=' || coalesce(apagada, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+do $$
+begin
+  insert into t_res values (79104, 'IG-9.4 conta nao muda de unidade nem de organizacao (23514 sem gravar); outra coluna segue; excluir a unidade apaga a conta',
+    pg_temp.ig79_case_94());
+end $$;
+
 -- C-IG-9.1: (a) store sem validar p_page_id; (b) sem o CHECK da coluna;
 -- (c) store sem aparar p_page_id.
 do $$
@@ -6354,19 +6421,58 @@ begin
          else 'FALHOU exec_auth=' || s1 || ' antiga=' || s2 || ' search_path=' || s3 || ' not_valid=' || s4 || ' restaurado=' || d end);
 end $$;
 
+-- C-IG-9.4: (a) sem o trigger de guarda em instagram_accounts; (b) trigger
+-- recriado sem `unit_id` na lista de colunas do UPDATE. Desfeito pelo rollback
+-- da subtransação; a definição do trigger é conferida contra o catálogo.
+do $$
+declare
+  v_trg text; s1 text; s2 text; d text;
+begin
+  select pg_get_triggerdef(t.oid) into v_trg from pg_trigger t
+   where t.tgrelid = 'public.instagram_accounts'::regclass and t.tgname = 'instagram_accounts_tenant_guard_trg';
+  begin
+    drop trigger instagram_accounts_tenant_guard_trg on public.instagram_accounts;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_94();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    drop trigger instagram_accounts_tenant_guard_trg on public.instagram_accounts;
+    create trigger instagram_accounts_tenant_guard_trg
+      before insert or update of organization_id on public.instagram_accounts
+      for each row execute function public.unit_module_tenant_guard();
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_94();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_94();
+  raise notice 'C-IG-9.4 sem trigger: %', s1;
+  raise notice 'C-IG-9.4 trigger sem unit_id: %', s2;
+  insert into t_res values (79114, 'C-IG-9.4 sem o trigger de guarda e trigger sem unit_id no UPDATE: IG-9.4 reprova nos dois; restaurado passa',
+    case when s1 like 'FALHOU%mover_unidade=1 mover_unidade_org=1 mover_org=1 %'
+          and s2 like 'FALHOU%mover_unidade=1 mover_unidade_org=ERR 23514%'
+          and d = 'PASSOU'
+          and (select pg_get_triggerdef(t.oid) from pg_trigger t
+                where t.tgrelid = 'public.instagram_accounts'::regclass
+                  and t.tgname = 'instagram_accounts_tenant_guard_trg') = v_trg then 'PASSOU'
+         else 'FALHOU sem_trigger=' || s1 || ' sem_unit_id=' || s2 || ' restaurado=' || d end);
+end $$;
+
 -- ─── Resultado ───────────────────────────────────────────────────────────────
 -- Duas faixas: 7901–7999 (Fase 1) e 79101–79199 (plano B).
 select ord, caso, veredito from t_res
  where ord between 7901 and 7999 or ord between 79101 and 79199 order by ord;
 select count(*) as total, count(*) filter (where veredito = 'PASSOU') as passou
-  from t_res where ord between 7901 and 7999 or ord between 79101 and 79199;   -- esperado: 104 e 104
+  from t_res where ord between 7901 and 7999 or ord between 79101 and 79199;   -- esperado: 106 e 106
 
 do $$
 declare v_total int; v_ok int;
 begin
   select count(*), count(*) filter (where veredito = 'PASSOU') into v_total, v_ok
     from t_res where ord between 7901 and 7999 or ord between 79101 and 79199;
-  if v_total <> 104 or v_ok <> 104 then
-    raise exception '79: esperado 104 e 104, obtido % e %', v_total, v_ok;
+  if v_total <> 106 or v_ok <> 106 then
+    raise exception '79: esperado 106 e 106, obtido % e %', v_total, v_ok;
   end if;
 end $$;
