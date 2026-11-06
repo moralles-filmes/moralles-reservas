@@ -59,7 +59,8 @@ it("desabilita as demais mesas e não expõe situação de terceiros", () => {
 it("abre opções acessíveis quando a mesa participa de várias escolhas", () => {
   const choose = setup();
   fireEvent.click(screen.getByRole("button", { name: /^Mesa 3,/ }));
-  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.getByRole("group", { name: "Escolha as mesas" })).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.getByRole("button", { name: "Mesa 3 sozinha · até 4" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Mesas 3+4 · até 8" }));
   expect(choose).toHaveBeenCalledWith({ kind: "combination", id: "c" }, "Mesas 3+4");

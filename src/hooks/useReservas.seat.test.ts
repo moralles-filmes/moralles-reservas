@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -36,6 +36,6 @@ it("preserva a reason do corpo de erro não 2xx mesmo com a mesma mensagem", asy
   await act(async () => {
     await expect(result.current.mutateAsync({ ...params, seat: undefined })).rejects.toBeInstanceOf(CreateReservaError);
   });
-  expect(result.current.error).toMatchObject({ reason: "seat_choice_disabled", message: "Disabled" });
+  await waitFor(() => expect(result.current.error).toMatchObject({ reason: "seat_choice_disabled", message: "Disabled" }));
   expect(invoke).toHaveBeenCalledWith("create-reservation", expect.objectContaining({ body: expect.objectContaining({ seat: null }) }));
 });

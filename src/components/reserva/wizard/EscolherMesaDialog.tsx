@@ -31,6 +31,7 @@ export function EscolherMesaDialog({ open, onOpenChange, map, partySize, initial
         </ResponsiveDialogBody>
         <ResponsiveDialogFooter className="flex-wrap">
           {option && <p className="w-full text-sm text-foreground">{label} · até {option.maxCapacity} pessoas</p>}
+          {draft && !option && <p role="status" className="w-full text-sm text-warning">Essa mesa não está mais livre. Escolha outra.</p>}
           <Button type="button" variant="outline" className="min-h-11" onClick={() => onOpenChange(false)}>Cancelar</Button>
           <Button type="button" className="min-h-11" disabled={!option} onClick={() => {
             if (!option) return;

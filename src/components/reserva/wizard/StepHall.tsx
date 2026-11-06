@@ -1,5 +1,6 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { ChevronDown, SquareStack, Banknote } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useSeatMap } from "@/components/planta/escolha/useSeatMap";
 import { EscolherMesaDialog } from "./EscolherMesaDialog";
@@ -31,6 +32,15 @@ export function StepHall() {
   } : null);
   const map = !seatMap.isLoading && !seatMap.isError && seatMap.data?.ok === true
     && seatMap.data.map.hall.plan != null ? seatMap.data.map : null;
+  // Mapa refeito sem a mesa escolhida (pega por outra pessoa, chave desligada, sem planta,
+  // EF fora): solta a escolha aqui, antes do submit. Só com a consulta parada.
+  const seatGone = !!state.seat && !seatMap.isFetching && seatMap.fetchStatus === "idle"
+    && (map === null || !map.options.some(o => o.available && o.choice.kind === state.seat!.kind && o.choice.id === state.seat!.id));
+  useEffect(() => {
+    if (!seatGone) return;
+    actions.set("seat", null);
+    toast.error("A mesa escolhida não está mais disponível. Escolha outra ou siga sem preferência.");
+  }, [seatGone, actions]);
   const tabStopHallId = selectedHall?.id ?? compatible[0]?.id;
   const onHallsKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];

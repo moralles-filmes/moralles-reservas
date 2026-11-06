@@ -40,6 +40,7 @@ async function setup(response: SeatMapResponse = { ok: true, map, unit: { name: 
   });
   await waitFor(() => expect(invoke).toHaveBeenCalled());
   await waitFor(() => expect(client.isFetching()).toBe(0));
+  return client;
 }
 async function choose() {
   fireEvent.click(await screen.findByRole("button", { name: "Ver o salão e escolher minha mesa" }));
@@ -53,7 +54,7 @@ it("mostra as duas preferências, confirma o rascunho no passo e no resumo, envi
   await setup();
   expect(screen.getByRole("button", { name: "Não tenho preferência" })).toHaveAttribute("aria-pressed", "true");
   await choose();
-  expect(screen.getAllByText("Mesa 12 · até 4 pessoas")).toHaveLength(2);
+  expect(screen.getAllByText(/Mesa 12 · até 4 pessoas/)).toHaveLength(2);
   mutateAsync.mockResolvedValue({ status: "confirmed", payment_status: "not_required", reservation_code: "ABC", date: "2026-11-20", time: "19:00", party_size: 2 });
   await act(async () => wizard.actions.submit());
   expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ seat: { kind: "table", id: "table-12" } }));
@@ -78,4 +79,12 @@ it.each([false, true])("esconde as opções sem planta ou com a chave desligada 
   await setup(disabled ? { ok: false, reason: "choice_disabled" } : { ok: true, map: { ...map, hall: { ...map.hall, plan: null } }, unit: { name: "Restaurante" }, hall_id: "hall", date: "2026-11-20", time: "19:00", party_size: 2, whatsapp_phone: null });
   expect(screen.queryByRole("button", { name: "Ver o salão e escolher minha mesa" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Não tenho preferência" })).not.toBeInTheDocument();
+});
+it("solta a mesa quando o mapa refeito não a tem mais disponível", async () => {
+  const client = await setup(); await choose();
+  expect(wizard.state.seat).not.toBeNull();
+  invoke.mockResolvedValue({ data: { ok: true, map: { ...map, options: [{ ...map.options[0], available: false }] }, unit: { name: "Restaurante" }, hall_id: "hall", date: "2026-11-20", time: "19:00", party_size: 2, whatsapp_phone: null }, error: null });
+  await act(async () => { await client.invalidateQueries({ queryKey: ["seat-map"] }); });
+  await waitFor(() => expect(wizard.state.seat).toBeNull());
+  expect(toastError).toHaveBeenCalledWith("A mesa escolhida não está mais disponível. Escolha outra ou siga sem preferência.");
 });

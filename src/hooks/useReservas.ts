@@ -206,7 +206,7 @@ export function useCreateReserva() {
       return reserva;
     },
     onError: (error) => {
-      if (error instanceof CreateReservaError && error.reason === "seat_unavailable") {
+      if (error instanceof CreateReservaError && (error.reason === "seat_unavailable" || error.reason === "seat_choice_disabled")) {
         queryClient.invalidateQueries({ queryKey: ["seat-map"] });
       }
     },
