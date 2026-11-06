@@ -15,7 +15,7 @@
       try {
         var p = location.pathname.toLowerCase().replace(/\/+$/, "") || "/";
         var light = p === "/" || p === "/admin/login" || p === "/reset-password" ||
-          /^\/(r|w|m|acompanhar|preferencias|privacidade)\//.test(p + "/");
+          /^\/(r|w|m|acompanhar|mesa|preferencias|privacidade)\//.test(p + "/");
         var dark = !light && localStorage.getItem("moralles-theme") !== "light";
         document.documentElement.classList.toggle("dark", dark);
         document.documentElement.style.colorScheme = dark ? "dark" : "light";

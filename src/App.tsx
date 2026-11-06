@@ -19,6 +19,7 @@ const PublicPortal = lazy(() => import("./pages/PublicPortal"));
 const WidgetPortal = lazy(() => import("./pages/WidgetPortal"));
 const MenuPortal = lazy(() => import("./pages/MenuPortal"));
 const AcompanharReserva = lazy(() => import("./pages/AcompanharReserva"));
+const EscolherMesa = lazy(() => import("./pages/EscolherMesa"));
 const Auth = lazy(() => import("./pages/Auth"));
 const ResetPassword = lazy(() => import("./pages/ResetPassword"));
 const PreferenciasMensagens = lazy(() => import("./pages/public/PreferenciasMensagens"));
@@ -224,6 +225,7 @@ export default function App() {
               <Route path="/w/:slug" element={<WidgetPortal />} />
               <Route path="/m/:slug" element={<MenuPortal />} />
               <Route path="/acompanhar/:token" element={<AcompanharReserva />} />
+              <Route path="/mesa/:token" element={<EscolherMesa />} />
               <Route path="/preferencias/mensagens/:token" caseSensitive element={<PreferenciasMensagens />} />
               <Route path="/privacidade" element={<Privacidade />} />
               <Route path="/privacidade/exclusao-de-dados" element={<PrivacidadeExclusao />} />
