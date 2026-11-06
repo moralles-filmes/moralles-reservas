@@ -13,11 +13,17 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   checkAvailability as checkAvailabilityCore,
+  loadSeatMap,
   reserveSlot,
   type ReserveSlotParams,
+  type SeatChoice,
 } from "../availability.ts";
+import { loadSeatChoiceEnabled } from "../adapters/hall-seating.ts";
+import { activeHallIds, insertSeatLink, purgeExpiredSeatLinks } from "../adapters/seat-choice-links.ts";
 import { resolveOrCreateCustomer } from "../resolve-customer.ts";
-import type { AgentReservationSource } from "./channel-context.ts";
+import { createSeatLinkToken, hashSeatLinkToken, SEAT_LINK_TTL_HOURS } from "../seat-link-core.ts";
+import type { AgentChannel, AgentReservationSource } from "./channel-context.ts";
+import { choiceLabelsFromMap, parseTableChoice, resolveTableChoice } from "./table-choice-core.ts";
 import {
   AGENT_RESERVATION_NOTES_MAX_CHARS,
   reservationNotesForLlm,
@@ -128,6 +134,31 @@ export const agentTools: AgentToolDefinition[] = [
   },
 ];
 
+/**
+ * Escolha de mesa pelo link (só WhatsApp, só com `seat_choice_enabled`): a
+ * ferramenta e o parâmetro `table_choice` entram no turno por `agentToolsFor`.
+ * Com a chave desligada, o turno fica idêntico ao de antes.
+ */
+export const TABLE_CHOICE_LINK_TOOL: AgentToolDefinition = {
+  name: "get_table_choice_link",
+  description: "Gera o link para o cliente ver o salão e escolher a mesa. Chame depois de saber data, horário, número de pessoas e salão, antes de create_reservation. Não cria reserva.",
+  parameters: {
+    type: "object",
+    properties: {
+      date: { type: "string", description: "Data YYYY-MM-DD" },
+      time: { type: "string", description: "Horário HH:MM" },
+      party_size: { type: "number", description: "Número de pessoas" },
+      hall_name: { type: "string", description: "Opcional: nome do salão escolhido." },
+    },
+    required: ["date", "time", "party_size"],
+  },
+};
+
+export const TABLE_CHOICE_PARAM = {
+  type: "string",
+  description: "Mesa ou mesas que o cliente escolheu no link, como ele escreveu, ex.: \"12\" ou \"3+4+5\". Omita se ele não tem preferência.",
+} as const;
+
 // ─── Tool implementations (all unit-scoped) ───────────────────────────────────
 
 /**
@@ -201,6 +232,161 @@ export async function checkAvailability(
   return { available: true, message: result.message };
 }
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^\d{2}:\d{2}(:\d{2})?$/;
+
+function validDate(s: unknown): s is string {
+  if (typeof s !== "string" || !DATE_RE.test(s)) return false;
+  const d = new Date(`${s}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+/** Salão do pedido: o nomeado, ou o único salão ativo da unidade. */
+async function hallForChoice(
+  supabase: SupabaseClient,
+  unitId: string,
+  hallName: string | undefined,
+  partySize: number,
+): Promise<string | undefined> {
+  const named = await resolveHallId(supabase, unitId, hallName, partySize);
+  if (named) return named;
+  if (hallName?.trim()) return undefined;
+  const ids = await activeHallIds(supabase, unitId);
+  return ids.length === 1 ? ids[0] : undefined;
+}
+
+/**
+ * `get_table_choice_link`: grava um link de escolha (só o hash do token) e
+ * devolve a URL `/mesa/:token`. Só WhatsApp e só com `seat_choice_enabled`;
+ * salão sem planta ou sem mesa livre não ganha link. Unidade e canal vêm do
+ * turno, nunca do LLM.
+ */
+export async function getTableChoiceLink(
+  supabase: SupabaseClient,
+  // deno-lint-ignore no-explicit-any
+  input: any,
+  scope: {
+    unitId: string;
+    channel: AgentChannel;
+    channelId: string | null;
+    appBaseUrl: () => string;
+    now?: () => Date;
+  },
+  // deno-lint-ignore no-explicit-any
+): Promise<any> {
+  if (scope.channel !== "whatsapp" || !scope.channelId) return { available: false, reason: "channel_unsupported" };
+  const partySize = input?.party_size;
+  if (
+    !validDate(input?.date) || typeof input?.time !== "string" || !TIME_RE.test(input.time) ||
+    !Number.isInteger(partySize) || partySize < 1 || partySize > 50
+  ) {
+    return { available: false, reason: "invalid_input" };
+  }
+  const date = input.date as string;
+  const time = (input.time as string).slice(0, 5);
+  if (!(await loadSeatChoiceEnabled(supabase, scope.unitId))) return { available: false, reason: "disabled" };
+
+  const hallName = typeof input?.hall_name === "string" ? input.hall_name : undefined;
+  const hallId = await hallForChoice(supabase, scope.unitId, hallName, partySize);
+  if (!hallId) return { available: false, reason: "no_hall" };
+
+  const map = await loadSeatMap(supabase, { unitId: scope.unitId, hallId, date, time, partySize });
+  if ("error" in map) return { available: false, reason: map.error };
+  if (!map.hall.plan) return { available: false, reason: "no_plan" };
+  if (!map.options.some((o) => o.available)) return { available: false, reason: "no_capacity" };
+
+  const now = (scope.now ?? (() => new Date()))();
+  // Links vencidos da unidade saem aqui (ninguém mais os apaga). Falha não impede o novo.
+  const purge = await purgeExpiredSeatLinks(supabase, scope.unitId, now.toISOString());
+  if (purge.failed) console.error(JSON.stringify({ evt: "seat_choice_links_purge_failed", code: purge.errorCode }));
+
+  const token = createSeatLinkToken();
+  const inserted = await insertSeatLink(supabase, {
+    unit_id: scope.unitId,
+    hall_id: hallId,
+    channel_id: scope.channelId,
+    date,
+    time,
+    party_size: partySize,
+    token_hash: await hashSeatLinkToken(token),
+    expires_at: new Date(now.getTime() + SEAT_LINK_TTL_HOURS * 3_600_000).toISOString(),
+  });
+  if (inserted.failed) {
+    console.error(JSON.stringify({ evt: "seat_choice_link_insert_failed", code: inserted.errorCode }));
+    return { available: false, reason: "unavailable" };
+  }
+  const base = scope.appBaseUrl().replace(/\/+$/, "");
+  return { available: true, url: `${base}/mesa/${token}`, expires_in_hours: SEAT_LINK_TTL_HOURS, hall_name: map.hall.name };
+}
+
+const SEAT_OPTIONS_LIMIT = 3;
+
+/** Até 3 rótulos livres do salão, para o agente oferecer. Falha de leitura = lista vazia. */
+async function freeSeatLabels(
+  supabase: SupabaseClient,
+  args: { unitId: string; hallId: string; date: string; time: string; partySize: number },
+): Promise<string[]> {
+  try {
+    const map = await loadSeatMap(supabase, args);
+    return "error" in map ? [] : choiceLabelsFromMap(map, SEAT_OPTIONS_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+type TableChoiceResolution =
+  | { ok: true; hallId: string; choice: SeatChoice }
+  // deno-lint-ignore no-explicit-any
+  | { ok: false; result: any };
+
+/**
+ * A mesa que o cliente escreveu, procurada só nos salões da unidade do turno
+ * (o nomeado, ou todos os ativos). Achou em exatamente um salão → a escolha;
+ * em nenhum → `seat_unavailable` com opções livres; em mais de um → pede o salão.
+ */
+async function resolveCustomerTableChoice(
+  supabase: SupabaseClient,
+  args: { unitId: string; hallId: string | undefined; date: string; time: string; partySize: number; text: string },
+): Promise<TableChoiceResolution> {
+  const numbers = parseTableChoice(args.text);
+  if (!numbers) {
+    return {
+      ok: false,
+      result: { success: false, reason: "seat_unavailable", message: "Não entendi a mesa escolhida. Peça o número da mesa como aparece no salão.", options: [] },
+    };
+  }
+  const time = args.time.slice(0, 5);
+  const hallIds = args.hallId ? [args.hallId] : await activeHallIds(supabase, args.unitId);
+  const found: Array<{ hallId: string; choice: SeatChoice }> = [];
+  let firstOptions: string[] = [];
+  for (const hallId of hallIds) {
+    const map = await loadSeatMap(supabase, { unitId: args.unitId, hallId, date: args.date, time, partySize: args.partySize });
+    if ("error" in map) continue;
+    if (firstOptions.length === 0) firstOptions = choiceLabelsFromMap(map, SEAT_OPTIONS_LIMIT);
+    const combinations = map.options
+      .filter((o) => o.choice.kind === "combination")
+      .map((o) => ({ id: o.choice.id, tableIds: o.tableIds }));
+    const choice = resolveTableChoice(numbers, map.tables, combinations);
+    if (choice) found.push({ hallId, choice });
+  }
+  if (found.length === 1) return { ok: true, ...found[0] };
+  if (found.length > 1) {
+    return {
+      ok: false,
+      result: { success: false, reason: "hall_required", message: "Essa mesa existe em mais de um salão. Pergunte em qual salão o cliente quer sentar e passe hall_name." },
+    };
+  }
+  return {
+    ok: false,
+    result: {
+      success: false,
+      reason: "seat_unavailable",
+      message: "A mesa escolhida não está livre (ou não existe) para esse horário e número de pessoas. Ofereça as opções abaixo ou envie um novo link.",
+      options: firstOptions,
+    },
+  };
+}
+
 /**
  * Código que o hook da porta (`ClaimedIdentityPort.insertReservation`) devolve
  * quando a RPC recusa pelo teto de reservas ativas do contato. Gêmeo de
@@ -227,6 +413,8 @@ export async function createReservation(supabase: SupabaseClient, params: {
   party_size: number;
   notes?: string;
   hall_name?: string;
+  /** Mesa escolhida no link, como o cliente escreveu ("12", "3+4+5"). */
+  table_choice?: string;
   /**
    * Cliente do turno, vindo do estado do despacho (canal ou `link_customer_phone`),
    * nunca do LLM. O telefone dele é o que resolve o cadastro.
@@ -250,6 +438,37 @@ export async function createReservation(supabase: SupabaseClient, params: {
 // deno-lint-ignore no-explicit-any
 }): Promise<any> {
   const GENERIC_FAIL = { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
+
+  // Mesa escolhida antes do cadastro: escolha que não existe não cria cliente.
+  // Sem escolha, a ordem das leituras fica a de sempre (salão depois do cliente).
+  let hallId: string | undefined;
+  let hallResolved = false;
+  let choice: SeatChoice | undefined;
+  const tableChoiceText = typeof params.table_choice === "string" ? params.table_choice.trim() : "";
+  if (tableChoiceText) {
+    hallId = await resolveHallId(supabase, params.unit_id, params.hall_name, params.party_size);
+    hallResolved = true;
+    // Salão nomeado que não resolve: pergunta, nunca procura a mesa em outro salão.
+    if (!hallId && params.hall_name?.trim()) {
+      return {
+        success: false,
+        reason: "hall_required",
+        message: "Não identifiquei o salão. Pergunte em qual salão o cliente quer sentar e passe hall_name com o nome dele.",
+      };
+    }
+    const resolved = await resolveCustomerTableChoice(supabase, {
+      unitId: params.unit_id,
+      hallId,
+      date: params.date,
+      time: params.time,
+      partySize: params.party_size,
+      text: tableChoiceText,
+    });
+    if (resolved.ok === false) return resolved.result;
+    hallId = resolved.hallId;
+    choice = resolved.choice;
+  }
+
   let customerId: string;
   if (params.claimedIdentity) {
     // Identidade declarada: nenhum I/O de cliente aqui (nem resolveOrCreateCustomer,
@@ -304,7 +523,7 @@ export async function createReservation(supabase: SupabaseClient, params: {
     }
     : undefined;
 
-  const hallId = await resolveHallId(supabase, params.unit_id, params.hall_name, params.party_size);
+  if (!hallResolved) hallId = await resolveHallId(supabase, params.unit_id, params.hall_name, params.party_size);
   const result = await reserveSlot(supabase, {
     unitId: params.unit_id,
     hallId,
@@ -317,6 +536,8 @@ export async function createReservation(supabase: SupabaseClient, params: {
     // Load-bearing: o trigger `enqueue_confirmation_notification` pula a
     // origem do agente; sem isso o cliente recebe a confirmação duplicada.
     source: params.source,
+    // Escolha do cliente: ela ou `seat_unavailable`, nunca outra mesa.
+    ...(choice ? { choice } : {}),
     // Só com identidade declarada; sem porta, a chamada de sempre (paridade).
     ...(params.claimedIdentity ? { insertReservation } : {}),
   });
@@ -324,6 +545,17 @@ export async function createReservation(supabase: SupabaseClient, params: {
   // `=== false`, não `!`: com `strict: false` o `!` não estreita a união.
   if (result.success === false) {
     if (params.claimedIdentity && reservationLimitHit) return { ...CLAIMED_RESERVATION_LIMIT_RESULT };
+    if (choice && hallId && result.reason === "seat_unavailable") {
+      const options = await freeSeatLabels(supabase, {
+        unitId: params.unit_id, hallId, date: params.date, time: params.time.slice(0, 5), partySize: params.party_size,
+      });
+      return {
+        success: false,
+        reason: "seat_unavailable",
+        message: "A mesa escolhida acabou de ser ocupada. Ofereça as opções abaixo ou envie um novo link.",
+        options,
+      };
+    }
     return { success: false, reason: result.reason, message: result.message };
   }
 
@@ -388,7 +620,7 @@ export async function listCustomerReservations(
 export function summarizeToolInput(input: any): Record<string, unknown> {
   if (!input || typeof input !== "object") return {};
   const out: Record<string, unknown> = {};
-  for (const k of ["date", "time", "party_size", "reservation_code", "reason"]) {
+  for (const k of ["date", "time", "party_size", "reservation_code", "reason", "table_choice"]) {
     if (input[k] !== undefined) out[k] = input[k];
   }
   if (input.customer_name) out.customer_name = "***";

@@ -127,6 +127,17 @@ describe('prompt: regra do canal (Task 3.3)', () => {
     expect(wa).toContain(REGRA_12_WHATSAPP);
   });
 
+  it('escolha de mesa: a Regra 14 só entra com a escolha oferecida, logo depois da 13', () => {
+    const sem = composeAgentSystemPrompt(parts());
+    expect(sem).not.toContain('get_table_choice_link');
+    expect(composeAgentSystemPrompt(parts({ tableChoice: false }))).toBe(sem);
+    const com = composeAgentSystemPrompt(parts({ tableChoice: true }));
+    expect(com).toContain('\n14. Escolha de mesa: Depois de saber data, horário, número de pessoas e salão, e antes de criar a reserva, chame get_table_choice_link.');
+    expect(com).toContain('Se a reserva já existir e o cliente pedir para trocar a mesa, chame request_human_handoff.');
+    expect(com.indexOf('13. Dados da loja')).toBeLessThan(com.indexOf('14. Escolha de mesa'));
+    expect(com.indexOf('14. Escolha de mesa')).toBeLessThan(com.indexOf('FORMATACAO_DO_CANAL'));
+  });
+
   it('channelRules vazio não acrescenta nenhum byte; preenchido entra logo depois da formatação', () => {
     const vazio = composeAgentSystemPrompt(parts({ channelRules: '' }));
     expect(vazio).toContain('\n\nFORMATACAO_DO_CANAL\n\n');
@@ -219,6 +230,49 @@ describe('prompt do contato declarado não lê vouchers nem preferências', () =
     const out = await loadAgentSystemPrompt(client as unknown as PromptClient, args(cadastro));
     expect(tables).toContain('vouchers');
     for (const p of PRIVADOS) expect(out.text, `faltou "${p}"`).toContain(p);
+  });
+});
+
+describe('escolha de mesa oferecida pelo loader', () => {
+  /** Cliente falso: `settings` com a chave da escolha; o resto vazio. */
+  const settingsClient = (value: unknown) => ({
+    from(table: string) {
+      const data = table === 'settings' && value !== undefined ? [{ key: 'seat_choice_enabled', value }] : [];
+      const builder: Record<string, unknown> = {};
+      for (const m of ['select', 'eq', 'in', 'is', 'gt', 'gte', 'lte', 'order', 'limit']) builder[m] = () => builder;
+      builder.maybeSingle = async () => ({ data: null, error: null });
+      builder.then = (ok: (v: unknown) => unknown, ko?: (e: unknown) => unknown) =>
+        Promise.resolve({ data, error: null }).then(ok, ko);
+      return builder;
+    },
+    rpc: async () => ({ data: null, error: null }),
+  });
+  const args = (tableChoiceChannel: boolean) => ({
+    unitId: 'unit-1',
+    unit: { row: { name: 'Exemplo' }, name: 'Exemplo', slug: null, address: '', ticketMax: null },
+    privateCustomer: null, phone: '11999990000', identityLine: 'IDENTIDADE.', formattingRules: 'FORMATACAO',
+    channelLabel: 'WhatsApp', channelRules: '', appBaseUrl: () => 'https://exemplo.invalid',
+    tableChoiceChannel, requestId: 'req-1', log: () => {},
+  });
+
+  it.each([
+    ['chave ligada + WhatsApp', true, true, true],
+    ['chave ligada, canal sem link', true, false, false],
+    ['chave desligada', false, true, false],
+    ['chave com texto "true"', 'true', true, false],
+    ['sem linha da chave', undefined, true, false],
+  ])('%s', async (_caso, value, channel, expected) => {
+    const out = await loadAgentSystemPrompt(settingsClient(value) as unknown as PromptClient, args(channel as boolean));
+    expect(out.tableChoiceOffered).toBe(expected);
+    expect(out.text.includes('get_table_choice_link')).toBe(expected);
+  });
+
+  it('o turno usa a mesma decisão no prompt, nas ferramentas e no despacho', () => {
+    const turn = read('supabase/functions/_shared/agent/turn.ts');
+    expect(turn).toContain('tableChoiceChannel: ctx.channel === "whatsapp" && ctx.channelId !== null,');
+    expect(turn).toContain('const tableChoice = agentPrompt.tableChoiceOffered;');
+    expect(turn).toContain('createToolDispatcher({ supabase, requestId, ctx, conv, state: toolState, tableChoice })');
+    expect(turn).toContain('agentToolsFor(ctx, { tableChoice })');
   });
 });
 

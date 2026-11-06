@@ -42,9 +42,12 @@ import {
   agentTools,
   checkAvailability,
   createReservation,
+  getTableChoiceLink,
   listCustomerReservations,
   summarizeToolInput,
   summarizeToolResult,
+  TABLE_CHOICE_LINK_TOOL,
+  TABLE_CHOICE_PARAM,
 } from "./tools.ts";
 import type { AgentConversation, AgentCustomer, ChannelContext } from "./channel-context.ts";
 
@@ -106,10 +109,35 @@ function forClaimedIdentity(tool: (typeof agentTools)[number]): (typeof agentToo
  * Sem porta, exatamente `agentTools`. Com porta, sem os parâmetros de
  * `CLAIMED_IDENTITY_HIDDEN_PARAMS` e com `link_customer_phone` no fim.
  */
-export function agentToolsFor(ctx: Pick<ChannelContext, "claimedIdentity">): typeof agentTools {
-  return ctx.claimedIdentity
+export function agentToolsFor(
+  ctx: Pick<ChannelContext, "claimedIdentity">,
+  opts: { tableChoice?: boolean } = {},
+): typeof agentTools {
+  const base = ctx.claimedIdentity
     ? [...agentTools.map(forClaimedIdentity), LINK_CUSTOMER_PHONE_TOOL]
     : agentTools;
+  return opts.tableChoice ? withTableChoice(base) : base;
+}
+
+/**
+ * Escolha de mesa oferecida no turno (WhatsApp com `seat_choice_enabled`):
+ * `table_choice` em `create_reservation` e `get_table_choice_link` logo depois.
+ * Desligada, a lista é exatamente a de antes.
+ */
+function withTableChoice(tools: typeof agentTools): typeof agentTools {
+  const out: typeof agentTools = [];
+  for (const tool of tools) {
+    if (tool.name === "create_reservation") {
+      out.push({
+        ...tool,
+        parameters: { ...tool.parameters, properties: { ...tool.parameters.properties, table_choice: TABLE_CHOICE_PARAM } },
+      });
+      out.push(TABLE_CHOICE_LINK_TOOL);
+    } else {
+      out.push(tool);
+    }
+  }
+  return out;
 }
 
 export interface ToolDispatchState {
@@ -132,6 +160,8 @@ const CLAIMED_IDENTITY_RESULT_KEYS = new Set([
   "reservation_code", "date", "time", "party_size", "status",
   // lista
   "count", "reservations",
+  // mesas livres oferecidas quando a escolhida não está livre ("Mesa 3")
+  "options",
 ]);
 
 /** Resultado de ferramenta como pode chegar ao LLM com identidade declarada. */
@@ -153,8 +183,11 @@ export function createToolDispatcher(a: {
   ctx: ChannelContext;
   conv: AgentConversation;
   state: ToolDispatchState;
+  /** Escolha de mesa oferecida neste turno (mesma decisão de `agentToolsFor`). */
+  tableChoice?: boolean;
 }): (name: string, input: unknown) => Promise<string> {
   const { supabase, requestId, ctx, conv, state } = a;
+  const tableChoice = a.tableChoice === true;
   const { unitId, organizationId, channelId } = ctx;
   const port = ctx.claimedIdentity;
 
@@ -193,6 +226,8 @@ export function createToolDispatcher(a: {
             state.mutatingToolUsed = true; // desliga o retry silencioso (evita reserva duplicada)
             const created = await createReservation(supabase, {
               ...input,
+              // Só quando a escolha foi oferecida no turno; senão nunca chega à reserva.
+              table_choice: tableChoice && typeof input?.table_choice === "string" ? input.table_choice : undefined,
               // Identidade declarada: o e-mail do LLM nunca chega ao cadastro (C1).
               ...(port ? { customer_email: undefined } : {}),
               customer: { id: current.id, phone: current.phone },
@@ -249,6 +284,20 @@ export function createToolDispatcher(a: {
             state.mutatingToolUsed = true; // desliga o retry silencioso (evita cancelamento duplicado)
             result = await cancelReservationScoped(supabase, input.reservation_code, await scopeFor(current));
             state.lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
+            break;
+          case "get_table_choice_link":
+            // Leitura + link novo: não é mutação de reserva (não liga `mutatingToolUsed`).
+            // Sem a escolha oferecida no turno, cai como ferramenta desconhecida.
+            if (!tableChoice) {
+              result = { error: `Tool desconhecida: ${name}` };
+              break;
+            }
+            result = await getTableChoiceLink(supabase, input, {
+              unitId,
+              channel: ctx.channel,
+              channelId,
+              appBaseUrl: () => ctx.appBaseUrl(),
+            });
             break;
           case "list_customer_reservations":
             result = await listCustomerReservations(
