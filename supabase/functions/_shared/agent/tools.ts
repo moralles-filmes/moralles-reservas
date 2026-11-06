@@ -21,7 +21,8 @@ import {
 import { loadSeatChoiceEnabled } from "../adapters/hall-seating.ts";
 import { activeHallIds, insertSeatLink, purgeExpiredSeatLinks } from "../adapters/seat-choice-links.ts";
 import { resolveOrCreateCustomer } from "../resolve-customer.ts";
-import { type ExistingReservation, findRecentSameRequest } from "../reservation-replay.ts";
+import type { ExistingReservation } from "../reservation-replay.ts";
+import { findRecentSameRequest } from "../adapters/reservation-replay.ts";
 import { createSeatLinkToken, hashSeatLinkToken, SEAT_LINK_TTL_HOURS } from "../seat-link-core.ts";
 import type { AgentChannel, AgentReservationSource } from "./channel-context.ts";
 import { choiceLabelsFromMap, parseTableChoice, resolveTableChoice } from "./table-choice-core.ts";

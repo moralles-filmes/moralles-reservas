@@ -11,7 +11,8 @@ import { reserveSlot } from "../_shared/availability.ts";
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
 import { recordPublicReservationConsent } from "./public-marketing-consent.ts";
 import { initialNoDepositReservationState, type InitialReservationState } from "./initial-reservation-state.ts";
-import { findRecentSameRequest, type ExistingReservation } from "../_shared/reservation-replay.ts";
+import type { ExistingReservation } from "../_shared/reservation-replay.ts";
+import { findRecentSameRequest } from "../_shared/adapters/reservation-replay.ts";
 import { isReplayableAsConfirmed, publicReservationSuccessBody, type TypedCustomer } from "./public-response.ts";
 
 const supabase = createClient(

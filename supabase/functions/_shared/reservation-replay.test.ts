@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import { findRecentSameRequest, pickSameRequest, REPLAY_WINDOW_MINUTES, type ReplayRow } from './reservation-replay';
+import { pickSameRequest, REPLAY_WINDOW_MINUTES, type ReplayRow } from './reservation-replay';
+import { findRecentSameRequest } from './adapters/reservation-replay';
 
 const NOW = Date.parse('2026-11-06T22:00:00Z');
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
