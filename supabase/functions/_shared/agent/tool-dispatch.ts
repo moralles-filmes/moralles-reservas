@@ -214,6 +214,18 @@ export function createToolDispatcher(a: {
         // Sem cliente (identidade declarada sem telefone): nada de I/O e nada
         // de `mutatingToolUsed` — o retry silencioso continua possível.
         result = NEED_PHONE_RESULT;
+      } else if (
+        name === "create_reservation" && !tableChoice &&
+        typeof input?.table_choice === "string" && input.table_choice.trim()
+      ) {
+        // Mesa pedida sem a escolha oferecida no turno (chave desligada depois
+        // do link): recusa, nunca reserva sem a mesa calado. Nada foi gravado,
+        // então o retry silencioso continua possível (sem `mutatingToolUsed`).
+        result = {
+          success: false,
+          reason: "seat_choice_disabled",
+          message: "A escolha de mesa não está disponível agora. Avise o cliente e pergunte se pode reservar sem escolher a mesa.",
+        };
       } else {
         // As ferramentas de cliente só chegam aqui com cliente (guarda acima);
         // as outras não leem `current`.
@@ -223,17 +235,7 @@ export function createToolDispatcher(a: {
             result = await checkAvailability(supabase, input.date, input.time, input.party_size, unitId, input.hall_name);
             break;
           case "create_reservation": {
-            // Mesa pedida sem a escolha oferecida no turno (chave desligada depois
-            // do link): recusa, nunca reserva sem a mesa calado. Nada foi gravado,
-            // então o retry silencioso continua possível.
-            if (!tableChoice && typeof input?.table_choice === "string" && input.table_choice.trim()) {
-              result = {
-                success: false,
-                reason: "seat_choice_disabled",
-                message: "A escolha de mesa não está disponível agora. Avise o cliente e pergunte se pode reservar sem escolher a mesa.",
-              };
-              break;
-            }
+            // A recusa de `table_choice` sem a escolha oferecida fica na guarda acima.
             state.mutatingToolUsed = true; // desliga o retry silencioso (evita reserva duplicada)
             const created = await createReservation(supabase, {
               ...input,
