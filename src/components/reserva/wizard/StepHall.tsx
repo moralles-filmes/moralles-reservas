@@ -133,7 +133,7 @@ export function StepHall() {
                   <Button type="button" variant="outline" className="min-h-11" onClick={() => setChooseOpen(true)}>
                     {state.seat ? "Trocar mesa" : "Ver o salão e escolher minha mesa"}
                   </Button>
-                  <Button type="button" variant="outline" className="min-h-11" aria-pressed={state.seat === null} onClick={() => actions.set("seat", null)}>Não tenho preferência</Button>
+                  <Button type="button" variant="outline" className="min-h-11 aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:font-semibold" aria-pressed={state.seat === null} onClick={() => actions.set("seat", null)}>Não tenho preferência</Button>
                 </div>
                 {chooseOpen && <EscolherMesaDialog open={chooseOpen} onOpenChange={setChooseOpen} map={map} partySize={state.party_size} initial={state.seat} onConfirm={seat => actions.set("seat", seat)} />}
               </div>
