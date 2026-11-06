@@ -3569,6 +3569,49 @@ primeiras** (os 5 FAIL são A-1, A-2, A-3, A-5, A-7; 81 em 83/83), **130/130**
 com a 130300 e 130/130 com as quatro reaplicadas; 81 em 83/83 e 82 em 52/52
 nas duas rodadas.
 
+E6b — link de escolha pelo Direct do Instagram (migration
+`20261107130000_seat_link_instagram.sql`). O 83a projeta `instagram_accounts`
+(id, unidade, username, status); as contas de A e B nascem na transação do 83.
+Depois da 130400 e do 83 GREEN:
+
+```bash
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # RED: só os K-IG-* falham (42703)
+P  < supabase/migrations/20261107130000_seat_link_instagram.sql
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN
+P  < supabase/tests/local-preflight/81-planta-do-salao.sql            # segue verde
+P  < supabase/tests/local-preflight/82-planta-endurecimento.sql       # segue verde
+P  < supabase/migrations/20261107130000_seat_link_instagram.sql       # reaplicar
+P  < supabase/tests/local-preflight/83-escolha-de-mesa.sql            # GREEN de novo
+```
+
+- **K-IG-1, K-IG-6 (8670, 8675):** `service_role` grava link com a conta do
+  Instagram de A (canal nulo) e o link do WhatsApp segue gravando com a conta nula.
+- **K-IG-2, K-IG-3 (8671–8672):** conta de B num link de A e conta inexistente
+  → o mesmo `42501 seat_link_invalid` (o BEFORE vem antes da FK).
+- **K-IG-4 (8673):** canal do WhatsApp e conta do Instagram no mesmo link →
+  `23514 seat_choice_links_one_channel_check`.
+- **K-IG-5 (8674):** apagar a conta deixa o link com `instagram_account_id` nulo.
+- **K-IG-7 (8676):** `anon` e `authenticated` sem `SELECT` na coluna nova.
+- **K-IG-CP (8677), controle:** com o corpo anterior do guard (sem a perna do
+  Instagram), a conta de B entra num link de A.
+- **K-IG-8, K-IG-9 (8678–8679):** salão e conta (ou canal do WhatsApp)
+  apagados no mesmo comando, como na cascata da unidade: o `set null` não
+  esbarra no salão já apagado e o link some. O K-IG-9 é o defeito da
+  20261105130200 (sem a migration dá `42501 seat_link_invalid`): o guard
+  reconferia o salão em todo UPDATE.
+- **K-IG-10, K-IG-11 (8680–8681):** UPDATE que troca o salão ou a conta por um
+  de B segue recusado com `42501 seat_link_invalid`.
+- **K-IG-CP2 (8682), controle:** com o guard conferindo o salão em todo UPDATE,
+  a cascata do K-IG-9 cai em `42501`.
+
+**Resultados observados em 06/11/2026** (imagem `supabase/postgres:17.11.0.004`,
+sem rede, contêiner novo): **151/163 sem a migration** (os 12 FAIL são os
+K-IG-*, o K-IG-9 com `42501`), **163/163** com ela e 163/163 reaplicada; 81 em
+83/83 e 82 em 52/52.
+
+O que NÃO prova: a leitura do @ pela EF `public-seat-map` (Fase 2, Vitest) nem
+o grant real em produção (a coluna herda o grant de tabela do `service_role`).
+
 ### 83 — Aviso de mídia na rajada
 
 Pré-voo da migration `20261105120000_conversation_media_notice.sql`: as RPCs

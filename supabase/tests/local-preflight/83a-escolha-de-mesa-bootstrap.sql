@@ -69,4 +69,14 @@ create table public.instagram_contact_reservations (
   instagram_contact_id uuid not null references public.instagram_contacts(id) on delete cascade,
   unit_id uuid not null references public.units(id) on delete cascade);
 
+-- ─── Conta do Instagram (E6b: link de escolha pelo Direct, migration 20261107130000) ─
+-- Só o que guard_seat_choice_link e a FK leem (forma da 20261103120100). Fora
+-- da projeção: organização, token, RLS, grants e os triggers de tenant/audit.
+-- As contas de A e B nascem dentro da transação desfeita do 83.
+create table if not exists public.instagram_accounts (
+  id uuid primary key default gen_random_uuid(),
+  unit_id uuid not null references public.units(id) on delete cascade,
+  username text,
+  status text not null default 'connected');
+
 commit;
