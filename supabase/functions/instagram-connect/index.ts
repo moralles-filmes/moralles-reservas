@@ -13,7 +13,8 @@
  *   usuário da sessão; a unidade vem SÓ do `state` (o `unit_id` do corpo é
  *   ignorado); papel e grant são reconferidos; o slug é lido antes de gastar o
  *   código. Sequência: troca do código → token longo do usuário →
- *   `/me/accounts` → escolha da Página (`choosePage`: zero → 422, sem a tarefa
+ *   `/me/accounts` → descarte das Páginas cujo IG está ativo noutra unidade
+ *   (leitura falha → 503; todas em uso → 409) → escolha (`selectPage`: zero → 422, sem a tarefa
  *   MODERATE/MANAGE → 422, mais de uma → 409 com os @) → `debug_token` do token
  *   da Página (só informativo: falha grava prazo nulo e não bloqueia) →
  *   `store_…` (conta pelo id do INSTAGRAM, `page_id` à parte, token da Página)
