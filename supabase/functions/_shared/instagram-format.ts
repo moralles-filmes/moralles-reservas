@@ -261,6 +261,14 @@ export function cleanInstagramProfileName(name: string | null | undefined): stri
 }
 
 /**
+ * Primeiro nome do perfil: o primeiro token (separado por espaço) do nome limpo que
+ * contenha ao menos uma letra. Vazio = ausente (só emoji, pontuação ou nada).
+ */
+export function instagramProfileFirstName(name: string | null | undefined): string {
+  return cleanInstagramProfileName(name).split(" ").find((t) => /\p{L}/u.test(t)) ?? "";
+}
+
+/**
  * Linha de identidade declarada (não verificada) para o prompt do Instagram. A entrada é endurecida:
  * username só [A-Za-z0-9._]; nome só letras/marcas/dígitos/espaço/' . -; telefone só dígitos e
  * `+ ( ) -`/espaço; sem controle, bidi nem zero-width. O que sobrar vazio é tratado como ausente.

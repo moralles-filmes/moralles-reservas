@@ -4,6 +4,7 @@ import {
   INSTAGRAM_FORMATTING_RULES,
   INSTAGRAM_MAX_TEXT_BYTES,
   buildInstagramIdentityLine,
+  instagramProfileFirstName,
   sanitizeForInstagram,
   splitInstagramText,
 } from '../../supabase/functions/_shared/instagram-format';
@@ -327,5 +328,24 @@ describe('buildInstagramIdentityLine', () => {
     expect(buildInstagramIdentityLine({ username: null, name: null, linkedPhone: '55988887777' })).toContain(
       '(55) 98888-7777',
     );
+  });
+});
+
+describe('instagramProfileFirstName', () => {
+  it('devolve o primeiro nome limpo', () => {
+    expect(instagramProfileFirstName('Yuri Moraes 👨🏻‍💻')).toBe('Yuri');
+    expect(instagramProfileFirstName('  Ana   Paula ')).toBe('Ana');
+    expect(instagramProfileFirstName('José')).toBe('José');
+  });
+
+  it('devolve vazio quando não há nome com letra', () => {
+    for (const v of [null, undefined, '', '👨🏻‍💻', ". - '"]) {
+      expect(instagramProfileFirstName(v)).toBe('');
+    }
+  });
+
+  it('ignora caractere bidi e pega o primeiro token com letra', () => {
+    expect(instagramProfileFirstName('‮Yuri')).toBe('Yuri');
+    expect(instagramProfileFirstName('- Bia')).toBe('Bia');
   });
 });
