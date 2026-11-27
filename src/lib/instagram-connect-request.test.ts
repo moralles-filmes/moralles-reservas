@@ -52,7 +52,7 @@ const ACTIONS = ["start", "callback", "status", "disconnect", "resubscribe"] as 
 type Row = Record<string, unknown>;
 type ErrorFlag = "members" | "admins" | "grants" | "units" | "secrets" | "accounts"
   | "store_mismatch" | "store_in_use" | "store_forbidden" | "store_invalid" | "store_other"
-  | "status_forbidden" | "disconnect_forbidden" | "token" | "record";
+  | "status_forbidden" | "disconnect_forbidden" | "token" | "record" | "in_use_read";
 
 const harnesses: ReturnType<typeof createEdgeRequestHarness>[] = [];
 afterEach(() => harnesses.splice(0).forEach((h) => h.dispose()));
@@ -133,6 +133,15 @@ function fixture(opts: {
           expect(f.key).toBe("instagram_app_secret");
           return { data: { value: APP_SECRET }, error: null };
         }
+        if (table === "instagram_accounts" && f["in:ig_user_id"] !== undefined) {
+          // Leitura de contas em uso noutra unidade (só o id do IG).
+          if (state.errors.has("in_use_read")) return err("08006");
+          expect(columns).toBe("ig_user_id");
+          expect(f["neq:status"]).toBe("disconnected");
+          const ids = f["in:ig_user_id"] as string[];
+          return { data: state.accounts.filter((a) => ids.includes(a.ig_user_id as string)
+            && a.status !== "disconnected" && a.unit_id !== f["neq:unit_id"]).map((a) => ({ ig_user_id: a.ig_user_id })), error: null };
+        }
         if (table === "instagram_accounts") {
           if (state.errors.has("accounts")) return err("08006");
           expect(f.unit_id).toBeTypeOf("string");
@@ -145,6 +154,7 @@ function fixture(opts: {
       const q = {
         select(v: string) { columns = v; return q; },
         eq(k: string, v: unknown) { f[k] = v; return q; },
+        in(k: string, v: unknown) { f[`in:${k}`] = v; return q; },
         neq(k: string, v: unknown) { f[`neq:${k}`] = v; return q; },
         is(k: string, v: unknown) { f[`is:${k}`] = v; return q; },
         maybeSingle: () => result(),
@@ -740,6 +750,33 @@ describe("instagram-connect — callback", () => {
     const cb = async (f: ReturnType<typeof fixture>) =>
       f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
 
+    it("Página de outra unidade marcada junto → conecta a livre", async () => {
+      const f = fixture(two());
+      f.seedAccount(UNIT_B);
+      const r = await cb(f);
+      expect(r.status).toBe(200);
+      expect(r.json.username).toBe("restaurante_b");
+      const store = f.state.rpcs.find((x) => x.name === "store_instagram_account_connection")!;
+      expect(store.args).toMatchObject({ p_unit_id: UNIT_A, p_ig_user_id: IG_2, p_page_id: PAGE_2, p_token: PAGE_TOKEN_2 });
+      const logs = f.harness.logs.join("\n");
+      expect(logs).toContain("instagram_connect_pages_in_use_skipped");
+      expect(logs).toContain('"skipped":1');
+      expect(logs).not.toContain(IG);
+      expect(logs).not.toContain("restaurante_a");
+      f.leakFree(r.text);
+    });
+
+    it("erro ao ler contas em uso → 503, sem gravar, sem debug_token nem subscribed_apps", async () => {
+      const f = fixture(two());
+      f.state.errors.add("in_use_read");
+      const r = await cb(f);
+      expect(r.status).toBe(503);
+      expect(f.writes()).toEqual([]);
+      expect(f.state.graph.some((g) => g.url.includes("subscribed_apps") || g.url.includes("debug_token"))).toBe(false);
+      f.leakFree(r.text);
+      f.leakFree(f.harness.logs.join("\n"));
+    });
+
     it("(a) a unidade já tem conta igual a uma das Páginas → reconecta essa, sem 409", async () => {
       const f = fixture(two());
       f.seedAccount(UNIT_A, "connected", PAGE_2);
@@ -825,7 +862,8 @@ describe("instagram-connect — callback", () => {
     expect(r.status).toBe(409);
     expect(r.json.error).toBe("Esta conta do Instagram já está conectada a outra unidade");
     expect(f.state.accounts).toHaveLength(1);
-    expect(f.state.graph.some((g) => g.url.includes("subscribed_apps"))).toBe(false);
+    expect(f.state.graph.some((g) => g.url.includes("subscribed_apps") || g.url.includes("debug_token"))).toBe(false);
+    expect(f.state.rpcs.some((x) => x.name === "store_instagram_account_connection")).toBe(false);
     f.leakFree(r.text);
   });
 

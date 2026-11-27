@@ -48,7 +48,7 @@ import { jsonLog } from "../_shared/security.ts";
 import { INSTAGRAM_SECRET_KEYS, createInstagramSecretReader } from "../_shared/instagram-config-core.ts";
 import { platformSecretRowOrThrow } from "../_shared/instagram-config.ts";
 import { readBodyWithCap } from "../_shared/instagram-webhook-core.ts";
-import { INSTAGRAM_SUBSCRIBED_FIELDS, buildAuthorizeUrl, choosePage, type PageCandidate } from "../_shared/instagram-graph-core.ts";
+import { INSTAGRAM_SUBSCRIBED_FIELDS, buildAuthorizeUrl, selectPage, type PageCandidate } from "../_shared/instagram-graph-core.ts";
 import { createInstagramGraph } from "../_shared/instagram-graph.ts";
 import { INSTAGRAM_STATE_TTL_MS, signInstagramState, verifyInstagramState } from "../_shared/instagram-oauth-state.ts";
 import {
@@ -326,7 +326,30 @@ async function handleCallback(ctx: Ctx, body: Record<string, unknown>): Promise<
   // 4. Páginas autorizadas e escolha (o token de Página vindo do token longo não expira).
   const pages = await graph.listPages({ userToken: long.value.token });
   if (pages.ok === false) return graphFail("list_pages", pages);
-  const choice = choosePage(pages.value);
+  // Contas do IG destas Páginas já conectadas noutra unidade (o Facebook lembra as Páginas
+  // liberadas antes). Leitura só com o `unitId` do state; falha fecha, nunca vira "nenhuma em uso".
+  const inUse = new Set<string>();
+  if (pages.value.length > 0) {
+    const used = await supabase
+      .from("instagram_accounts")
+      .select("ig_user_id")
+      .in("ig_user_id", pages.value.map((p) => p.igUserId))
+      .neq("status", "disconnected")
+      .neq("unit_id", unitId);
+    if (used.error || !Array.isArray(used.data)) {
+      jsonLog("error", { evt: "instagram_connect_gate_unavailable", action: ctx.action, gate: "accounts_in_use", code: pgCode(used.error) });
+      return json(ctx.req, 503, { error: MSG.unavailable });
+    }
+    for (const row of used.data as { ig_user_id?: unknown }[]) {
+      if (typeof row.ig_user_id === "string") inUse.add(row.ig_user_id);
+    }
+  }
+  const selected = selectPage(pages.value, inUse);
+  const choice = selected.choice;
+  if (selected.skippedInUse > 0) {
+    jsonLog("info", { evt: "instagram_connect_pages_in_use_skipped", action: ctx.action, skipped: selected.skippedInUse });
+  }
+  if (choice.kind === "in_use") return json(ctx.req, 409, { error: MSG.inUse });
   if (choice.kind === "none") {
     jsonLog("warn", { evt: "instagram_connect_no_page", action: ctx.action, reason: choice.reason });
     return json(ctx.req, 422, { error: choice.reason === "insufficient_task" ? MSG.taskInsufficient : MSG.noPage });
