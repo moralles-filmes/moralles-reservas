@@ -158,6 +158,18 @@ describe('prompt: regra do canal (Task 3.3)', () => {
     expect(args).toContain('phone: ctx.phone,');
     expect(args).toContain('channelLabel: ctx.channelLabel,');
     expect(args).toContain('channelRules: ctx.channelRules,');
+    expect(args).toContain('declaredFirstName: ctx.declaredFirstName,');
+    expect(webhook, 'o WhatsApp não preenche o nome declarado').not.toContain('declaredFirstName');
+    const insta = read('supabase/functions/process-instagram-inbound/index.ts');
+    expect(insta).toContain('declaredFirstName: instagramProfileFirstName(contact.name),');
+  });
+
+  it('âncora do nome declarado: entra só com declaredNameAnchor e não muda o resto', () => {
+    const base = composeAgentSystemPrompt(parts({ customerFirstName: '' }));
+    const ancora = composeAgentSystemPrompt(parts({ customerFirstName: '', declaredNameAnchor: true }));
+    expect(ancora).toContain('Você é Yumi; não chame o cliente por esse nome. ');
+    expect(base).not.toContain('não chame o cliente por esse nome');
+    expect(ancora.replace('Você é Yumi; não chame o cliente por esse nome. ', '')).toBe(base);
   });
 });
 
@@ -223,6 +235,34 @@ describe('prompt do contato declarado não lê vouchers nem preferências', () =
     expect(tables.length, 'o cliente falso não registrou nada').toBeGreaterThan(0);
     expect(tables).not.toContain('vouchers');
     for (const p of PRIVADOS) expect(out.text, `vazou "${p}"`).not.toContain(p);
+  });
+
+  it('declaredFirstName preenche a frase de separação sem tocar no cadastro privado', async () => {
+    const { client } = recordingClient();
+    const out = await loadAgentSystemPrompt(client as unknown as PromptClient, { ...args(null), declaredFirstName: 'Yuri' });
+    expect(out.text).toContain('se chama Yuri — esse é o nome do CLIENTE, NÃO o seu. Você continua sendo Yumi.');
+    for (const p of PRIVADOS) expect(out.text, `vazou "${p}"`).not.toContain(p);
+  });
+
+  it('declaredFirstName vazio cai na âncora negativa', async () => {
+    const { client } = recordingClient();
+    const out = await loadAgentSystemPrompt(client as unknown as PromptClient, { ...args(null), declaredFirstName: '' });
+    expect(out.text).toContain('Você é Yumi; não chame o cliente por esse nome. ');
+    expect(out.text).not.toContain('está falando se chama');
+  });
+
+  it('sem declaredFirstName (WhatsApp) nenhuma das duas frases entra', async () => {
+    const { client } = recordingClient();
+    const out = await loadAgentSystemPrompt(client as unknown as PromptClient, args(null));
+    expect(out.text).not.toContain('está falando se chama');
+    expect(out.text).not.toContain('não chame o cliente por esse nome');
+  });
+
+  it('o cadastro vence o nome declarado', async () => {
+    const { client } = recordingClient();
+    const out = await loadAgentSystemPrompt(client as unknown as PromptClient, { ...args(cadastro), declaredFirstName: 'Yuri' });
+    expect(out.text).toContain('se chama Fulana');
+    expect(out.text).not.toContain('se chama Yuri');
   });
 
   it('controle positivo: com o cadastro, o mesmo cliente falso enxerga vouchers e preferências', async () => {

@@ -57,6 +57,7 @@ import {
   INSTAGRAM_FORMATTING_RULES,
   buildInstagramIdentityLine,
   cleanInstagramProfileName,
+  instagramProfileFirstName,
   sanitizeForInstagram,
 } from "../_shared/instagram-format.ts";
 import {
@@ -890,6 +891,7 @@ function createEventWorker(a: {
           name: contact.name,
           linkedPhone: customer?.phone ?? null,
         }),
+        declaredFirstName: instagramProfileFirstName(contact.name),
         formattingRules: INSTAGRAM_FORMATTING_RULES,
         channelLabel: "Instagram",
         channelRules: INSTAGRAM_CHANNEL_RULES,

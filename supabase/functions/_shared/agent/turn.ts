@@ -1029,6 +1029,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       privateCustomer: ctx.claimedIdentity ? null : ctx.customer,
       phone: ctx.phone,
       identityLine: ctx.identityLine,
+      declaredFirstName: ctx.declaredFirstName,
       formattingRules: ctx.formattingRules,
       channelLabel: ctx.channelLabel,
       channelRules: ctx.channelRules,

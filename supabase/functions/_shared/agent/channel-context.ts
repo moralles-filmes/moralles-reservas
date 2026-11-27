@@ -124,6 +124,11 @@ export interface ChannelContext {
    * existir e as ferramentas de reserva só alcançam o ledger do contato.
    */
   claimedIdentity?: ClaimedIdentityPort;
+  /**
+   * Primeiro nome do perfil do canal; só canal de identidade declarada. Sem a
+   * frase do nome, o modelo chama o cliente pelo nome da persona.
+   */
+  declaredFirstName?: string;
   /** Frase de identidade do cliente no prompt, sem ponto final duplicado. */
   identityLine: string;
   /** Bloco de regras de formatação do canal, sem as quebras de linha iniciais. */
