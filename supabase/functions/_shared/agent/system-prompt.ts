@@ -208,6 +208,8 @@ export interface AgentPromptParts {
   weekdayName: string;
   upcomingDaysLines: string[];
   customerFirstName: string;
+  /** Canal de identidade declarada sem nome do cliente: âncora negativa no lugar da frase do nome. */
+  declaredNameAnchor?: boolean;
   /** Regras de formatação do canal, sem as quebras de linha iniciais. */
   formattingRules: string;
   /** Nome do canal na regra 12 (WhatsApp: `"WhatsApp"`). */
@@ -278,7 +280,7 @@ const storeSection = (lead: string, block: string) => (block ? `\n\n${lead}\n${b
 export function composeAgentSystemPrompt(p: AgentPromptParts): string {
   const {
     includeFaq, agentName, restaurantName, globalPromptBody, identityLine, todayBR, weekdayName,
-    upcomingDaysLines, customerFirstName, formattingRules, channelLabel, channelRules, unitAddress,
+    upcomingDaysLines, customerFirstName, declaredNameAnchor, formattingRules, channelLabel, channelRules, unitAddress,
     restaurantInfoLines, hallScheduleBlock, hoursLines, specialLines, blockedLines,
     giftbackLines, giftbackRulesReadFailed, customerVouchersReadFailed, prefsLines, customPrompt, settingsMap,
   } = p;
@@ -295,7 +297,9 @@ export function composeAgentSystemPrompt(p: AgentPromptParts): string {
       `\n\nPróximos dias (use esta lista para saber o dia da semana de "amanhã", "sábado", "dia 18" etc. — nunca calcule de cabeça):\n${upcomingDaysLines.join("\n")}\n\n` +
       (customerFirstName
         ? `O cliente com quem você está falando se chama ${customerFirstName} — esse é o nome do CLIENTE, NÃO o seu. Você continua sendo ${agentName}. Pode tratá-lo por ${customerFirstName} quando soar natural, sem forçar o nome em toda mensagem. `
-        : "") +
+        : declaredNameAnchor
+          ? `Você é ${agentName}; não chame o cliente por esse nome. `
+          : "") +
       `Use as ferramentas disponíveis para reservas. ` +
       `Ao criar uma reserva, sempre confirme todos os detalhes antes de finalizar. ` +
       `Não invente horários, cardápio, serviços, descontos, promoções nem benefícios de aniversário — só use o que está documentado abaixo. ` +
@@ -404,6 +408,8 @@ export interface LoadAgentPromptArgs {
    */
   phone: string | null;
   identityLine: string;
+  /** Primeiro nome do perfil do canal (identidade declarada); só vale sem cadastro privado. */
+  declaredFirstName?: string;
   formattingRules: string;
   channelLabel: string;
   channelRules: string;
@@ -719,10 +725,16 @@ export async function loadAgentSystemPrompt(
   // passa a chamar o CLIENTE pelo nome da persona ("Yumi").
   // Sem cadastro privado não há nome gravado: `customerFirstName` fica vazio.
   const rawCustomerName = str(privateCustomer?.name);
-  const customerFirstName =
+  const registeredFirstName =
     rawCustomerName && rawCustomerName !== privateCustomer?.phone && (phone === null || rawCustomerName !== phone)
       ? shortStoreText(rawCustomerName.trim().split(/\s+/)[0], SHORT_TEXT_LIMITS.personName)
       : "";
+  // Nome só do perfil do canal: vale apenas sem cadastro privado.
+  const declaredName = privateCustomer === null && args.declaredFirstName
+    ? shortStoreText(args.declaredFirstName, SHORT_TEXT_LIMITS.personName)
+    : "";
+  const customerFirstName = registeredFirstName || declaredName;
+  const declaredNameAnchor = args.declaredFirstName !== undefined && !customerFirstName;
 
   // Camada global (persona e tom) da Plataforma. Falha aberta (D7): nunca lança
   // e cai para cache vencido ou baseline; ver `global-prompt-core.ts`.
@@ -738,6 +750,7 @@ export async function loadAgentSystemPrompt(
     weekdayName,
     upcomingDaysLines,
     customerFirstName,
+    declaredNameAnchor,
     formattingRules: args.formattingRules,
     channelLabel: args.channelLabel,
     channelRules: args.channelRules,
