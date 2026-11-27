@@ -145,6 +145,20 @@ export function choosePage(pages: PageCandidate[]): PageChoice {
   return { kind: "many", usernames: ok.map((p) => p.igUsername ?? p.pageName ?? p.pageId), pages: ok };
 }
 
+/**
+ * Descarta Páginas cuja conta do IG já está conectada noutra unidade (o conjunto vem do
+ * servidor, nunca do caller). Se só sobraram contas em uso, é `in_use`, não `no_instagram`.
+ */
+export function selectPage(
+  pages: PageCandidate[],
+  inUseIgUserIds: ReadonlySet<string>,
+): { choice: PageChoice | { kind: "in_use" }; skippedInUse: number } {
+  const free = pages.filter((p) => !inUseIgUserIds.has(p.igUserId));
+  const skippedInUse = pages.length - free.length;
+  if (pages.length > 0 && free.length === 0) return { choice: { kind: "in_use" }, skippedInUse };
+  return { choice: choosePage(free), skippedInUse };
+}
+
 /** `data.data_access_expires_at` (segundos) do `debug_token` em ISO; inválido ou 0 dá null. */
 export function parseDataAccessExpiry(json: unknown): string | null {
   if (!isObj(json) || !isObj(json.data)) return null;

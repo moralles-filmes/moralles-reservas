@@ -11,6 +11,7 @@ import {
   parsePages,
   parseUserLongLived,
   redactSecrets,
+  selectPage,
   stripOAuthCodeSuffix,
   type PageCandidate,
 } from "../../supabase/functions/_shared/instagram-graph-core";
@@ -152,6 +153,40 @@ describe("choosePage", () => {
     expect(choosePage([a, cand("x", ["ADVERTISE"]), b])).toEqual({ kind: "many", usernames: ["a", "b"], pages: [a, b] });
     const ok = cand("a", ["MANAGE"]);
     expect(choosePage([ok, cand("b", ["ADVERTISE"])])).toEqual({ kind: "one", page: ok });
+  });
+});
+
+describe("selectPage", () => {
+  const moralles = { ...cand("moralles", ["MANAGE"]), igUserId: "100" };
+  const ren = { ...cand("ren", ["MANAGE"]), igUserId: "200" };
+  const none = new Set<string>();
+  it("conjunto vazio equivale a choosePage e não descarta nada", () => {
+    expect(selectPage([moralles, ren], none)).toEqual({ choice: choosePage([moralles, ren]), skippedInUse: 0 });
+  });
+  it("descarta a Página em uso e fica com a livre", () => {
+    expect(selectPage([moralles, ren], new Set(["100"]))).toEqual({ choice: { kind: "one", page: ren }, skippedInUse: 1 });
+  });
+  it("controle positivo: sem o conjunto, as mesmas Páginas dão many", () => {
+    expect(selectPage([moralles, ren], none).choice.kind).toBe("many");
+  });
+  it("todas em uso dá in_use", () => {
+    expect(selectPage([moralles], new Set(["100"]))).toEqual({ choice: { kind: "in_use" }, skippedInUse: 1 });
+  });
+  it("lista vazia dá no_instagram", () => {
+    expect(selectPage([], new Set(["100"]))).toEqual({ choice: { kind: "none", reason: "no_instagram" }, skippedInUse: 0 });
+  });
+  it("a livre sem tarefa suficiente dá insufficient_task", () => {
+    const b = { ...cand("b", ["ADVERTISE"]), igUserId: "300" };
+    expect(selectPage([moralles, b], new Set(["100"]))).toEqual({
+      choice: { kind: "none", reason: "insufficient_task" },
+      skippedInUse: 1,
+    });
+  });
+  it("três aptas, uma em uso: many só com as duas livres", () => {
+    const c = { ...cand("c", ["MODERATE"]), igUserId: "300" };
+    const r = selectPage([moralles, ren, c], new Set(["100"]));
+    expect(r.skippedInUse).toBe(1);
+    expect(r.choice).toEqual({ kind: "many", usernames: ["ren", "c"], pages: [ren, c] });
   });
 });
 
