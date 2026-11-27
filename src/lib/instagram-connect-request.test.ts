@@ -138,6 +138,8 @@ function fixture(opts: {
           if (state.errors.has("in_use_read")) return err("08006");
           expect(columns).toBe("ig_user_id");
           expect(f["neq:status"]).toBe("disconnected");
+          // A unidade vem do state assinado (todos os callbacks deste arquivo são da UNIT_A).
+          expect(f["neq:unit_id"]).toBe(UNIT_A);
           const ids = f["in:ig_user_id"] as string[];
           return { data: state.accounts.filter((a) => ids.includes(a.ig_user_id as string)
             && a.status !== "disconnected" && a.unit_id !== f["neq:unit_id"]).map((a) => ({ ig_user_id: a.ig_user_id })), error: null };
@@ -865,6 +867,18 @@ describe("instagram-connect — callback", () => {
     expect(f.state.graph.some((g) => g.url.includes("subscribed_apps") || g.url.includes("debug_token"))).toBe(false);
     expect(f.state.rpcs.some((x) => x.name === "store_instagram_account_connection")).toBe(false);
     f.leakFree(r.text);
+  });
+
+  it("corrida: a conta vira em uso entre a leitura e o store → a trava da RPC (P0001) dá 409", async () => {
+    const f = fixture();
+    f.state.errors.add("store_in_use");
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(409);
+    expect(r.json.error).toBe("Esta conta do Instagram já está conectada a outra unidade");
+    expect(f.state.rpcs.some((x) => x.name === "store_instagram_account_connection")).toBe(true);
+    expect(f.state.graph.some((g) => g.url.includes("subscribed_apps"))).toBe(false);
+    f.leakFree(r.text);
+    f.leakFree(f.harness.logs.join("\n"));
   });
 
   it.each([
